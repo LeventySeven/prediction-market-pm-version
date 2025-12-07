@@ -293,25 +293,7 @@ export default function HomePage() {
                 {betMessage}
               </div>
             )}
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 mb-8">
-              <div className="flex overflow-x-auto pb-2 md:pb-0 gap-2 w-full md:w-auto scrollbar-hide">
-                {CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setActiveCategory(cat.id)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all whitespace-nowrap border
-                        ${
-                          activeCategory === cat.id
-                            ? "bg-[#BEFF1D] text-black border-[#BEFF1D]"
-                            : "bg-transparent text-neutral-400 border-transparent hover:bg-neutral-900 hover:text-white"
-                        }`}
-                  >
-                    <span>{cat.icon}</span>
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-
+            <div className="mb-8">
               <div className="relative w-full md:hidden">
                 <input
                   type="text"
