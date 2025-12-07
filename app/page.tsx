@@ -8,7 +8,6 @@ import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
 import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
 import type { Category, Market, User } from "@/types";
-import useTelegramWebApp from "@/hooks/useTelegramWebApp";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search } from "lucide-react";
 
@@ -22,17 +21,10 @@ export default function HomePage() {
   const [markets, setMarkets] = useState<Market[]>(MOCK_MARKETS);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
-  const { themeParams, isTelegram } = useTelegramWebApp();
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
     string | null
   >(null);
   const [betMessage, setBetMessage] = useState<string | null>(null);
-  const [telegramNotice, setTelegramNotice] = useState<string | null>(null);
-
-  const getTelegramUser = () =>
-    typeof window !== "undefined"
-      ? (window.Telegram?.WebApp?.initDataUnsafe as any)?.user ?? null
-      : null;
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
@@ -52,94 +44,54 @@ export default function HomePage() {
     setShowAuth(true);
   };
 
-  // Sync Telegram theme colors when inside a Telegram Mini App.
-  useEffect(() => {
-    if (!isTelegram || !themeParams) return;
-    const root = document.documentElement;
-    const defaults = {
-      background: "#0a0a0a",
-      foreground: "#ffffff",
-      accent: "#BEFF1D",
-      accentText: "#000000",
-    };
-
-    root.style.setProperty(
-      "--background",
-      themeParams.bg_color ?? defaults.background
-    );
-    root.style.setProperty(
-      "--foreground",
-      themeParams.text_color ?? defaults.foreground
-    );
-    root.style.setProperty(
-      "--accent-color",
-      themeParams.button_color ?? defaults.accent
-    );
-    root.style.setProperty(
-      "--accent-text-color",
-      themeParams.button_text_color ?? defaults.accentText
-    );
-
-    return () => {
-      root.style.setProperty("--background", defaults.background);
-      root.style.setProperty("--foreground", defaults.foreground);
-      root.style.setProperty("--accent-color", defaults.accent);
-      root.style.setProperty("--accent-text-color", defaults.accentText);
-    };
-  }, [isTelegram, themeParams]);
-
-  const handleAuthSubmit = async (payload: {
-    username?: string;
+  const handleSignUp = async (payload: {
+    email: string;
+    username: string;
+    password: string;
     displayName?: string;
   }) => {
-    const tgUser = getTelegramUser();
-
-    if (!tgUser?.id) {
-      setTelegramNotice(
-        "Telegram ID не найден. Откройте миниапп из Telegram, затем попробуйте снова."
-      );
-      throw new Error("Telegram ID не найден. Откройте миниапп из Telegram.");
-    }
-
-    const me = await trpcClient.user.registerUser.mutate({
-      telegramId: Number(tgUser.id),
-      username: payload.username ?? tgUser.username ?? undefined,
-      displayName:
-        payload.displayName ??
-        tgUser.first_name ??
-        tgUser.last_name ??
-        undefined,
+    const me = await trpcClient.auth.signUp.mutate({
+      email: payload.email,
+      username: payload.username,
+      password: payload.password,
     });
     setUser({
-      id: String(me.id),
-      email: me.username ?? undefined,
-      balance: me.balance,
+      id: String(me.user.id),
+      email: me.user.email,
+      balance: me.user.balance,
     });
-    setShowAuth(false);
   };
 
-  // Register or fetch user from Supabase via tRPC using Telegram id when available.
+  const handleLoginSubmit = async (payload: {
+    emailOrUsername: string;
+    password: string;
+  }) => {
+    const me = await trpcClient.auth.login.mutate({
+      emailOrUsername: payload.emailOrUsername,
+      password: payload.password,
+    });
+    setUser({
+      id: String(me.user.id),
+      email: me.user.email,
+      balance: me.user.balance,
+    });
+  };
+
+  // Fetch session user via auth.me
   useEffect(() => {
     const loadUser = async () => {
       setLoadingUser(true);
       try {
-        const tgUser = getTelegramUser();
-
-        if (!tgUser?.id) return;
-
-        const me = await trpcClient.user.registerUser.mutate({
-          telegramId: Number(tgUser.id),
-          username: tgUser.username ?? undefined,
-          displayName: tgUser.first_name ?? tgUser.last_name ?? undefined,
-        });
-
-        setUser({
-          id: String(me.id),
-          email: me.username ?? undefined,
-          balance: me.balance,
-        });
+        const me = await trpcClient.auth.me.query();
+        if (me) {
+          setUser({
+            id: String(me.id),
+            email: me.email,
+            balance: me.balance,
+          });
+        }
       } catch (err) {
-        console.error("Failed to load/register user", err);
+        console.error("Failed to fetch session user", err);
       } finally {
         setLoadingUser(false);
       }
@@ -224,12 +176,6 @@ export default function HomePage() {
         onSearchChange={setSearchQuery}
       />
 
-      {telegramNotice && (
-        <div className="bg-red-500/10 text-red-200 border border-red-500/30 px-4 py-2 text-sm text-center">
-          {telegramNotice}
-        </div>
-      )}
-
       <main>
         {selectedMarket ? (
           <MarketPage
@@ -240,11 +186,9 @@ export default function HomePage() {
         onPlaceBet={async ({ amount, marketId, side }) => {
           try {
             setBetMessage(null);
-            const tgUser = getTelegramUser();
-
-            if (!tgUser?.id) {
+            if (!user) {
               setShowAuth(true);
-              setBetMessage("Откройте приложение через Telegram, чтобы сделать ставку.");
+              setBetMessage("Войдите, чтобы сделать ставку.");
               return;
             }
 
@@ -252,7 +196,7 @@ export default function HomePage() {
               amount,
               marketId: Number(marketId),
               side,
-              telegramId: Number(tgUser.id),
+              telegramId: Number(user.id),
             });
 
             setUser((prev) =>
@@ -332,7 +276,8 @@ export default function HomePage() {
       <AuthModal
         isOpen={showAuth}
         onClose={() => setShowAuth(false)}
-        onLogin={handleAuthSubmit}
+        onSignUp={handleSignUp}
+        onLogin={handleLoginSubmit}
       />
     </div>
   );

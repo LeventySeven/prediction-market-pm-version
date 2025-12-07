@@ -5,22 +5,39 @@ import Button from "./Button";
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onLogin: (payload: {
-    username?: string;
+  onSignUp: (payload: {
+    email: string;
+    username: string;
+    password: string;
     displayName?: string;
-  }) => void;
+  }) => Promise<void>;
+  onLogin: (payload: { emailOrUsername: string; password: string }) => Promise<void>;
 }
 
-const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin }) => {
+const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  onSignUp,
+  onLogin,
+}) => {
+  const [mode, setMode] = useState<"signup" | "login">("signup");
+  const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isValid = useMemo(
-    () => username.trim().length > 0 || displayName.trim().length > 0,
-    [username, displayName]
-  );
+  const isValid = useMemo(() => {
+    if (mode === "signup") {
+      return (
+        email.trim().length > 3 &&
+        username.trim().length > 2 &&
+        password.trim().length >= 8
+      );
+    }
+    return password.trim().length >= 8 && (email.trim().length > 0 || username.trim().length > 0);
+  }, [mode, email, username, password]);
 
   if (!isOpen) return null;
 
@@ -28,15 +45,28 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin }) => {
     if (!isValid || loading) return;
     setError(null);
     setLoading(true);
-    Promise.resolve(
-      onLogin({
-        username: username.trim() || undefined,
-        displayName: displayName.trim() || undefined,
+    const action =
+      mode === "signup"
+        ? onSignUp({
+            email: email.trim(),
+            username: username.trim(),
+            password: password.trim(),
+            displayName: displayName.trim() || undefined,
+          })
+        : onLogin({
+            emailOrUsername: email.trim() || username.trim(),
+            password: password.trim(),
+          });
+
+    Promise.resolve(action)
+      .then(() => {
+        setEmail("");
+        setUsername("");
+        setDisplayName("");
+        setPassword("");
+        onClose();
       })
-    )
-      .catch((err) =>
-        setError(err?.message || "Не удалось сохранить профиль")
-      )
+      .catch((err) => setError(err?.message || "Не удалось выполнить действие"))
       .finally(() => setLoading(false));
   };
 
@@ -54,36 +84,80 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin }) => {
           <X size={24} />
         </button>
 
-        <h2 className="text-2xl font-bold text-white mb-2">Обновить профиль</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-white">
+            {mode === "signup" ? "Регистрация" : "Вход"}
+          </h2>
+          <button
+            onClick={() => setMode(mode === "signup" ? "login" : "signup")}
+            className="text-xs text-[#BEFF1D] hover:underline"
+          >
+            {mode === "signup" ? "У меня уже есть аккаунт" : "Создать аккаунт"}
+          </button>
+        </div>
         <p className="text-neutral-400 mb-6 text-sm">
-          Уточните ник или имя для профиля.
+          {mode === "signup"
+            ? "Введите email, имя пользователя и пароль."
+            : "Войдите по email или username и паролю."}
         </p>
 
         <div className="space-y-4">
+          {mode === "signup" && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-400 mb-1">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none transition-colors"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-neutral-400 mb-1">
-              Username
+              {mode === "signup" ? "Username" : "Email или Username"}
             </label>
             <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="your_username"
+              value={mode === "signup" ? username : email || username}
+              onChange={(e) =>
+                mode === "signup"
+                  ? setUsername(e.target.value)
+                  : (setEmail(e.target.value), setUsername(e.target.value))
+              }
+              placeholder={mode === "signup" ? "your_username" : "you@example.com или username"}
               className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none transition-colors"
             />
           </div>
+          {mode === "signup" && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-400 mb-1">
+                Отображаемое имя (опц.)
+              </label>
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Имя Фамилия"
+                className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none transition-colors"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-neutral-400 mb-1">
-              Отображаемое имя
+              Пароль
             </label>
             <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Имя Фамилия"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Минимум 8 символов"
               className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none transition-colors"
             />
           </div>
           <Button fullWidth onClick={handleSubmit} disabled={!isValid || loading}>
-            {loading ? "Сохранение..." : "Сохранить"}
+            {loading ? "Сохранение..." : mode === "signup" ? "Создать аккаунт" : "Войти"}
           </Button>
           {error && (
             <p className="text-xs text-red-400 text-center">{error}</p>
