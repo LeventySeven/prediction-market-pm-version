@@ -27,8 +27,9 @@ const useTelegramWebApp = (): TelegramHookState => {
       return;
     }
 
-    console.log("Telegram initDataUnsafe:", tg.initDataUnsafe);
-    console.log("Telegram user:", tg.initDataUnsafe?.user);
+    const unsafe = tg.initDataUnsafe as any;
+    console.log("Telegram initDataUnsafe:", unsafe);
+    console.log("Telegram user:", unsafe?.user);
 
     const applyTelegramState = () =>
       setState({
