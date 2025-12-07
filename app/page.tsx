@@ -27,6 +27,7 @@ export default function HomePage() {
     string | null
   >(null);
   const [betMessage, setBetMessage] = useState<string | null>(null);
+  const [telegramNotice, setTelegramNotice] = useState<string | null>(null);
 
   const getTelegramUser = () =>
     typeof window !== "undefined"
@@ -94,6 +95,9 @@ export default function HomePage() {
     const tgUser = getTelegramUser();
 
     if (!tgUser?.id) {
+      setTelegramNotice(
+        "Telegram ID не найден. Откройте миниапп из Telegram, затем попробуйте снова."
+      );
       throw new Error("Telegram ID не найден. Откройте миниапп из Telegram.");
     }
 
@@ -219,6 +223,12 @@ export default function HomePage() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
       />
+
+      {telegramNotice && (
+        <div className="bg-red-500/10 text-red-200 border border-red-500/30 px-4 py-2 text-sm text-center">
+          {telegramNotice}
+        </div>
+      )}
 
       <main>
         {selectedMarket ? (
