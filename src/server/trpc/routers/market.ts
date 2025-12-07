@@ -148,7 +148,12 @@ export const marketRouter = router({
         });
       }
 
-      const result = rpc.data as { bet_id: number; new_balance: number } | null;
+      const raw = rpc.data as
+        | { bet_id: number; new_balance: number }
+        | Array<{ bet_id: number; new_balance: number }>
+        | null;
+
+      const result = Array.isArray(raw) ? raw[0] : raw;
       if (!result) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
