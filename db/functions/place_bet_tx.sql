@@ -14,6 +14,8 @@ create or replace function place_bet_tx(
     p_amount numeric
 ) returns table (bet_id bigint, new_balance numeric)
 language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   v_balance numeric;
@@ -52,6 +54,7 @@ begin
 
   return query
     select v_bet_id::bigint as bet_id, new_balance::numeric as new_balance;
+  return;
 end;
 $$;
 

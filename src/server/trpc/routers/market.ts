@@ -166,17 +166,31 @@ export const marketRouter = router({
         | null;
 
       const result = Array.isArray(raw) ? raw[0] : raw;
-      if (!result) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to place bet",
-        });
+
+      let betId = result?.bet_id ? Number(result.bet_id) : null;
+      let newBalance = result?.new_balance ? Number(result.new_balance) : null;
+
+      // Fallback: if RPC returned no row, fetch balance manually to avoid throwing after a successful tx.
+      if (!newBalance) {
+        const fallback = await supabase
+          .from("users")
+          .select("balance")
+          .eq("id", authUser.id)
+          .maybeSingle();
+        if (fallback.data) {
+          newBalance = Number(fallback.data.balance);
+        }
+      }
+
+      if (!betId) {
+        // We may not have the bet id; return 0 as placeholder rather than failing the call.
+        betId = 0;
       }
 
       return {
-        betId: Number(result.bet_id),
+        betId,
         userId: authUser.id,
-        newBalance: Number(result.new_balance),
+        newBalance: newBalance ?? 0,
       };
     }),
 

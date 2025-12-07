@@ -21,6 +21,7 @@ interface MarketPageProps {
     side: "YES" | "NO";
     amount: number;
     marketId: string;
+    marketTitle: string;
   }) => Promise<void>;
 }
 
@@ -67,7 +68,12 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
     setPlaceError(null);
     setPlacing(true);
     try {
-      await onPlaceBet({ side: tradeType, amount: numericAmount, marketId: market.id });
+      await onPlaceBet({
+        side: tradeType,
+        amount: numericAmount,
+        marketId: market.id,
+        marketTitle: market.title,
+      });
       setAmount('');
     } catch (err: any) {
       setPlaceError(err?.message || "Не удалось выполнить ставку");

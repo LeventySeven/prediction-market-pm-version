@@ -7,6 +7,7 @@ import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
 import ProfileModal from "@/components/ProfileModal";
+import BetConfirmModal from "@/components/BetConfirmModal";
 import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
 import type { Category, Market, User } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
@@ -232,44 +233,51 @@ export default function HomePage() {
             market={selectedMarket}
             user={user}
             onBack={() => setSelectedMarketId(null)}
-        onLogin={() => setShowAuth(true)}
-        onPlaceBet={async ({ amount, marketId, side }) => {
-          try {
-            setBetMessage(null);
-            if (!user) {
-              setShowAuth(true);
-              setBetMessage("Войдите, чтобы сделать ставку.");
-              return;
-            }
+            onLogin={() => setShowAuth(true)}
+            onPlaceBet={async ({ amount, marketId, side, marketTitle }) => {
+              try {
+                setBetMessage(null);
+                if (!user) {
+                  setShowAuth(true);
+                  setBetMessage("Войдите, чтобы сделать ставку.");
+                  return;
+                }
 
-            const res = await trpcClient.market.placeBet.mutate({
-              amount,
-              marketId: Number(marketId),
-              side,
-            });
+                const res = await trpcClient.market.placeBet.mutate({
+                  amount,
+                  marketId: Number(marketId),
+                  side,
+                });
 
-            // Update local balance optimistically
-            setUser((prev) =>
-              prev
-                ? { ...prev, balance: res.newBalance }
-                : { id: String(res.userId), balance: res.newBalance }
-            );
+                // Update local balance optimistically
+                setUser((prev) =>
+                  prev
+                    ? { ...prev, balance: res.newBalance }
+                    : { id: String(res.userId), balance: res.newBalance }
+                );
 
-            // Refresh data from backend to ensure pools and balances are in sync
-            await loadMarkets();
-            await refreshUser();
-            await loadMyBets();
+                // Refresh data from backend to ensure pools and balances are in sync
+                await loadMarkets();
+                await refreshUser();
+                await loadMyBets();
 
-            setBetMessage("Ставка принята");
-          } catch (err: any) {
-            console.error("placeBet failed", err);
-            setBetMessage(err?.message || "Не удалось поставить ставку");
-            // Even on error, refresh to keep UI consistent with backend state
-            await loadMarkets();
-            await refreshUser();
-            await loadMyBets();
-          }
-        }}
+                setBetMessage(null);
+                setBetConfirm({
+                  open: true,
+                  marketTitle,
+                  side,
+                  amount,
+                  newBalance: res.newBalance,
+                });
+              } catch (err: any) {
+                console.error("placeBet failed", err);
+                setBetMessage(err?.message || "Не удалось поставить ставку");
+                // Even on error, refresh to keep UI consistent with backend state
+                await loadMarkets();
+                await refreshUser();
+                await loadMyBets();
+              }
+            }}
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">
@@ -362,6 +370,14 @@ export default function HomePage() {
             setShowProfile(false);
           }
         }}
+      />
+      <BetConfirmModal
+        isOpen={betConfirm.open}
+        onClose={() => setBetConfirm((prev) => ({ ...prev, open: false }))}
+        marketTitle={betConfirm.marketTitle}
+        side={betConfirm.side}
+        amount={betConfirm.amount}
+        newBalance={betConfirm.newBalance}
       />
     </div>
   );
