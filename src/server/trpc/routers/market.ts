@@ -3,6 +3,18 @@ import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { calculatePayout, calculatePrices } from "../helpers/pricing";
 
+const betSummary = z.object({
+  id: z.number(),
+  marketId: z.number(),
+  side: z.enum(["YES", "NO"]),
+  amount: z.number(),
+  status: z.string(),
+  payout: z.number().nullable(),
+  createdAt: z.string(),
+  marketTitle: z.string(),
+  marketOutcome: z.enum(["YES", "NO"]).nullable(),
+});
+
 const marketOutput = z.object({
   id: z.number(),
   title: z.string(),
@@ -227,6 +239,56 @@ export const marketRouter = router({
         winnerPool: Number(result.winner_pool),
         updatedBetsCount: Number(result.updated_bets_count),
       };
+    }),
+
+  myBets: publicProcedure
+    .output(z.array(betSummary))
+    .query(async ({ ctx }) => {
+      const { supabase, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data, error } = await supabase
+        .from("bets")
+        .select(
+          `
+            id,
+            market_id,
+            side,
+            amount,
+            status,
+            payout,
+            created_at,
+            markets:market_id (
+              title,
+              outcome
+            )
+          `
+        )
+        .eq("user_id", authUser.id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      return (
+        data?.map((row: any) => ({
+          id: Number(row.id),
+          marketId: Number(row.market_id),
+          side: row.side as "YES" | "NO",
+          amount: Number(row.amount),
+          status: row.status,
+          payout: row.payout !== null ? Number(row.payout) : null,
+          createdAt: new Date(row.created_at).toISOString(),
+          marketTitle: row.markets?.title ?? "—",
+          marketOutcome: row.markets?.outcome ?? null,
+        })) ?? []
+      );
     }),
 });
 

@@ -9,6 +9,17 @@ type ProfileModalProps = {
   username?: string;
   balance?: number;
   onLogout: () => void;
+  bets?: {
+    id: number;
+    marketTitle: string;
+    side: "YES" | "NO";
+    amount: number;
+    status: string;
+    payout: number | null;
+    createdAt: string;
+    marketOutcome: "YES" | "NO" | null;
+  }[];
+  loadingBets?: boolean;
 };
 
 const ProfileModal: React.FC<ProfileModalProps> = ({
@@ -18,6 +29,8 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
   username,
   balance,
   onLogout,
+  bets = [],
+  loadingBets = false,
 }) => {
   if (!isOpen) return null;
   return (
@@ -49,6 +62,48 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
             <span className="font-semibold text-[#BEFF1D]">
               {balance !== undefined ? `$${balance.toFixed(2)}` : "—"}
             </span>
+          </div>
+        </div>
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-white mb-2">Мои ставки</h3>
+          <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+            {loadingBets ? (
+              <p className="text-sm text-neutral-500">Загрузка...</p>
+            ) : bets.length === 0 ? (
+              <p className="text-sm text-neutral-500">Ставок пока нет</p>
+            ) : (
+              bets.map((b) => (
+                <div
+                  key={b.id}
+                  className="border border-neutral-800 rounded-lg p-3 bg-neutral-900/70"
+                >
+                  <div className="flex justify-between text-sm text-white">
+                    <span className="font-semibold line-clamp-1">{b.marketTitle}</span>
+                    <span
+                      className={`text-xs font-bold ${
+                        b.side === "YES" ? "text-[#BEFF1D]" : "text-red-400"
+                      }`}
+                    >
+                      {b.side}
+                    </span>
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1 flex justify-between">
+                    <span>Сумма: ${b.amount.toFixed(2)}</span>
+                    <span>
+                      Выплата: {b.payout !== null ? `$${b.payout.toFixed(2)}` : "—"}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-1 flex justify-between">
+                    <span>{new Date(b.createdAt).toLocaleString()}</span>
+                    <span>
+                      Статус:{" "}
+                      <span className="font-semibold text-neutral-300">{b.status}</span>
+                      {b.marketOutcome && ` • Итог: ${b.marketOutcome}`}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
         <div className="mt-6 flex justify-end gap-3">

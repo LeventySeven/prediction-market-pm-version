@@ -17,6 +17,7 @@ language plpgsql
 as $$
 declare
   v_balance numeric;
+  v_bet_id bigint;
 begin
   perform id from users where id = p_user_id for update;
   select balance into v_balance from users where id = p_user_id;
@@ -45,9 +46,12 @@ begin
 
   insert into bets(user_id, market_id, side, amount, status)
   values(p_user_id, p_market_id, p_side, p_amount, 'open')
-  returning id into bet_id;
+  returning id into v_bet_id;
 
   select balance into new_balance from users where id = p_user_id;
+
+  return query
+    select v_bet_id::bigint as bet_id, new_balance::numeric as new_balance;
 end;
 $$;
 

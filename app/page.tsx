@@ -23,6 +23,19 @@ export default function HomePage() {
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [myBets, setMyBets] = useState<
+    {
+      id: number;
+      marketTitle: string;
+      side: "YES" | "NO";
+      amount: number;
+      status: string;
+      payout: number | null;
+      createdAt: string;
+      marketOutcome: "YES" | "NO" | null;
+    }[]
+  >([]);
+  const [loadingBets, setLoadingBets] = useState(false);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
     string | null
   >(null);
@@ -157,6 +170,19 @@ export default function HomePage() {
     void loadMarkets();
   }, [loadMarkets]);
 
+  const loadMyBets = useCallback(async () => {
+    if (!user) return;
+    setLoadingBets(true);
+    try {
+      const bets = await trpcClient.market.myBets.query();
+      setMyBets(bets);
+    } catch (err) {
+      console.error("Failed to load bets", err);
+    } finally {
+      setLoadingBets(false);
+    }
+  }, [user]);
+
   const filteredMarkets = useMemo(
     () =>
       markets.filter((market) => {
@@ -182,7 +208,10 @@ export default function HomePage() {
         user={user}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onProfileClick={() => setShowProfile(true)}
+        onProfileClick={() => {
+          setShowProfile(true);
+          void loadMyBets();
+        }}
       />
 
       <main>
@@ -217,6 +246,7 @@ export default function HomePage() {
             // Refresh data from backend to ensure pools and balances are in sync
             await loadMarkets();
             await refreshUser();
+            await loadMyBets();
 
             setBetMessage("Ставка принята");
           } catch (err: any) {
@@ -225,6 +255,7 @@ export default function HomePage() {
             // Even on error, refresh to keep UI consistent with backend state
             await loadMarkets();
             await refreshUser();
+            await loadMyBets();
           }
         }}
           />
@@ -306,6 +337,8 @@ export default function HomePage() {
         email={user?.email}
         username={user?.username}
         balance={user?.balance}
+        bets={myBets}
+        loadingBets={loadingBets}
         onLogout={async () => {
           try {
             await trpcClient.auth.logout.mutate();
@@ -313,6 +346,7 @@ export default function HomePage() {
             console.error("logout failed", err);
           } finally {
             setUser(null);
+            setMyBets([]);
             setShowProfile(false);
           }
         }}
