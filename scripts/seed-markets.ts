@@ -105,12 +105,13 @@ const seeds: SeedMarket[] = [
 ];
 
 async function main() {
-  const { data, error } = await supabase.from("markets").insert(seeds);
+  const { data, error } = await supabase.from("markets").insert(seeds).select("id");
   if (error) {
     console.error("Insert error:", error);
     process.exit(1);
   }
-  console.log(`Inserted ${data?.length ?? 0} markets`);
+  const insertedCount = Array.isArray(data) ? data.length : 0;
+  console.log(`Inserted ${insertedCount} markets`);
 }
 
 main().catch((err) => {
