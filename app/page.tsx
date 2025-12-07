@@ -1,16 +1,3 @@
-  const formatBetError = (msg?: string) => {
-    if (!msg) return "Не удалось поставить ставку";
-    if (msg.includes("MARKET_EXPIRED") || msg.toLowerCase().includes("expired")) {
-      return "Событие завершено, ставки закрыты.";
-    }
-    if (msg.includes("INSUFFICIENT_BALANCE")) {
-      return "Недостаточно средств на балансе.";
-    }
-    if (msg.includes("MARKET_RESOLVED")) {
-      return "Событие уже разрешено.";
-    }
-    return msg;
-  };
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -61,6 +48,20 @@ export default function HomePage() {
     amount: number;
     newBalance?: number;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined });
+
+  const formatBetError = (msg?: string) => {
+    if (!msg) return "Не удалось поставить ставку";
+    if (msg.includes("MARKET_EXPIRED") || msg.toLowerCase().includes("expired")) {
+      return "Событие завершено, ставки закрыты.";
+    }
+    if (msg.includes("INSUFFICIENT_BALANCE")) {
+      return "Недостаточно средств на балансе.";
+    }
+    if (msg.includes("MARKET_RESOLVED")) {
+      return "Событие уже разрешено.";
+    }
+    return msg;
+  };
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
