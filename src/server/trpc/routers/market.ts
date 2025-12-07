@@ -98,6 +98,31 @@ export const marketRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
+      const marketRes = await supabase
+        .from("markets")
+        .select("id, outcome, expires_at")
+        .eq("id", marketId)
+        .maybeSingle();
+
+      if (!marketRes.data) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+      }
+
+      if (marketRes.data.outcome) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Market already resolved",
+        });
+      }
+
+      const expiresAt = new Date(marketRes.data.expires_at).getTime();
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Market expired",
+        });
+      }
+
       const userRes = await supabase
         .from("users")
         .select("id, balance")

@@ -20,6 +20,8 @@ as $$
 declare
   v_balance numeric;
   v_bet_id bigint;
+  v_expires_at timestamptz;
+  v_outcome text;
 begin
   perform id from users where id = p_user_id for update;
   select balance into v_balance from users where id = p_user_id;
@@ -30,12 +32,17 @@ begin
     raise exception 'INSUFFICIENT_BALANCE';
   end if;
 
-  perform id, outcome from markets where id = p_market_id for update;
+  perform id, outcome, expires_at from markets where id = p_market_id for update;
   if not found then
     raise exception 'MARKET_NOT_FOUND';
   end if;
-  if (select outcome from markets where id = p_market_id) is not null then
+  select outcome, expires_at into v_outcome, v_expires_at from markets where id = p_market_id;
+
+  if v_outcome is not null then
     raise exception 'MARKET_RESOLVED';
+  end if;
+  if v_expires_at <= now() then
+    raise exception 'MARKET_EXPIRED';
   end if;
 
   update users set balance = balance - p_amount where id = p_user_id;

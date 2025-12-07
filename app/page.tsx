@@ -1,3 +1,16 @@
+  const formatBetError = (msg?: string) => {
+    if (!msg) return "Не удалось поставить ставку";
+    if (msg.includes("MARKET_EXPIRED") || msg.toLowerCase().includes("expired")) {
+      return "Событие завершено, ставки закрыты.";
+    }
+    if (msg.includes("INSUFFICIENT_BALANCE")) {
+      return "Недостаточно средств на балансе.";
+    }
+    if (msg.includes("MARKET_RESOLVED")) {
+      return "Событие уже разрешено.";
+    }
+    return msg;
+  };
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -278,7 +291,8 @@ export default function HomePage() {
                 });
               } catch (err: any) {
                 console.error("placeBet failed", err);
-                setBetMessage(err?.message || "Не удалось поставить ставку");
+                const friendly = formatBetError(err?.message || err?.data?.message);
+                setBetMessage(friendly || "Не удалось поставить ставку");
                 // Even on error, refresh to keep UI consistent with backend state
                 await loadMarkets();
                 await refreshUser();
