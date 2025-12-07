@@ -145,5 +145,10 @@ export const authRouter = router({
       return null;
     }
   }),
+
+  logout: publicProcedure.mutation(async ({ ctx }) => {
+    ctx.setCookie("auth_token=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax");
+    return { success: true };
+  }),
 });
 

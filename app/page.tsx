@@ -6,6 +6,7 @@ import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
+import ProfileModal from "@/components/ProfileModal";
 import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
 import type { Category, Market, User } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
@@ -21,6 +22,7 @@ export default function HomePage() {
   const [markets, setMarkets] = useState<Market[]>(MOCK_MARKETS);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
     string | null
   >(null);
@@ -58,6 +60,7 @@ export default function HomePage() {
     setUser({
       id: String(me.user.id),
       email: me.user.email,
+      username: me.user.username,
       balance: me.user.balance,
     });
   };
@@ -73,6 +76,7 @@ export default function HomePage() {
     setUser({
       id: String(me.user.id),
       email: me.user.email,
+      username: me.user.username,
       balance: me.user.balance,
     });
   };
@@ -87,6 +91,7 @@ export default function HomePage() {
           setUser({
             id: String(me.id),
             email: me.email,
+            username: me.username,
             balance: me.balance,
           });
         }
@@ -174,6 +179,7 @@ export default function HomePage() {
         user={user}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        onProfileClick={() => setShowProfile(true)}
       />
 
       <main>
@@ -213,6 +219,11 @@ export default function HomePage() {
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">
+            {betMessage && (
+              <div className="mb-4 text-sm text-center text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg py-2 px-3">
+                {betMessage}
+              </div>
+            )}
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 mb-8">
               <div className="flex overflow-x-auto pb-2 md:pb-0 gap-2 w-full md:w-auto scrollbar-hide">
                 {CATEGORIES.map((cat) => (
@@ -277,6 +288,23 @@ export default function HomePage() {
         onClose={() => setShowAuth(false)}
         onSignUp={handleSignUp}
         onLogin={handleLoginSubmit}
+      />
+      <ProfileModal
+        isOpen={showProfile}
+        onClose={() => setShowProfile(false)}
+        email={user?.email}
+        username={user?.username}
+        balance={user?.balance}
+        onLogout={async () => {
+          try {
+            await trpcClient.auth.logout.mutate();
+          } catch (err) {
+            console.error("logout failed", err);
+          } finally {
+            setUser(null);
+            setShowProfile(false);
+          }
+        }}
       />
     </div>
   );
