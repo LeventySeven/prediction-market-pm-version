@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AuthModal from "@/components/AuthModal";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
@@ -23,6 +23,10 @@ export default function HomePage() {
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const { themeParams, isTelegram } = useTelegramWebApp();
+  const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
+    string | null
+  >(null);
+  const [betMessage, setBetMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
@@ -78,6 +82,37 @@ export default function HomePage() {
     };
   }, [isTelegram, themeParams]);
 
+  const handleAuthSubmit = async (payload: {
+    username?: string;
+    displayName?: string;
+  }) => {
+    try {
+      const telegramId =
+        (window.Telegram?.WebApp?.initDataUnsafe as any)?.user?.id ||
+        Number(localStorage.getItem("mockTelegramId") || "1001");
+
+      if (!telegramId) {
+        setShowAuth(true);
+        return;
+      }
+
+      const me = await trpcClient.user.registerUser.mutate({
+        telegramId: Number(telegramId),
+        username: payload.username,
+        displayName: payload.displayName,
+      });
+      setUser({
+        id: String(me.id),
+        email: me.username ?? undefined,
+        balance: me.balance,
+      });
+      localStorage.setItem("mockTelegramId", String(telegramId));
+      setShowAuth(false);
+    } catch (err) {
+      console.error("Failed to register user from modal", err);
+    }
+  };
+
   // Register or fetch user from Supabase via tRPC using Telegram id when available.
   useEffect(() => {
     const loadUser = async () => {
@@ -115,52 +150,54 @@ export default function HomePage() {
     void loadUser();
   }, []);
 
-  // Load markets from Supabase via tRPC; fallback to mocks if none or on error.
-  useEffect(() => {
-    const loadMarkets = async () => {
-      setLoadingMarkets(true);
-      try {
-        const response = await trpcClient.market.listMarkets.query({
-          onlyOpen: false,
-        });
-        if (response && response.length > 0) {
-          const mapped: Market[] = response.map((m) => ({
-            id: String(m.id),
-            title: m.title,
-            category: "ALL",
-            imageUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-              m.title
-            )}&background=random&color=fff&size=128`,
-            volume: `$${(Number(m.poolYes) + Number(m.poolNo)).toFixed(2)}`,
-            endDate: new Date(m.expiresAt).toLocaleDateString("ru-RU", {
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            }),
-            yesPrice: Number(m.priceYes.toFixed(2)),
-            noPrice: Number(m.priceNo.toFixed(2)),
-            chance: Math.round(m.priceYes * 100),
-            description: m.description ?? "Описание будет добавлено.",
-            history: generateHistory(
-              Math.max(5, Math.round(m.priceYes * 100)),
-              Math.round(m.priceYes * 100)
-            ),
-            comments: [],
-          }));
-          setMarkets(mapped);
-        } else {
-          setMarkets(MOCK_MARKETS);
-        }
-      } catch (err) {
-        console.error("Failed to load markets; fallback to mocks", err);
+  const loadMarkets = useCallback(async () => {
+    setLoadingMarkets(true);
+    setMarketsLoadingMessage("Загрузка рынков...");
+    try {
+      const response = await trpcClient.market.listMarkets.query({
+        onlyOpen: false,
+      });
+      if (response && response.length > 0) {
+        const mapped: Market[] = response.map((m) => ({
+          id: String(m.id),
+          title: m.title,
+          category: "ALL",
+          imageUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(
+            m.title
+          )}&background=random&color=fff&size=128`,
+          volume: `$${(Number(m.poolYes) + Number(m.poolNo)).toFixed(2)}`,
+          endDate: new Date(m.expiresAt).toLocaleDateString("ru-RU", {
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+          }),
+          yesPrice: Number(m.priceYes.toFixed(2)),
+          noPrice: Number(m.priceNo.toFixed(2)),
+          chance: Math.round(m.priceYes * 100),
+          description: m.description ?? "Описание будет добавлено.",
+          history: generateHistory(
+            Math.max(5, Math.round(m.priceYes * 100)),
+            Math.round(m.priceYes * 100)
+          ),
+          comments: [],
+        }));
+        setMarkets(mapped);
+      } else {
         setMarkets(MOCK_MARKETS);
-      } finally {
-        setLoadingMarkets(false);
       }
-    };
-
-    void loadMarkets();
+    } catch (err) {
+      console.error("Failed to load markets; fallback to mocks", err);
+      setMarketsLoadingMessage("Не удалось загрузить рынки, показаны демо данные.");
+      setMarkets(MOCK_MARKETS);
+    } finally {
+      setLoadingMarkets(false);
+      setMarketsLoadingMessage(null);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadMarkets();
+  }, [loadMarkets]);
 
   const filteredMarkets = useMemo(
     () =>
@@ -195,7 +232,38 @@ export default function HomePage() {
             market={selectedMarket}
             user={user}
             onBack={() => setSelectedMarketId(null)}
-            onLogin={() => setShowAuth(true)}
+        onLogin={() => setShowAuth(true)}
+        onPlaceBet={async ({ amount, marketId, side }) => {
+          try {
+            setBetMessage(null);
+            const telegramId =
+              (window.Telegram?.WebApp?.initDataUnsafe as any)?.user?.id ||
+              Number(localStorage.getItem("mockTelegramId") || "1001");
+
+            if (!telegramId) {
+              setShowAuth(true);
+              return;
+            }
+
+            const res = await trpcClient.market.placeBet.mutate({
+              amount,
+              marketId: Number(marketId),
+              side,
+              telegramId: Number(telegramId),
+            });
+
+            setUser((prev) =>
+              prev
+                ? { ...prev, balance: res.newBalance }
+                : { id: String(res.userId), balance: res.newBalance }
+            );
+            setBetMessage("Ставка принята");
+            await loadMarkets();
+          } catch (err: any) {
+            console.error("placeBet failed", err);
+            setBetMessage(err?.message || "Не удалось поставить ставку");
+          }
+        }}
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">
@@ -236,7 +304,7 @@ export default function HomePage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {loadingMarkets ? (
                 <div className="col-span-full text-center py-10 text-neutral-500">
-                  Загрузка рынков...
+                  {marketsLoadingMessage || "Загрузка рынков..."}
                 </div>
               ) : filteredMarkets.length > 0 ? (
                 filteredMarkets.map((market) => (
@@ -261,7 +329,7 @@ export default function HomePage() {
       <AuthModal
         isOpen={showAuth}
         onClose={() => setShowAuth(false)}
-        onLogin={() => setShowAuth(false)}
+        onLogin={handleAuthSubmit}
       />
     </div>
   );

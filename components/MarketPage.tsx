@@ -17,14 +17,21 @@ interface MarketPageProps {
   user: User | null;
   onBack: () => void;
   onLogin: () => void;
+  onPlaceBet: (params: {
+    side: "YES" | "NO";
+    amount: number;
+    marketId: string;
+  }) => Promise<void>;
 }
 
-const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin }) => {
+const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, onPlaceBet }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
   const [comments, setComments] = useState(market.comments);
   const [tradeType, setTradeType] = useState<'YES' | 'NO'>('YES');
   const [amount, setAmount] = useState('');
+  const [placing, setPlacing] = useState(false);
+  const [placeError, setPlaceError] = useState<string | null>(null);
 
   const handlePostComment = () => {
     if (!commentText.trim()) return;
@@ -46,6 +53,28 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin }
 
   const potentialReturn = amount ? (Number(amount) / (tradeType === 'YES' ? market.yesPrice : market.noPrice)).toFixed(2) : '0.00';
   const potentialProfit = amount ? (Number(potentialReturn) - Number(amount)).toFixed(2) : '0.00';
+
+  const handlePlaceBetClick = async () => {
+    if (!user) {
+      onLogin();
+      return;
+    }
+    const numericAmount = Number(amount);
+    if (!numericAmount || numericAmount <= 0) {
+      setPlaceError("Введите сумму больше 0");
+      return;
+    }
+    setPlaceError(null);
+    setPlacing(true);
+    try {
+      await onPlaceBet({ side: tradeType, amount: numericAmount, marketId: market.id });
+      setAmount('');
+    } catch (err: any) {
+      setPlaceError(err?.message || "Не удалось выполнить ставку");
+    } finally {
+      setPlacing(false);
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 animate-fade-in">
@@ -188,15 +217,18 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin }
                         </div>
                     </div>
 
+                    {placeError && (
+                      <p className="text-xs text-red-400 text-center">{placeError}</p>
+                    )}
                     <Button 
                         fullWidth 
-                        onClick={user ? () => {} : onLogin}
-                        disabled={!amount && !!user}
+                        onClick={handlePlaceBetClick}
+                        disabled={!user || placing}
                         className={tradeType === 'NO' && user ? '!bg-red-500 hover:!bg-red-600 !text-white' : ''}
                     >
-                        {!user ? 'Войти чтобы торговать' : `Купить ${tradeType}`}
+                        {!user ? 'Войти чтобы торговать' : placing ? 'Обработка...' : `Купить ${tradeType}`}
                     </Button>
-                     <p className="text-center text-xs text-neutral-600">Комиссия 0%</p>
+                    <p className="text-center text-xs text-neutral-600">Комиссия 0%</p>
                 </div>
             </div>
 
