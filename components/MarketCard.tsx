@@ -47,16 +47,16 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick }) => {
           />
         </div>
 
-        {/* Buttons and Info */}
-        <div className="flex items-center justify-between gap-3" onClick={(e) => e.stopPropagation()}>
-            <div className="flex gap-2 w-full">
-                <button className="flex-1 bg-[#BEFF1D]/10 hover:bg-[#BEFF1D]/20 text-[#BEFF1D] text-sm font-semibold py-1.5 px-3 rounded text-center transition-colors border border-[#BEFF1D]/20">
-                    Да ${market.yesPrice}
-                </button>
-                <button className="flex-1 bg-neutral-800 hover:bg-neutral-700 text-white text-sm font-semibold py-1.5 px-3 rounded text-center transition-colors border border-neutral-700">
-                    Нет ${market.noPrice}
-                </button>
-            </div>
+        {/* Inline info instead of buttons */}
+        <div className="flex items-center justify-between gap-3 text-sm text-neutral-300">
+          <span className="flex items-center gap-1">
+            <span className="text-[#BEFF1D] font-semibold">Да</span>
+            <span>${market.yesPrice}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-red-400 font-semibold">Нет</span>
+            <span>${market.noPrice}</span>
+          </span>
         </div>
 
         {/* Footer Meta */}

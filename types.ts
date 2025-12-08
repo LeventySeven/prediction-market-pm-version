@@ -22,6 +22,8 @@ export interface Market {
   imageUrl: string;
   volume: string;
   endDate: string;
+  poolYes?: number;
+  poolNo?: number;
   yesPrice: number;
   noPrice: number;
   chance: number; // Percentage for YES

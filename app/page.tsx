@@ -13,6 +13,17 @@ import type { Category, Market, User } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search } from "lucide-react";
 
+const buildHistoryFromPools = (poolYes: number, poolNo: number) => {
+  const total = poolYes + poolNo;
+  const priceYes = total === 0 ? 0.5 : poolNo / total;
+  const chance = Math.round(priceYes * 100);
+  // Simple two-point history to reflect current price; can be extended when real history is available.
+  return [
+    { date: "T-1", value: chance },
+    { date: "Now", value: chance },
+  ];
+};
+
 export default function HomePage() {
   const [activeCategory, setActiveCategory] = useState<Category>("ALL");
   const [searchQuery, setSearchQuery] = useState("");
@@ -169,10 +180,9 @@ export default function HomePage() {
           noPrice: Number(m.priceNo.toFixed(2)),
           chance: Math.round(m.priceYes * 100),
           description: m.description ?? "Описание будет добавлено.",
-          history: generateHistory(
-            Math.max(5, Math.round(m.priceYes * 100)),
-            Math.round(m.priceYes * 100)
-          ),
+          poolYes: Number(m.poolYes),
+          poolNo: Number(m.poolNo),
+          history: buildHistoryFromPools(Number(m.poolYes), Number(m.poolNo)),
           comments: [],
         }));
         setMarkets(mapped);
