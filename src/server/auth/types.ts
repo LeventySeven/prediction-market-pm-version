@@ -5,5 +5,6 @@ export type PublicUser = {
   displayName: string | null;
   balance: number;
   createdAt: string;
+  isAdmin: boolean;
 };
 

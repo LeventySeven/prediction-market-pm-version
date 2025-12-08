@@ -16,7 +16,7 @@ export const createContext = async (opts: { req: Request }) => {
   const supabase = supabaseServerClient();
   const responseHeaders: Record<string, string | string[]> = {};
   const cookies = parseCookies(opts.req);
-  let authUser: { id: number; email: string; username: string } | null = null;
+  let authUser: { id: number; email: string; username: string; isAdmin: boolean } | null = null;
 
   const token = cookies["auth_token"];
   if (token) {
@@ -26,6 +26,7 @@ export const createContext = async (opts: { req: Request }) => {
         id: Number(payload.sub),
         email: payload.email,
         username: payload.username,
+        isAdmin: Boolean(payload.isAdmin),
       };
     } catch {
       authUser = null;

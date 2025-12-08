@@ -324,5 +324,55 @@ export const marketRouter = router({
         }) ?? []
       );
     }),
+
+  createMarket: publicProcedure
+    .input(
+      z.object({
+        title: z.string().min(3),
+        description: z.string().optional().nullable(),
+        expiresAt: z.string(),
+        poolYes: z.number().optional().default(0),
+        poolNo: z.number().optional().default(0),
+      })
+    )
+    .output(
+      z.object({
+        id: z.number(),
+        title: z.string(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { supabase, authUser } = ctx;
+      if (!authUser || !authUser.isAdmin) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
+      }
+
+      const expiresAtMs = Date.parse(input.expiresAt);
+      if (!Number.isFinite(expiresAtMs)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid expiresAt" });
+      }
+
+      const { data, error } = await supabase
+        .from("markets")
+        .insert({
+          title: input.title.trim(),
+          description: input.description ?? null,
+          pool_yes: input.poolYes ?? 0,
+          pool_no: input.poolNo ?? 0,
+          expires_at: new Date(expiresAtMs).toISOString(),
+          outcome: null,
+        })
+        .select("id, title")
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error?.message ?? "Failed to create market",
+        });
+      }
+
+      return { id: Number(data.id), title: data.title };
+    }),
 });
 

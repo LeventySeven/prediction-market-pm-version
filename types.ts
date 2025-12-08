@@ -38,4 +38,5 @@ export interface User {
   username?: string;
   walletAddress?: string;
   balance: number;
+  isAdmin?: boolean;
 }

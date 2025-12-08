@@ -16,6 +16,7 @@ type JwtPayload = {
   sub: string;
   email: string;
   username: string;
+  isAdmin: boolean;
 };
 
 export async function signAuthToken(payload: JwtPayload) {

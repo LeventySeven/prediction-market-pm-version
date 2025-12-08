@@ -208,7 +208,11 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
                     </button>
                     <button 
                         onClick={() => setTradeType('NO')}
-                        className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${tradeType === 'NO' ? '!bg-[rgba(250,73,159,1)] text-white shadow-lg' : 'text-neutral-400 hover:text-white'}`}
+                        className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${
+                          tradeType === 'NO'
+                            ? '!bg-[rgba(250,73,159,1)] text-white shadow-lg'
+                            : 'text-[rgba(250,73,159,1)] hover:text-white'
+                        }`}
                     >
                         Нет ${market.noPrice}
                     </button>
@@ -247,7 +251,11 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
                         fullWidth 
                         onClick={handlePlaceBetClick}
                         disabled={!user || placing}
-                        className={tradeType === 'NO' && user ? '!bg-red-500 hover:!bg-red-600 !text-white' : ''}
+                        className={
+                          tradeType === 'NO' && user
+                            ? '!bg-[rgba(250,73,159,1)] hover:!opacity-90 !text-white'
+                            : ''
+                        }
                     >
                         {!user ? 'Войти чтобы торговать' : placing ? 'Обработка...' : `Купить ${tradeType}`}
                     </Button>

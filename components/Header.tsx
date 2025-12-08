@@ -10,9 +10,10 @@ interface HeaderProps {
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onProfileClick?: () => void;
+  onAdminClick?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ onLoginClick, user, searchQuery, onSearchChange, onProfileClick }) => {
+const Header: React.FC<HeaderProps> = ({ onLoginClick, user, searchQuery, onSearchChange, onProfileClick, onAdminClick }) => {
   return (
     <header className="sticky top-0 z-40 bg-[#0a0a0a]/95 backdrop-blur-md border-b border-white/10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 sm:h-16 flex items-center justify-between">
@@ -41,6 +42,11 @@ const Header: React.FC<HeaderProps> = ({ onLoginClick, user, searchQuery, onSear
 
         {/* Actions */}
         <div className="flex items-center gap-3">
+          {user?.isAdmin && onAdminClick && (
+            <Button variant="secondary" onClick={onAdminClick} className="hidden sm:inline-flex text-sm">
+              Создать рынок
+            </Button>
+          )}
           {user ? (
              <button
                onClick={onProfileClick}

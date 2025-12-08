@@ -14,7 +14,7 @@ const usernameSchema = z
 const passwordSchema = z.string().min(8).max(128);
 
 const publicColumns =
-  "id, email, username, display_name, balance, created_at";
+  "id, email, username, display_name, balance, created_at, is_admin";
 const authColumns = `${publicColumns}, password_hash`;
 
 const toPublicUser = (row: any): PublicUser => ({
@@ -24,6 +24,7 @@ const toPublicUser = (row: any): PublicUser => ({
   displayName: row.display_name,
   balance: Number(row.balance),
   createdAt: new Date(row.created_at).toISOString(),
+  isAdmin: Boolean(row.is_admin),
 });
 
 export const authRouter = router({
@@ -61,6 +62,7 @@ export const authRouter = router({
           email,
           username,
           display_name: username,
+          is_admin: false,
           password_hash,
         })
         .select(publicColumns)
@@ -77,6 +79,7 @@ export const authRouter = router({
         sub: String(inserted.data.id),
         email: inserted.data.email,
         username: inserted.data.username,
+        isAdmin: Boolean(inserted.data.is_admin),
       });
       setCookie(authCookie(token));
 
@@ -121,6 +124,7 @@ export const authRouter = router({
         sub: String(data.id),
         email: data.email,
         username: data.username,
+        isAdmin: Boolean(data.is_admin),
       });
       setCookie(authCookie(token));
 

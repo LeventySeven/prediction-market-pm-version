@@ -8,6 +8,7 @@ import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
 import ProfileModal from "@/components/ProfileModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
+import AdminMarketModal from "@/components/AdminMarketModal";
 import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
 import type { Category, Market, User } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
@@ -63,6 +64,7 @@ export default function HomePage() {
     newBalance?: number;
     errorMessage?: string | null;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
+  const [showAdminModal, setShowAdminModal] = useState(false);
 
   const formatBetError = (msg?: string) => {
     if (!msg) return "Не удалось поставить ставку";
@@ -112,6 +114,7 @@ export default function HomePage() {
       email: me.user.email,
       username: me.user.username,
       balance: me.user.balance,
+      isAdmin: me.user.isAdmin,
     });
   };
 
@@ -128,6 +131,7 @@ export default function HomePage() {
       email: me.user.email,
       username: me.user.username,
       balance: me.user.balance,
+      isAdmin: me.user.isAdmin,
     });
   };
 
@@ -140,6 +144,7 @@ export default function HomePage() {
           email: me.email,
           username: me.username,
           balance: me.balance,
+          isAdmin: me.isAdmin,
         });
       }
     } catch (err) {
@@ -276,6 +281,7 @@ export default function HomePage() {
           setShowProfile(true);
           void loadMyBets();
         }}
+        onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
       />
 
       <main>
@@ -418,6 +424,20 @@ export default function HomePage() {
         amount={betConfirm.amount}
         newBalance={betConfirm.newBalance}
         errorMessage={betConfirm.errorMessage}
+      />
+      <AdminMarketModal
+        isOpen={showAdminModal}
+        onClose={() => setShowAdminModal(false)}
+        onCreate={async (payload) => {
+          try {
+            await trpcClient.market.createMarket.mutate(payload);
+            await loadMarkets();
+            setShowAdminModal(false);
+          } catch (err) {
+            console.error("Failed to create market", err);
+            throw err;
+          }
+        }}
       />
     </div>
   );
