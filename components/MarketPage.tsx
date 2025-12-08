@@ -34,6 +34,12 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
   const [placing, setPlacing] = useState(false);
   const [placeError, setPlaceError] = useState<string | null>(null);
 
+  const isExpired = (() => {
+    const now = Date.now();
+    const parsed = Date.parse(market.endDate);
+    return Number.isFinite(parsed) && parsed < now;
+  })();
+
   const handlePostComment = () => {
     if (!commentText.trim()) return;
     if (!user) {
@@ -61,8 +67,8 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
       return;
     }
     const numericAmount = Number(amount);
-    if (!numericAmount || numericAmount <= 0) {
-      setPlaceError("Введите сумму больше 0");
+    if (!numericAmount || numericAmount <= 0 || isNaN(numericAmount)) {
+      setPlaceError("Введите сумму числом больше 0");
       return;
     }
     setPlaceError(null);
@@ -182,7 +188,18 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
             
             {/* Trading Card */}
             <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 sticky top-24">
-                <div className="bg-neutral-800 rounded-lg p-1 flex mb-4">
+              {isExpired ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-neutral-300">
+                    Торги завершены. Итог будет опубликован после разрешения.
+                  </p>
+                  <div className="bg-neutral-800 border border-neutral-700 rounded-lg p-3 text-sm text-neutral-400">
+                    Итог: {market.chance}% Да • Vol: {market.volume}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="bg-neutral-800 rounded-lg p-1 flex mb-4">
                     <button 
                         onClick={() => setTradeType('YES')}
                         className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${tradeType === 'YES' ? 'bg-[#BEFF1D] text-black shadow-lg' : 'text-neutral-400 hover:text-white'}`}
@@ -195,9 +212,9 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
                     >
                         Нет ${market.noPrice}
                     </button>
-                </div>
+                  </div>
 
-                <div className="space-y-4">
+                  <div className="space-y-4">
                     <div className="relative">
                         <label className="text-xs font-medium text-neutral-500 ml-1 mb-1 block">Сумма</label>
                         <div className="relative">
@@ -235,7 +252,9 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
                         {!user ? 'Войти чтобы торговать' : placing ? 'Обработка...' : `Купить ${tradeType}`}
                     </Button>
                     <p className="text-center text-xs text-neutral-600">Комиссия 0%</p>
-                </div>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Rules Card */}

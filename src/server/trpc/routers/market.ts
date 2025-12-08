@@ -13,6 +13,9 @@ const betSummary = z.object({
   createdAt: z.string(),
   marketTitle: z.string(),
   marketOutcome: z.enum(["YES", "NO"]).nullable(),
+  expiresAt: z.string().nullable(),
+  priceYes: z.number().nullable(),
+  priceNo: z.number().nullable(),
 });
 
 const marketOutput = z.object({
@@ -302,6 +305,11 @@ export const marketRouter = router({
           createdAt: new Date(row.created_at).toISOString(),
           marketTitle: row.markets?.title ?? "—",
           marketOutcome: row.markets?.outcome ?? null,
+          expiresAt: row.markets?.expires_at
+            ? new Date(row.markets.expires_at).toISOString()
+            : null,
+          priceYes: row.markets?.price_yes ?? null,
+          priceNo: row.markets?.price_no ?? null,
         })) ?? []
       );
     }),

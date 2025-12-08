@@ -18,6 +18,9 @@ type ProfileModalProps = {
     payout: number | null;
     createdAt: string;
     marketOutcome: "YES" | "NO" | null;
+    expiresAt?: string | null;
+    priceYes?: number | null;
+    priceNo?: number | null;
   }[];
   loadingBets?: boolean;
 };
@@ -33,6 +36,39 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
   loadingBets = false,
 }) => {
   if (!isOpen) return null;
+  const formatDate = (iso?: string) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const formatTimeLeft = (iso?: string | null) => {
+    if (!iso) return "—";
+    const end = Date.parse(iso);
+    if (!Number.isFinite(end)) return "—";
+    const diff = end - Date.now();
+    if (diff <= 0) return "завершено";
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}д ${hours % 24}ч`;
+    if (hours > 0) return `${hours}ч ${minutes % 60}м`;
+    return `${minutes}м`;
+  };
+
+  const formatChance = (yes?: number | null, no?: number | null) => {
+    if (yes == null || no == null) return "—";
+    const total = yes + no;
+    if (total === 0) return "50%";
+    const chanceYes = Math.round((no / total) * 100);
+    return `${chanceYes}% Да`;
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
@@ -94,12 +130,19 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
                     </span>
                   </div>
                   <div className="text-[11px] text-neutral-500 mt-1 flex justify-between">
-                    <span>{new Date(b.createdAt).toLocaleString()}</span>
+                    <span>{formatDate(b.createdAt)}</span>
                     <span>
                       Статус:{" "}
                       <span className="font-semibold text-neutral-300">{b.status}</span>
                       {b.marketOutcome && ` • Итог: ${b.marketOutcome}`}
                     </span>
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-1 flex justify-between">
+                    <span>Окончание: {formatDate(b.expiresAt ?? undefined)}</span>
+                    <span>Осталось: {formatTimeLeft(b.expiresAt)}</span>
+                  </div>
+                  <div className="text-[11px] text-neutral-400 mt-1">
+                    Шанс: {formatChance(b.priceYes ?? null, b.priceNo ?? null)}
                   </div>
                 </div>
               ))
