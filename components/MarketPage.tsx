@@ -208,7 +208,7 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
                     </button>
                     <button 
                         onClick={() => setTradeType('NO')}
-                        className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${tradeType === 'NO' ? 'bg-red-500 text-white shadow-lg' : 'text-neutral-400 hover:text-white'}`}
+                        className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${tradeType === 'NO' ? '!bg-[rgba(250,73,159,1)] text-white shadow-lg' : 'text-neutral-400 hover:text-white'}`}
                     >
                         Нет ${market.noPrice}
                     </button>

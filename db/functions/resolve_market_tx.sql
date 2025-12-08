@@ -18,6 +18,8 @@ create or replace function resolve_market_tx(
   winner_pool numeric,
   updated_bets_count int
 ) language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   v_pool_yes numeric;
@@ -33,29 +35,26 @@ begin
     raise exception 'MARKET_NOT_FOUND';
   end if;
 
+  total_pool := coalesce(v_pool_yes, 0) + coalesce(v_pool_no, 0);
+  winner_pool := case when p_outcome = 'YES' then coalesce(v_pool_yes, 0) else coalesce(v_pool_no, 0) end;
+
+  -- Idempotent: if already resolved with same outcome, just return summary
   if outcome is not null and outcome = p_outcome then
-    total_pool := v_pool_yes + v_pool_no;
-    winner_pool := case when p_outcome = 'YES' then v_pool_yes else v_pool_no end;
-    updated_bets_count := 0;
+    updated_bets_count := (select count(*) from bets where market_id = p_market_id and status in ('won','lost'));
+    return query select p_market_id, p_outcome, total_pool, winner_pool, updated_bets_count;
     return;
   end if;
 
-  total_pool := v_pool_yes + v_pool_no;
-  winner_pool := case when p_outcome = 'YES' then v_pool_yes else v_pool_no end;
-
+  -- Update bets and payouts
   update bets
     set status = case when side = p_outcome then 'won' else 'lost' end,
         payout = case when side = p_outcome and winner_pool > 0
                       then amount * (total_pool / winner_pool)
                       else 0 end
   where market_id = p_market_id
-    and status = 'open'
-  returning case when side = p_outcome and winner_pool > 0
-                 then user_id end,
-            case when side = p_outcome and winner_pool > 0
-                 then amount * (total_pool / winner_pool) else 0 end;
+    and status = 'open';
 
-  -- pay winners
+  -- Pay winners
   update users u
     set balance = balance + b.payout
   from bets b
@@ -63,12 +62,11 @@ begin
     and b.status = 'won'
     and b.user_id = u.id;
 
-  select count(*) into updated_bets_count from bets where market_id = p_market_id and status in ('won','lost');
+  updated_bets_count := (select count(*) from bets where market_id = p_market_id and status in ('won','lost'));
 
   update markets set outcome = p_outcome where id = p_market_id;
 
-  market_id := p_market_id;
-  outcome := p_outcome;
+  return query select p_market_id, p_outcome, total_pool, winner_pool, updated_bets_count;
 end;
 $$;
 

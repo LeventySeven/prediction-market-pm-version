@@ -280,7 +280,10 @@ export const marketRouter = router({
             created_at,
             markets:market_id (
               title,
-              outcome
+              outcome,
+              pool_yes,
+              pool_no,
+              expires_at
             )
           `
         )
@@ -295,22 +298,30 @@ export const marketRouter = router({
       }
 
       return (
-        data?.map((row: any) => ({
-          id: Number(row.id),
-          marketId: Number(row.market_id),
-          side: row.side as "YES" | "NO",
-          amount: Number(row.amount),
-          status: row.status,
-          payout: row.payout !== null ? Number(row.payout) : null,
-          createdAt: new Date(row.created_at).toISOString(),
-          marketTitle: row.markets?.title ?? "—",
-          marketOutcome: row.markets?.outcome ?? null,
-          expiresAt: row.markets?.expires_at
-            ? new Date(row.markets.expires_at).toISOString()
-            : null,
-          priceYes: row.markets?.price_yes ?? null,
-          priceNo: row.markets?.price_no ?? null,
-        })) ?? []
+        data?.map((row: any) => {
+          const poolYes = Number(row.markets?.pool_yes ?? 0);
+          const poolNo = Number(row.markets?.pool_no ?? 0);
+          const total = poolYes + poolNo;
+          const priceYes = total === 0 ? 0.5 : poolNo / total;
+          const priceNo = total === 0 ? 0.5 : poolYes / total;
+
+          return {
+            id: Number(row.id),
+            marketId: Number(row.market_id),
+            side: row.side as "YES" | "NO",
+            amount: Number(row.amount),
+            status: row.status,
+            payout: row.payout !== null ? Number(row.payout) : null,
+            createdAt: new Date(row.created_at).toISOString(),
+            marketTitle: row.markets?.title ?? "—",
+            marketOutcome: row.markets?.outcome ?? null,
+            expiresAt: row.markets?.expires_at
+              ? new Date(row.markets.expires_at).toISOString()
+              : null,
+            priceYes,
+            priceNo,
+          };
+        }) ?? []
       );
     }),
 });

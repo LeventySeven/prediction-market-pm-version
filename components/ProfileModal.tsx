@@ -117,8 +117,9 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
                     <span className="font-semibold line-clamp-1">{b.marketTitle}</span>
                     <span
                       className={`text-xs font-bold ${
-                        b.side === "YES" ? "text-[#BEFF1D]" : "text-red-400"
+                        b.side === "YES" ? "text-[#BEFF1D]" : ""
                       }`}
+                      style={b.side === "NO" ? { color: "rgba(250, 73, 159, 1)" } : undefined}
                     >
                       {b.side}
                     </span>

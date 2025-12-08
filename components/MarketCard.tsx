@@ -54,7 +54,9 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick }) => {
             <span>${market.yesPrice}</span>
           </span>
           <span className="flex items-center gap-1">
-            <span className="text-red-400 font-semibold">Нет</span>
+            <span className="font-semibold" style={{ color: "rgba(250, 73, 159, 1)" }}>
+              Нет
+            </span>
             <span>${market.noPrice}</span>
           </span>
         </div>
