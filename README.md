@@ -1,18 +1,20 @@
-# Pravda Market Next.js + Bun
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
 
-Prediction market demo being prepared for Telegram Mini App. Current stack:
-- Bun.js + Next.js (App Router) + TypeScript
-- Tailwind CSS with lucide icons; shadcn/ui ready to drop in
-- Supabase client libraries preinstalled for future auth/data
+# Run and deploy your AI Studio app
 
-## Getting started
-1. Install [Bun](https://bun.sh) v1.1+.
-2. Install deps: `bun install`
-3. Create `.env.local` and add any needed secrets (e.g. Supabase keys, Telegram bot info, Gemini API key if you use it later).
-4. Run dev server: `bun dev`
+This contains everything you need to run your app locally.
 
-## Scripts
-- `bun dev` – start Next dev server
-- `bun build` – production build
-- `bun start` – run built app
-- `bun lint` – run Next/ESLint
+View your app in AI Studio: https://ai.studio/apps/drive/12KufRUK6L1wyfEan2h_UqcYEitKuU_OS
+
+## Run Locally
+
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

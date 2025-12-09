@@ -14,19 +14,22 @@ const Button: React.FC<ButtonProps> = ({
   className = '',
   ...props 
 }) => {
-  const baseStyles = "inline-flex items-center justify-center rounded-lg font-semibold transition-colors focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed";
+  const baseStyles = "inline-flex items-center justify-center rounded-lg font-medium transition-all focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed tracking-tight";
   
   const variants = {
-    primary: "bg-[#BEFF1D] text-black hover:bg-[#a6e619] active:bg-[#95cf16]",
-    secondary: "bg-neutral-800 text-white hover:bg-neutral-700",
-    outline: "border border-neutral-600 text-neutral-300 hover:border-[#BEFF1D] hover:text-[#BEFF1D]",
-    ghost: "text-neutral-400 hover:text-white hover:bg-white/10"
+    // Primary is now Active Gray on Black
+    primary: "bg-neutral-800 text-white hover:bg-neutral-700 border border-neutral-700 hover:border-neutral-600",
+    // Secondary is Darker
+    secondary: "bg-black text-white border border-neutral-800 hover:border-neutral-600",
+    // Outline matches the minimalist border look
+    outline: "bg-transparent border border-neutral-800 text-neutral-400 hover:text-white hover:border-neutral-600",
+    ghost: "text-neutral-500 hover:text-white hover:bg-neutral-900"
   };
 
   const sizes = {
-    sm: "px-3 py-1.5 text-sm",
-    md: "px-4 py-2 text-base",
-    lg: "px-6 py-3 text-lg"
+    sm: "px-3 py-1.5 text-xs",
+    md: "px-4 py-2 text-sm",
+    lg: "px-6 py-3 text-base"
   };
 
   const widthStyle = fullWidth ? "w-full" : "";

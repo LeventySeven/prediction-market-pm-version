@@ -1,4 +1,5 @@
 
+
 export type Category = 'ALL' | 'POLITICS' | 'CRYPTO' | 'CELEBS' | 'SCIENCE' | 'SOCIAL' | 'MUSIC' | 'ELECTIONS' | 'WORLD';
 
 export interface HistoryPoint {
@@ -21,21 +22,39 @@ export interface Market {
   category: Category;
   imageUrl: string;
   volume: string;
-  endDate: string;
-  poolYes?: number;
-  poolNo?: number;
+  endDate: string; // ISO format or parsable date
   yesPrice: number;
   noPrice: number;
   chance: number; // Percentage for YES
   description: string; // Rules text
   history: HistoryPoint[];
   comments: Comment[];
+  isNew?: boolean; // New flag for the badge
+}
+
+export interface PortfolioPosition {
+  id: string;
+  marketId: string;
+  marketTitle: string;
+  type: 'YES' | 'NO';
+  shares: number;
+  avgPrice: number;
+  currentPrice: number;
+  endDate: string;
 }
 
 export interface User {
   id: string;
   email?: string;
-  username?: string;
   walletAddress?: string;
   balance: number;
+  pnl?: number; // Total Profit/Loss
+  portfolio?: PortfolioPosition[];
+  name?: string; // Display name
+  referrals?: number;
+}
+
+export interface LeaderboardUser extends User {
+    rank: number;
+    avatar: string;
 }
