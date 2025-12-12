@@ -153,6 +153,7 @@ export default function HomePage() {
         .filter((b): b is NonNullable<typeof b> => !!b && b.id !== undefined)
         .map((b) => ({
           id: Number(b.id),
+          marketId: Number(b.marketId),
           marketTitle: b.marketTitle ?? "—",
           side: b.side,
           amount: Number(b.amount ?? 0),
