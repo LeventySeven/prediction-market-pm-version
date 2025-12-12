@@ -6,11 +6,11 @@ import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
-import ProfileModal from "@/components/ProfileModal";
+import UserProfileModal from "@/components/UserProfileModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
 import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
-import type { Category, Market, User } from "@/types";
+import type { Category, Market, User, Bet } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search } from "lucide-react";
 
@@ -37,21 +37,8 @@ export default function HomePage() {
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  type BetItem = {
-    id: number;
-    marketTitle: string;
-    side: "YES" | "NO";
-    amount: number;
-    status: string;
-    payout: number | null;
-    createdAt: string;
-    marketOutcome: "YES" | "NO" | null;
-    expiresAt?: string | null;
-    priceYes?: number | null;
-    priceNo?: number | null;
-  };
 
-  const [myBets, setMyBets] = useState<BetItem[]>([]);
+  const [myBets, setMyBets] = useState<Bet[]>([]);
   const [loadingBets, setLoadingBets] = useState(false);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
     string | null
@@ -162,7 +149,7 @@ export default function HomePage() {
     setLoadingBets(true);
     try {
       const bets = await trpcClient.market.myBets.query();
-      const normalized: BetItem[] = (bets || [])
+      const normalized: Bet[] = (bets || [])
         .filter((b): b is NonNullable<typeof b> => !!b && b.id !== undefined)
         .map((b) => ({
           id: Number(b.id),
@@ -407,14 +394,16 @@ export default function HomePage() {
         onSignUp={handleSignUp}
         onLogin={() => handleLoginSubmit({ emailOrUsername: "", password: "" })}
       />
-      <ProfileModal
+      <UserProfileModal
         isOpen={showProfile}
         onClose={() => setShowProfile(false)}
-        email={user?.email}
-        username={user?.username}
-        balance={user?.balance}
+        user={user}
         bets={myBets}
-        loadingBets={loadingBets}
+        lang={lang}
+        onMarketClick={(id) => {
+          setSelectedMarketId(id);
+          setShowProfile(false);
+        }}
         onLogout={async () => {
           try {
             await trpcClient.auth.logout.mutate();

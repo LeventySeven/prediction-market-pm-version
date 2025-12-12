@@ -1,5 +1,4 @@
 
-
 export type Category = 'ALL' | 'POLITICS' | 'CRYPTO' | 'CELEBS' | 'SCIENCE' | 'SOCIAL' | 'MUSIC' | 'ELECTIONS' | 'WORLD';
 
 export interface HistoryPoint {
@@ -43,6 +42,20 @@ export interface PortfolioPosition {
   avgPrice: number;
   currentPrice: number;
   endDate: string;
+}
+
+export interface Bet {
+  id: number;
+  marketTitle: string;
+  side: "YES" | "NO";
+  amount: number;
+  status: string;
+  payout: number | null;
+  createdAt: string;
+  marketOutcome: "YES" | "NO" | null;
+  expiresAt: string | null;
+  priceYes: number | null;
+  priceNo: number | null;
 }
 
 export interface User {

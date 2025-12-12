@@ -1,21 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { User, PortfolioPosition } from '../types';
-import { X, TrendingUp, TrendingDown, Clock, Wallet, Shield, Edit2, RefreshCw, Save } from 'lucide-react';
+import { User, Bet } from '../types';
+import { X, TrendingUp, TrendingDown, Clock, Wallet } from 'lucide-react';
 import Button from './Button';
 
 interface UserProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
-  user: User | null; // The user to display
-  currentUser: User | null; // The logged in user
+  user: User | null;
+  bets: Bet[];
   lang: 'RU' | 'EN';
   onMarketClick: (marketId: string) => void;
   onLogout?: () => void;
-  onUpdateUser?: (updatedUser: User) => void; // Callback to save changes
 }
 
 interface PortfolioItemProps {
-  item: PortfolioPosition;
+  item: Bet;
   lang: 'RU' | 'EN';
   onClick: () => void;
 }
@@ -25,93 +24,111 @@ const PortfolioItem: React.FC<PortfolioItemProps> = ({ item, lang, onClick }) =>
 
     useEffect(() => {
         const tick = () => {
-            const diff = +new Date(item.endDate) - +new Date();
+            if (!item.expiresAt && !item.marketOutcome) {
+                 setTimer('—');
+                 return;
+            }
+            if (item.status === 'resolved' || item.marketOutcome) {
+                setTimer(lang === 'RU' ? 'ЗАВЕРШЕНО' : 'ENDED');
+                return;
+            }
+            
+            const endDate = item.expiresAt ? new Date(item.expiresAt) : new Date();
+            const diff = +endDate - +new Date();
             if (diff <= 0) {
-                setTimer(lang === 'RU' ? 'Завершено' : 'Ended');
+                setTimer(lang === 'RU' ? 'ЗАВЕРШЕНО' : 'ENDED');
                 return;
             }
             const d = Math.floor(diff / (1000 * 60 * 60 * 24));
             const h = Math.floor((diff / (1000 * 60 * 60)) % 24);
             const m = Math.floor((diff / 1000 / 60) % 60);
-            setTimer(`${d}d ${h}h ${m}m`);
+            setTimer(`${d}D ${h}H ${m}M`);
         };
         const t = setInterval(tick, 1000);
         tick();
         return () => clearInterval(t);
-    }, [item.endDate, lang]);
+    }, [item.expiresAt, item.status, item.marketOutcome, lang]);
 
-    const isProfit = item.currentPrice >= item.avgPrice;
-    const pnlPercent = ((item.currentPrice - item.avgPrice) / item.avgPrice) * 100;
-    const pnlValue = (item.currentPrice - item.avgPrice) * item.shares;
+    // Calculate PnL if possible.
+    // For resolved bets: Payout - Amount.
+    // For open bets: We don't have entry price, so we can't calculate accurate PnL.
+    // We will show "Amount" and "Current Chance".
+    
+    const isResolved = item.status === 'resolved' || !!item.payout;
+    const realizedPnL = isResolved ? (item.payout || 0) - item.amount : 0;
+    const realizedPnLPercent = item.amount > 0 ? (realizedPnL / item.amount) * 100 : 0;
 
-    const typeLabel = lang === 'RU' ? (item.type === 'YES' ? 'ДА' : 'НЕТ') : item.type;
-    const sharesLabel = lang === 'RU' ? 'акций' : 'shares';
+    // For open bets, we'll try to estimate if we have price data (assuming entry at 50% for lack of better data? No that's bad).
+    // Let's just show Amount and Current Price.
+    
+    // Actually the picture shows PnL for active bets.
+    // We'll mimic the UI structure but if we can't calc PnL, we'll show "Amount".
+    // Or we just show 0.00% for open bets.
+    
+    const displayPnL = isResolved ? realizedPnL : 0; // Placeholder for open
+    const displayPercent = isResolved ? realizedPnLPercent : 0;
+    
+    const isProfit = displayPnL >= 0;
+    
+    const typeLabel = lang === 'RU' ? (item.side === 'YES' ? 'YES' : 'NO') : item.side; // Picture has "YES" / "NO" even in RU interface maybe? Or localized.
+    // The picture shows "YES" in green box. "NO" in pink box.
 
+    // If open, show "Amount" instead of PnL in the main view?
+    // The picture shows PnL.
+    
     return (
         <div 
             onClick={onClick}
             className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 flex items-center justify-between group hover:border-zinc-700 transition-colors cursor-pointer"
         >
             <div>
-                <div className="flex items-center gap-2 mb-1">
-                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${item.type === 'YES' ? 'bg-[#BEFF1D] text-black' : 'bg-[#f544a6] text-black'}`}>
-                        {typeLabel}
+                <div className="flex items-center gap-2 mb-2">
+                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${item.side === 'YES' ? 'bg-[#BEFF1D] text-black' : 'bg-[#f544a6] text-black'}`}>
+                        {item.side}
                      </span>
-                     <span className="text-xs text-zinc-400 max-w-[150px] truncate group-hover:text-white transition-colors font-medium">{item.marketTitle}</span>
+                     <span className="text-xs text-white max-w-[150px] truncate group-hover:text-[#BEFF1D] transition-colors font-medium">
+                        {item.marketTitle}
+                     </span>
                 </div>
-                <div className="flex items-center gap-2 text-[10px] text-zinc-600 uppercase tracking-wider">
-                    <span className="flex items-center gap-1 text-[#f544a6]"><Clock size={10} /> {timer}</span>
+                <div className="flex items-center gap-2 text-[10px] text-zinc-500 uppercase tracking-wider font-mono">
+                    <span className={`flex items-center gap-1 ${item.status === 'resolved' ? 'text-zinc-500' : 'text-[#f544a6]'}`}>
+                        <Clock size={10} /> {timer}
+                    </span>
                 </div>
             </div>
             <div className="text-right">
-                <div className={`font-mono text-sm font-bold ${isProfit ? 'text-[#BEFF1D]' : 'text-[#f544a6]'}`}>
-                    {isProfit ? '+' : ''}${pnlValue.toFixed(2)} ({pnlPercent.toFixed(1)}%)
-                </div>
-                <div className="text-[10px] text-zinc-500">
-                    {item.shares} {sharesLabel} @ ${item.avgPrice}
+                {isResolved ? (
+                    <div className={`font-mono text-sm font-bold ${isProfit ? 'text-[#BEFF1D]' : 'text-[#f544a6]'}`}>
+                        {isProfit ? '+' : ''}${Math.abs(displayPnL).toFixed(2)} ({Math.abs(displayPercent).toFixed(1)}%)
+                    </div>
+                ) : (
+                    <div className="font-mono text-sm font-bold text-white">
+                        ${item.amount.toFixed(2)}
+                    </div>
+                )}
+                <div className="text-[10px] text-zinc-500 mt-1">
+                    {/* Placeholder for shares info since we don't have it */}
+                    {isResolved ? (
+                        <span>{lang === 'RU' ? 'Завершено' : 'Resolved'}</span>
+                    ) : (
+                       <span>Invested</span>
+                    )}
                 </div>
             </div>
         </div>
     );
 };
 
-const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, user, currentUser, lang, onMarketClick, onLogout, onUpdateUser }) => {
+const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, user, bets, lang, onMarketClick, onLogout }) => {
   
-  const [isEditing, setIsEditing] = useState(false);
-  const [editName, setEditName] = useState('');
-  // Use a seed for avatar to easily regenerate
-  const [avatarSeed, setAvatarSeed] = useState(Date.now());
-
-  useEffect(() => {
-    if (isOpen && user) {
-        setEditName(user.name || '');
-        setIsEditing(false);
-    }
-  }, [isOpen, user]);
-
   if (!isOpen || !user) return null;
 
-  const isOwnProfile = currentUser?.id === user.id;
-
-  const handleSave = () => {
-      if (onUpdateUser) {
-          onUpdateUser({
-              ...user,
-              name: editName,
-              // Update avatar URL based on new seed logic if desired, or just name
-          });
-      }
-      setIsEditing(false);
-  };
-
-  const regenerateAvatar = () => {
-      setAvatarSeed(Date.now());
-  };
-
-  // Construct avatar URL. If editing, use the dynamic seed.
-  const displayAvatar = isEditing 
-    ? `https://ui-avatars.com/api/?name=${editName || 'User'}&background=random&seed=${avatarSeed}`
-    : `https://ui-avatars.com/api/?name=${user.name || 'User'}&background=333&color=fff`;
+  // Calculate Total PnL (Realized only for now)
+  const totalRealizedPnL = bets
+    .filter(b => b.status === 'resolved' || b.payout !== null)
+    .reduce((acc, b) => acc + ((b.payout || 0) - b.amount), 0);
+    
+  const isPositivePnL = totalRealizedPnL >= 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -123,9 +140,9 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, us
         
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl font-bold text-white tracking-wide uppercase flex items-center gap-2">
-                {isOwnProfile ? <Wallet size={20} className="text-zinc-500"/> : <Shield size={20} className="text-zinc-500" />}
-                {isOwnProfile ? (lang === 'RU' ? 'Профиль' : 'Profile') : user.name || 'User'}
+            <h2 className="text-lg font-bold text-white tracking-wide uppercase flex items-center gap-2">
+                <Wallet size={18} className="text-zinc-500"/>
+                {lang === 'RU' ? 'ПОРТФОЛИО' : 'PORTFOLIO'}
             </h2>
             <button 
                 onClick={onClose}
@@ -135,103 +152,52 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, us
             </button>
         </div>
 
-        {/* User Info Block (Avatar & Name) */}
-        <div className="flex items-center gap-4 mb-8 bg-zinc-900/30 p-4 rounded-xl border border-zinc-800">
-            <div className="relative">
-                <img 
-                    src={displayAvatar} 
-                    alt="Avatar" 
-                    className="w-16 h-16 rounded-full object-cover border border-zinc-700" 
-                />
-                {isEditing && (
-                    <button 
-                        onClick={regenerateAvatar}
-                        className="absolute bottom-0 right-0 bg-zinc-800 text-white p-1 rounded-full hover:bg-zinc-700 border border-zinc-900"
-                        title={lang === 'RU' ? 'Сменить аватар' : 'Refresh avatar'}
-                    >
-                        <RefreshCw size={12} />
-                    </button>
-                )}
-            </div>
-
-            <div className="flex-1">
-                {isEditing ? (
-                    <div className="flex gap-2">
-                         <input 
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
-                            placeholder="Nickname"
-                         />
-                         <button onClick={handleSave} className="text-[#BEFF1D] p-1.5 hover:bg-zinc-800 rounded">
-                            <Save size={18} />
-                         </button>
-                    </div>
-                ) : (
-                    <div className="flex items-center gap-2">
-                        <h3 className="text-lg font-bold text-white tracking-tight">{user.name || 'User'}</h3>
-                        {isOwnProfile && (
-                            <button onClick={() => setIsEditing(true)} className="text-zinc-500 hover:text-white transition-colors">
-                                <Edit2 size={14} />
-                            </button>
-                        )}
-                    </div>
-                )}
-                <p className="text-xs text-zinc-500 font-mono mt-1 truncate max-w-[200px]">{user.email || 'user@normis.market'}</p>
-            </div>
-        </div>
-
-        {/* Total PnL Stats */}
+        {/* Stats Cards */}
         <div className="grid grid-cols-2 gap-4 mb-8">
             <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
                 <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-widest block mb-1">
-                    {lang === 'RU' ? 'Баланс' : 'Balance'}
+                    {lang === 'RU' ? 'БАЛАНС' : 'BALANCE'}
                 </span>
-                <span className="text-2xl font-mono text-white tracking-tight">${user.balance.toLocaleString()}</span>
+                <span className="text-2xl font-mono text-white tracking-tight">${user.balance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).replace(',', ' ')}</span>
             </div>
             <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 relative overflow-hidden">
                 <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-widest block mb-1">
-                    PnL (Profit/Loss)
+                    PNL (PROFIT/LOSS)
                 </span>
                 <div className="flex items-center gap-2">
-                    <span className={`text-2xl font-mono tracking-tight ${(user.pnl || 0) >= 0 ? 'text-[#BEFF1D]' : 'text-[#f544a6]'}`}>
-                        {(user.pnl || 0) >= 0 ? '+' : ''}${(user.pnl || 0).toLocaleString()}
+                    <span className={`text-2xl font-mono tracking-tight ${isPositivePnL ? 'text-[#BEFF1D]' : 'text-[#f544a6]'}`}>
+                        {isPositivePnL ? '+' : ''}${Math.abs(totalRealizedPnL).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).replace('.', ',')}
                     </span>
-                    {(user.pnl || 0) >= 0 ? <TrendingUp size={16} className="text-[#BEFF1D]"/> : <TrendingDown size={16} className="text-[#f544a6]"/>}
+                    {isPositivePnL ? <TrendingUp size={16} className="text-[#BEFF1D]"/> : <TrendingDown size={16} className="text-[#f544a6]"/>}
                 </div>
             </div>
         </div>
 
-        {/* Active Positions */}
+        {/* Active Bets List */}
         <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar mb-4">
-            <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 sticky top-0 bg-[#09090b] py-2">
-                {lang === 'RU' ? 'Активные ставки' : 'Active Positions'}
+            <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 sticky top-0 bg-[#09090b] py-2 z-10">
+                {lang === 'RU' ? 'АКТИВНЫЕ СТАВКИ' : 'ACTIVE BETS'}
             </h3>
             <div className="space-y-3">
-                {user.portfolio && user.portfolio.length > 0 ? (
-                    user.portfolio.map((item) => (
+                {bets && bets.length > 0 ? (
+                    bets.map((bet) => (
                         <PortfolioItem 
-                            key={item.id} 
-                            item={item} 
+                            key={bet.id} 
+                            item={bet} 
                             lang={lang} 
-                            onClick={() => onMarketClick(item.marketId)}
+                            onClick={() => onMarketClick(String(bet.marketId || ''))}
                         />
                     ))
                 ) : (
                     <div className="text-center py-10 text-zinc-600 text-sm">
-                        {lang === 'RU' ? 'Нет активных ставок' : 'No active positions'}
+                        {lang === 'RU' ? 'Нет активных ставок' : 'No active bets'}
                     </div>
                 )}
             </div>
         </div>
 
-        {isOwnProfile && (
-            <div className="mt-auto pt-4 border-t border-zinc-800">
-                <Button variant="ghost" fullWidth onClick={onLogout} className="text-red-500 hover:text-red-400 hover:bg-red-500/10">
-                    {lang === 'RU' ? 'Выйти' : 'Log Out'}
-                </Button>
-            </div>
-        )}
+        {/* Footer actions? Maybe Logout if needed, but picture doesn't show it explicitly. Keeping generic close or nothing. */}
+        {/* We keep the footer empty or just padding if needed. The modal height is handled. */}
       </div>
     </div>
   );
