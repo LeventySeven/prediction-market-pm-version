@@ -20,8 +20,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!isOpen) return null;
-
   const modalTitle = useMemo(
     () => (mode === 'SIGN_IN' ? 'Log in to Normis' : 'Create your Normis account'),
     [mode]
@@ -79,6 +77,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
     setUsername('');
     setPassword('');
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
