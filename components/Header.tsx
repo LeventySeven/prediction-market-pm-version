@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, Globe, HelpCircle, User as UserIcon, Wallet } from 'lucide-react';
+import { Search, Globe, HelpCircle, User as UserIcon, Wallet, Plus } from 'lucide-react';
 import Button from './Button';
 import { User } from '../types';
 
@@ -100,9 +100,18 @@ const Header: React.FC<HeaderProps> = ({
           )}
 
           {user?.isAdmin && onAdminClick && (
-            <Button variant="secondary" onClick={onAdminClick} className="hidden sm:inline-flex text-sm">
-              Создать рынок
-            </Button>
+            <>
+              <Button variant="secondary" onClick={onAdminClick} className="hidden sm:inline-flex text-sm">
+                Создать рынок
+              </Button>
+              <button
+                onClick={onAdminClick}
+                className="sm:hidden inline-flex items-center justify-center rounded-md border border-zinc-800 bg-neutral-900 text-white hover:border-[#BEFF1D] h-9 w-9"
+                aria-label="Создать рынок"
+              >
+                <Plus size={16} />
+              </button>
+            </>
           )}
 
           {user ? (
