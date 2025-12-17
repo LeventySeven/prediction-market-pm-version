@@ -37,6 +37,12 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
     return () => clearInterval(timer);
   }, [market.endDate, lang]);
 
+  const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
+  const noLabel = lang === 'RU' ? 'Нет' : 'No';
+  const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
+  const investedLabel = lang === 'RU' ? 'Инвестировано' : 'Invested';
+  const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
+
   return (
     <div 
         onClick={onClick}
@@ -67,7 +73,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         <div className="flex items-end justify-between mb-2">
             <span className="text-2xl font-bold text-[#BEFF1D] leading-none tracking-tight">{market.chance}%</span>
             <span className="text-xs text-zinc-500 font-medium uppercase tracking-wide">
-                {lang === 'RU' ? 'Вероятность' : 'Chance'}
+                {chanceLabel}
             </span>
         </div>
         
@@ -86,12 +92,12 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         {/* Inline info instead of buttons */}
         <div className="flex items-center justify-between gap-3 text-sm text-neutral-300">
           <span className="flex items-center gap-1">
-            <span className="text-[#BEFF1D] font-semibold">Да</span>
+            <span className="text-[#BEFF1D] font-semibold">{yesLabel}</span>
             <span>${market.yesPrice}</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="font-semibold" style={{ color: 'rgba(250, 73, 159, 1)' }}>
-              Нет
+              {noLabel}
             </span>
             <span>${market.noPrice}</span>
           </span>
@@ -100,7 +106,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         {/* Footer Meta */}
         <div className="flex items-center gap-4 text-[10px] uppercase tracking-wider text-zinc-500 mt-4 pt-3 border-t border-zinc-800/50">
             <div className="flex items-center gap-1">
-                <span>{lang === 'RU' ? 'Объем' : 'Vol'}</span>
+                <span>{volLabel}</span>
                 <span className="text-zinc-400 font-medium">{market.volume}</span>
             </div>
             <div className="flex items-center gap-1 ml-auto font-mono text-[#BEFF1D]">
