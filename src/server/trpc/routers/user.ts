@@ -54,7 +54,7 @@ const insertTelegramUser = (
 ): Promise<SelectUserResponse> => {
   return (client
     .from("users")
-    .insert([payload])
+    .insert([payload] as UserInsert[])
     .select("id, telegram_id, username, display_name, balance")
     .single<UserRow>()) as unknown as Promise<SelectUserResponse>;
 };
