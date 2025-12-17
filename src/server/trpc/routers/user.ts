@@ -2,6 +2,14 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 
+type TelegramUserRow = {
+  id: string;
+  telegram_id: number;
+  username: string | null;
+  display_name: string | null;
+  balance: number;
+};
+
 const userShape = {
   id: z.string(),
   telegramId: z.number(),
@@ -31,6 +39,7 @@ export const userRouter = router({
         .from("users")
         .select("id, telegram_id, username, display_name, balance")
         .eq("telegram_id", telegramId)
+        .returns<TelegramUserRow>()
         .maybeSingle();
 
       if (existing.data) {
@@ -52,6 +61,7 @@ export const userRouter = router({
           display_name: displayName,
         })
         .select("id, telegram_id, username, display_name, balance")
+        .returns<TelegramUserRow>()
         .single();
 
       if (insert.error || !insert.data) {
@@ -82,6 +92,7 @@ export const userRouter = router({
         .from("users")
         .select("id, telegram_id, username, display_name, balance")
         .eq("telegram_id", telegramId)
+        .returns<TelegramUserRow>()
         .maybeSingle();
 
       if (!user.data) {
