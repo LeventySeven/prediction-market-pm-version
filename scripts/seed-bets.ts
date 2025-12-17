@@ -20,20 +20,30 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-type IdRow = { id: string | number };
+type IdRow = { id: string };
 type PlaceBetArgs = {
-  p_user_id: string | number;
-  p_market_id: string | number;
+  p_user_id: string;
+  p_market_id: string;
   p_side: "YES" | "NO";
   p_amount: number;
 };
+type UserIdRow = Pick<Database["public"]["Tables"]["users"]["Row"], "id">;
+type MarketIdRow = Pick<Database["public"]["Tables"]["markets"]["Row"], "id">;
 
 async function main() {
-  const { data: rawUsers } = await supabase.from("users").select("id").limit(5);
-  const { data: rawMarkets } = await supabase.from("markets").select("id").limit(10);
+  const { data: rawUsers } = await supabase
+    .from("users")
+    .select("id")
+    .limit(5)
+    .returns<UserIdRow[]>();
+  const { data: rawMarkets } = await supabase
+    .from("markets")
+    .select("id")
+    .limit(10)
+    .returns<MarketIdRow[]>();
 
-  const users: IdRow[] = (rawUsers ?? []).map((row) => ({ id: row.id }));
-  const markets: IdRow[] = (rawMarkets ?? []).map((row) => ({ id: row.id }));
+  const users: IdRow[] = (rawUsers ?? []).map(({ id }) => ({ id }));
+  const markets: IdRow[] = (rawMarkets ?? []).map(({ id }) => ({ id }));
 
   if (users.length === 0 || markets.length === 0) {
     console.log("No users or markets found; skipping seeding bets.");
