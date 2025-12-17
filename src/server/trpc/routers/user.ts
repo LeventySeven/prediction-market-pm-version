@@ -22,6 +22,7 @@ type NarrowUserDb = {
         Row: UserRow;
         Insert: UserInsert;
         Update: UserUpdate;
+        Relationships: [];
       };
     };
     Functions: Record<string, never>;
