@@ -7,11 +7,13 @@ interface AuthModalProps {
   onClose: () => void;
   onLogin: (payload: { emailOrUsername: string; password: string }) => void | Promise<void>;
   onSignUp: (payload: { email: string; username: string; password: string }) => void | Promise<void>;
+  lang?: 'RU' | 'EN';
 }
 
 type AuthMode = 'SIGN_IN' | 'SIGN_UP';
 
-const formatErrorMessage = (err: any): string => {
+const formatErrorMessage = (err: any, lang: 'RU' | 'EN'): string => {
+  const t = friendlyMessages[lang];
   const zodErrors: Record<string, string[] | undefined> | undefined =
     err?.data?.zodError?.fieldErrors;
   if (zodErrors) {
@@ -49,10 +51,53 @@ const formatErrorMessage = (err: any): string => {
     return err;
   }
 
-  return 'Не удалось выполнить запрос';
+  return t.genericError;
 };
 
-const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp }) => {
+const friendlyMessages = {
+  RU: {
+    loginTitle: 'Войдите в Normis',
+    signupTitle: 'Создайте аккаунт Normis',
+    loginSubtitle: 'Используйте email или username и пароль.',
+    signupSubtitle: 'Заполните все поля, чтобы зарегистрироваться.',
+    loginTab: 'Вход',
+    signupTab: 'Регистрация',
+    emailOrUsername: 'Email или Username',
+    email: 'Email',
+    username: 'Username',
+    password: 'Пароль',
+    placeholderEmail: 'name@example.com',
+    placeholderUsername: 'normis_trader',
+    placeholderPassword: '********',
+    loginButton: 'Войти',
+    signupButton: 'Создать аккаунт',
+    loginRequired: 'Введите email/username и пароль.',
+    signupRequired: 'Заполните email, username и пароль.',
+    genericError: 'Не удалось выполнить запрос',
+  },
+  EN: {
+    loginTitle: 'Log in to Normis',
+    signupTitle: 'Create your Normis account',
+    loginSubtitle: 'Use your email or username plus password.',
+    signupSubtitle: 'All fields are required.',
+    loginTab: 'Log in',
+    signupTab: 'Sign up',
+    emailOrUsername: 'Email or Username',
+    email: 'Email',
+    username: 'Username',
+    password: 'Password',
+    placeholderEmail: 'name@example.com',
+    placeholderUsername: 'normis_trader',
+    placeholderPassword: '********',
+    loginButton: 'Log in',
+    signupButton: 'Create account',
+    loginRequired: 'Enter email/username and password.',
+    signupRequired: 'Fill in email, username, and password.',
+    genericError: 'Request failed',
+  },
+};
+
+const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp, lang = 'RU' }) => {
   const [mode, setMode] = useState<AuthMode>('SIGN_IN');
   const [emailOrUsername, setEmailOrUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -61,18 +106,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const modalTitle = useMemo(
-    () => (mode === 'SIGN_IN' ? 'Log in to Normis' : 'Create your Normis account'),
-    [mode]
-  );
-
-  const modalSubtitle = useMemo(
-    () =>
-      mode === 'SIGN_IN'
-        ? 'Use your email or username plus password.'
-        : 'All fields are required by Supabase.',
-    [mode]
-  );
+  const t = friendlyMessages[lang];
+  const modalTitle = mode === 'SIGN_IN' ? t.loginTitle : t.signupTitle;
+  const modalSubtitle = mode === 'SIGN_IN' ? t.loginSubtitle : t.signupSubtitle;
 
   const handleSubmit = async () => {
     try {
@@ -80,7 +116,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
       setLoading(true);
       if (mode === 'SIGN_IN') {
         if (!emailOrUsername.trim() || !password.trim()) {
-          setError('Введите почту/username и пароль');
+          setError(t.loginRequired);
           setLoading(false);
           return;
         }
@@ -89,7 +125,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
         );
       } else {
         if (!email.trim() || !username.trim() || !password.trim()) {
-          setError('Заполните email, username и пароль');
+          setError(t.signupRequired);
           setLoading(false);
           return;
         }
@@ -103,7 +139,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
       }
       onClose();
     } catch (err: any) {
-      setError(formatErrorMessage(err));
+      setError(formatErrorMessage(err, lang));
     } finally {
       setLoading(false);
     }
@@ -133,7 +169,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
           className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#BEFF1D] focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-zinc-800 data-[state=open]:text-zinc-500"
         >
           <X size={16} className="text-zinc-400" />
-        </button>
+      </button>
 
         <div className="flex flex-col space-y-1.5 text-center sm:text-left mb-6">
             <h2 className="text-lg font-semibold leading-none tracking-tight text-white">
