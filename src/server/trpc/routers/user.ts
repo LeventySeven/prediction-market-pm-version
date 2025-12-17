@@ -37,8 +37,7 @@ export const userRouter = router({
         .from("users")
         .select("id, telegram_id, username, display_name, balance")
         .eq("telegram_id", telegramId)
-        .returns<TelegramUserRow>()
-        .maybeSingle();
+        .maybeSingle<TelegramUserRow>();
 
       if (existing.data) {
         const u = existing.data;
@@ -59,8 +58,7 @@ export const userRouter = router({
           display_name: displayName,
         })
         .select("id, telegram_id, username, display_name, balance")
-        .returns<TelegramUserRow>()
-        .single();
+        .single<TelegramUserRow>();
 
       if (insert.error || !insert.data) {
         throw new TRPCError({
@@ -90,8 +88,7 @@ export const userRouter = router({
         .from("users")
         .select("id, telegram_id, username, display_name, balance")
         .eq("telegram_id", telegramId)
-        .returns<TelegramUserRow>()
-        .maybeSingle();
+        .maybeSingle<TelegramUserRow>();
 
       if (!user.data) {
         throw new TRPCError({
