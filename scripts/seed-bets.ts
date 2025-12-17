@@ -19,8 +19,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-type UserRow = { id: string | number };
-type MarketRow = { id: string | number };
+type IdRow = { id: string | number };
 type PlaceBetArgs = {
   p_user_id: string | number;
   p_market_id: string | number;
@@ -29,10 +28,13 @@ type PlaceBetArgs = {
 };
 
 async function main() {
-  const { data: users } = await supabase.from<UserRow>("users").select("id").limit(5);
-  const { data: markets } = await supabase.from<MarketRow>("markets").select("id").limit(10);
+  const { data: rawUsers } = await supabase.from("users").select("id").limit(5);
+  const { data: rawMarkets } = await supabase.from("markets").select("id").limit(10);
 
-  if (!users?.length || !markets?.length) {
+  const users: IdRow[] = (rawUsers ?? []).map((row) => ({ id: row.id }));
+  const markets: IdRow[] = (rawMarkets ?? []).map((row) => ({ id: row.id }));
+
+  if (users.length === 0 || markets.length === 0) {
     console.log("No users or markets found; skipping seeding bets.");
     return;
   }
