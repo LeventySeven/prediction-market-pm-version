@@ -2,26 +2,38 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "../../../types/database";
-
-type UserTable = Database["public"]["Tables"]["users"];
-type TelegramUserRow = Pick<
-  UserTable["Row"],
-  "id" | "username" | "display_name" | "balance"
-> & { telegram_id: number };
+type UserRow = {
+  id: string;
+  telegram_id: number;
+  username: string | null;
+  display_name: string | null;
+  balance: number;
+};
+type UserInsert = {
+  telegram_id: number;
+  username: string | null;
+  display_name: string;
+};
+type UserUpdate = Partial<UserInsert>;
 type NarrowUserDb = {
   public: {
-    Tables: { users: UserTable };
-    Functions: {};
-    Views: {};
-    Enums: {};
-    CompositeTypes: {};
+    Tables: {
+      users: {
+        Row: UserRow;
+        Insert: UserInsert;
+        Update: UserUpdate;
+      };
+    };
+    Functions: Record<string, never>;
+    Views: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
   };
 };
 type UserDbClient = SupabaseClient<NarrowUserDb, "public">;
 
 type SelectUserResponse = {
-  data: TelegramUserRow | null;
+  data: UserRow | null;
   error: PostgrestError | null;
 };
 
@@ -33,22 +45,18 @@ const selectUserByTelegramId = (
     .from("users")
     .select("id, telegram_id, username, display_name, balance")
     .eq("telegram_id", telegramId)
-    .maybeSingle<TelegramUserRow>() as Promise<SelectUserResponse>;
+    .maybeSingle<UserRow>() as Promise<SelectUserResponse>;
 };
 
 const insertTelegramUser = (
   client: UserDbClient,
-  payload: {
-    telegram_id: number;
-    username: string | null;
-    display_name: string;
-  }
+  payload: UserInsert
 ): Promise<SelectUserResponse> => {
   return client
     .from("users")
     .insert(payload)
     .select("id, telegram_id, username, display_name, balance")
-    .single<TelegramUserRow>() as Promise<SelectUserResponse>;
+    .single<UserRow>() as Promise<SelectUserResponse>;
 };
 
 const userShape = {
