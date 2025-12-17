@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../../../types/database";
 
 type UserTable = Database["public"]["Tables"]["users"];
@@ -19,6 +19,37 @@ type NarrowUserDb = {
   };
 };
 type UserDbClient = SupabaseClient<NarrowUserDb, "public">;
+
+type SelectUserResponse = {
+  data: TelegramUserRow | null;
+  error: PostgrestError | null;
+};
+
+const selectUserByTelegramId = (
+  client: UserDbClient,
+  telegramId: number
+): Promise<SelectUserResponse> => {
+  return client
+    .from("users")
+    .select("id, telegram_id, username, display_name, balance")
+    .eq("telegram_id", telegramId)
+    .maybeSingle<TelegramUserRow>() as Promise<SelectUserResponse>;
+};
+
+const insertTelegramUser = (
+  client: UserDbClient,
+  payload: {
+    telegram_id: number;
+    username: string | null;
+    display_name: string;
+  }
+): Promise<SelectUserResponse> => {
+  return client
+    .from("users")
+    .insert(payload)
+    .select("id, telegram_id, username, display_name, balance")
+    .single<TelegramUserRow>() as Promise<SelectUserResponse>;
+};
 
 const userShape = {
   id: z.string(),
@@ -46,11 +77,7 @@ export const userRouter = router({
       const displayName =
         input.displayName?.trim() || username || `tg-${telegramId}`;
 
-      const existing = await userClient
-        .from("users")
-        .select("id, telegram_id, username, display_name, balance")
-        .eq("telegram_id", telegramId)
-        .maybeSingle<TelegramUserRow>();
+      const existing = await selectUserByTelegramId(userClient, telegramId);
 
       if (existing.data) {
         const u = existing.data;
@@ -63,15 +90,11 @@ export const userRouter = router({
         };
       }
 
-      const insert = await userClient
-        .from("users")
-        .insert({
-          telegram_id: telegramId,
-          username,
-          display_name: displayName,
-        })
-        .select("id, telegram_id, username, display_name, balance")
-        .single<TelegramUserRow>();
+      const insert = await insertTelegramUser(userClient, {
+        telegram_id: telegramId,
+        username,
+        display_name: displayName,
+      });
 
       if (insert.error || !insert.data) {
         throw new TRPCError({
@@ -98,11 +121,7 @@ export const userRouter = router({
       const userClient = supabase as UserDbClient;
       const { telegramId } = input;
 
-      const user = await userClient
-        .from("users")
-        .select("id, telegram_id, username, display_name, balance")
-        .eq("telegram_id", telegramId)
-        .maybeSingle<TelegramUserRow>();
+      const user = await selectUserByTelegramId(userClient, telegramId);
 
       if (!user.data) {
         throw new TRPCError({
