@@ -4,7 +4,7 @@ import { publicProcedure, router } from "../trpc";
 import { hashPassword, verifyPassword } from "../../auth/password";
 import { authCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
-import type { Database } from "../../types/database";
+import type { Database } from "../../../types/database";
 
 const emailSchema = z.string().email().max(255);
 const usernameSchema = z
