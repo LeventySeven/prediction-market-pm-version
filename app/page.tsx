@@ -401,6 +401,7 @@ export default function HomePage() {
         onClose={() => setShowAuth(false)}
         onSignUp={handleSignUp}
         onLogin={handleLoginSubmit}
+        lang={lang}
       />
       <UserProfileModal
         isOpen={showProfile}

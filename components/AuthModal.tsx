@@ -12,48 +12,6 @@ interface AuthModalProps {
 
 type AuthMode = 'SIGN_IN' | 'SIGN_UP';
 
-const formatErrorMessage = (err: any, lang: 'RU' | 'EN'): string => {
-  const t = friendlyMessages[lang];
-  const zodErrors: Record<string, string[] | undefined> | undefined =
-    err?.data?.zodError?.fieldErrors;
-  if (zodErrors) {
-    const messages = Object.values(zodErrors)
-      .flat()
-      .filter((msg): msg is string => Boolean(msg));
-    if (messages.length) {
-      return messages.join(' ');
-    }
-  }
-
-  const messageString = typeof err?.message === 'string' ? err.message : undefined;
-  if (messageString) {
-    try {
-      const parsed = JSON.parse(messageString);
-      if (Array.isArray(parsed)) {
-        const parsedMessages = parsed
-          .map((item) =>
-            typeof item === 'object' && item !== null && 'message' in item
-              ? String(item.message)
-              : JSON.stringify(item)
-          )
-          .filter(Boolean);
-        if (parsedMessages.length) {
-          return parsedMessages.join(' ');
-        }
-      }
-    } catch {
-      // messageString was not JSON; fall through
-    }
-    return messageString;
-  }
-
-  if (typeof err === 'string') {
-    return err;
-  }
-
-  return t.genericError;
-};
-
 const friendlyMessages = {
   RU: {
     loginTitle: 'Войдите в Normis',
@@ -95,6 +53,83 @@ const friendlyMessages = {
     signupRequired: 'Fill in email, username, and password.',
     genericError: 'Request failed',
   },
+};
+
+const translateFieldError = (
+  lang: 'RU' | 'EN',
+  opts: { field?: string; validation?: string; code?: string; message?: string }
+) => {
+  const field = opts.field?.toLowerCase();
+  const validation = opts.validation?.toLowerCase();
+  const code = opts.code?.toLowerCase();
+
+  if (validation === 'email' || field === 'email') {
+    return lang === 'RU' ? 'Укажите корректный email.' : 'Enter a valid email address.';
+  }
+
+  if (validation === 'regex' || field === 'username') {
+    return lang === 'RU'
+      ? 'Username может содержать только буквы, цифры, _, . или -.'
+      : 'Username may contain letters, numbers, _, ., or -.';
+  }
+
+  if (field === 'password' || validation === 'password' || code === 'too_small') {
+    return lang === 'RU'
+      ? 'Пароль должен содержать минимум 8 символов.'
+      : 'Password must contain at least 8 characters.';
+  }
+
+  return opts.message ?? friendlyMessages[lang].genericError;
+};
+
+const formatErrorMessage = (err: any, lang: 'RU' | 'EN'): string => {
+  const t = friendlyMessages[lang];
+  const zodErrors: Record<string, string[] | undefined> | undefined =
+    err?.data?.zodError?.fieldErrors;
+  if (zodErrors) {
+    const messages = Object.entries(zodErrors)
+      .flatMap(([field, list]) =>
+        (list ?? []).map((msg) => translateFieldError(lang, { field, message: msg }))
+      )
+      .filter(Boolean);
+    if (messages.length) {
+      return messages.join(' ');
+    }
+  }
+
+  const messageString = typeof err?.message === 'string' ? err.message : undefined;
+  if (messageString) {
+    try {
+      const parsed = JSON.parse(messageString);
+      if (Array.isArray(parsed)) {
+        const parsedMessages = parsed
+          .map((item) =>
+            typeof item === 'object' && item !== null
+              ? translateFieldError(lang, {
+                  field: Array.isArray(item.path) ? item.path[0] : undefined,
+                  validation:
+                    typeof item.validation === 'string' ? item.validation : undefined,
+                  code: typeof item.code === 'string' ? item.code : undefined,
+                  message: typeof item.message === 'string' ? item.message : undefined,
+                })
+              : JSON.stringify(item)
+          )
+          .filter(Boolean);
+        if (parsedMessages.length) {
+          return parsedMessages.join(' ');
+        }
+      }
+    } catch {
+      // messageString was not JSON; fall through
+    }
+    return translateFieldError(lang, { message: messageString });
+  }
+
+  if (typeof err === 'string') {
+    return translateFieldError(lang, { message: err });
+  }
+
+  return t.genericError;
 };
 
 const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp, lang = 'RU' }) => {
