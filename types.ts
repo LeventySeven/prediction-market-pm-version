@@ -18,6 +18,8 @@ export interface Comment {
 export interface Market {
   id: string;
   title: string;
+  titleRu: string;
+  titleEn: string;
   category: Category;
   imageUrl: string;
   volume: string;
@@ -48,6 +50,8 @@ export interface Bet {
   id: string;
   marketId: string;
   marketTitle: string;
+  marketTitleRu: string;
+  marketTitleEn: string;
   side: "YES" | "NO";
   amount: number;
   status: string;

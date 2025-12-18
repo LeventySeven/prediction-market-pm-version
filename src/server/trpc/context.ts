@@ -1,6 +1,8 @@
 import { supabaseServerClient } from "../supabase/client";
 import { verifyAuthToken } from "../auth/jwt";
 import type { inferAsyncReturnType } from "@trpc/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "../../types/database";
 
 function parseCookies(req: Request) {
   const cookieHeader = req.headers.get("cookie") || "";
@@ -13,7 +15,7 @@ function parseCookies(req: Request) {
 }
 
 export const createContext = async (opts: { req: Request }) => {
-  const supabase = supabaseServerClient();
+  const supabase: SupabaseClient<Database, "public"> = supabaseServerClient();
   const responseHeaders: Record<string, string | string[]> = {};
   const cookies = parseCookies(opts.req);
   let authUser: { id: string; email: string; username: string; isAdmin: boolean } | null = null;

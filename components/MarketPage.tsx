@@ -3,6 +3,23 @@ import { Market, User } from '../types';
 import Button from './Button';
 import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { formatTimeRemaining } from '../lib/time';
+
+const getErrorMessage = (error: unknown, fallbackRu: string, fallbackEn: string, lang: 'RU' | 'EN') => {
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const possible = (error as { message?: unknown }).message;
+    if (typeof possible === 'string') {
+      return possible;
+    }
+  }
+  return lang === 'RU' ? fallbackRu : fallbackEn;
+};
 
 interface MarketPageProps {
   market: Market;
@@ -33,22 +50,17 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
       minute: '2-digit',
     });
   }, [market.endDate, lang]);
+  const localizedTitle = useMemo(
+    () => (lang === 'RU' ? market.titleRu ?? market.titleEn ?? market.title : market.titleEn ?? market.titleRu ?? market.title),
+    [lang, market.title, market.titleEn, market.titleRu]
+  );
 
-  // Countdown logic for the main page too
   useEffect(() => {
-    const calculateTimeLeft = () => {
-      const difference = +new Date(market.endDate) - +new Date();
-      if (difference > 0) {
-        const days = Math.floor(difference / (1000 * 60 * 60 * 24));
-        const hours = Math.floor((difference / (1000 * 60 * 60)) % 24);
-        const minutes = Math.floor((difference / 1000 / 60) % 60);
-        const seconds = Math.floor((difference / 1000) % 60);
-        return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-      }
-      return lang === 'RU' ? 'Завершено' : 'Ended';
+    const update = () => {
+      setTimeLeft(formatTimeRemaining(market.endDate, 'minutes', lang));
     };
-    const timer = setInterval(() => setTimeLeft(calculateTimeLeft()), 1000);
-    setTimeLeft(calculateTimeLeft());
+    update();
+    const timer = setInterval(update, 60000);
     return () => clearInterval(timer);
   }, [market.endDate, lang]);
 
@@ -113,8 +125,15 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
         marketTitle: market.title,
       });
       setAmount('');
-    } catch (err: any) {
-      setPlaceError(err?.message || (lang === 'RU' ? 'Не удалось выполнить ставку' : 'Failed to place bet'));
+    } catch (error: unknown) {
+      setPlaceError(
+        getErrorMessage(
+          error,
+          'Не удалось выполнить ставку',
+          'Failed to place bet',
+          lang
+        )
+      );
     } finally {
       setPlacing(false);
     }
@@ -135,9 +154,9 @@ const MarketPage: React.FC<MarketPageProps> = ({ market, user, onBack, onLogin, 
         {/* Left Column: Chart & Info */}
         <div className="lg:col-span-8 space-y-8">
             <div className="flex items-start gap-6">
-                <img src={market.imageUrl} alt={market.title} className="w-16 h-16 rounded-full bg-zinc-900 object-cover grayscale opacity-90 border border-zinc-800" />
+                <img src={market.imageUrl} alt={localizedTitle} className="w-16 h-16 rounded-full bg-zinc-900 object-cover grayscale opacity-90 border border-zinc-800" />
                 <div>
-                    <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white leading-tight mb-3">{market.title}</h1>
+                    <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white leading-tight mb-3">{localizedTitle}</h1>
                     <div className="flex flex-wrap items-center gap-4 text-xs font-medium uppercase tracking-wide text-zinc-500">
                         <span className="flex items-center gap-2 text-[#BEFF1D] font-mono"><Clock size={14}/> {timeLeft}</span>
                         <span className="flex items-center gap-2"><ShieldCheck size={14}/> 

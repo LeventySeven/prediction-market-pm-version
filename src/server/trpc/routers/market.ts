@@ -2,6 +2,68 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { calculatePayout, calculatePrices } from "../helpers/pricing";
+import type { Database } from "../../../types/database";
+
+type MarketRow = Database["public"]["Tables"]["markets"]["Row"];
+type BetRow = Database["public"]["Tables"]["bets"]["Row"];
+type BetWithMarket = BetRow & {
+  markets: Pick<
+    MarketRow,
+    "title_rus" | "title_eng" | "outcome" | "pool_yes" | "pool_no" | "expires_at"
+  > | null;
+};
+type PlaceBetTxArgs = Database["public"]["Functions"]["place_bet_tx"]["Args"];
+type PlaceBetTxResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"];
+type ResolveMarketArgs =
+  Database["public"]["Functions"]["resolve_market_tx"]["Args"];
+type ResolveMarketResult =
+  Database["public"]["Functions"]["resolve_market_tx"]["Returns"];
+
+const mapMarketRow = (row: MarketRow) => {
+  const { priceYes, priceNo } = calculatePrices(
+    Number(row.pool_yes),
+    Number(row.pool_no)
+  );
+
+  return {
+    id: row.id,
+    titleRu: row.title_rus,
+    titleEn: row.title_eng,
+    description: row.description,
+    poolYes: Number(row.pool_yes),
+    poolNo: Number(row.pool_no),
+    expiresAt: new Date(row.expires_at).toISOString(),
+    outcome: row.outcome,
+    priceYes,
+    priceNo,
+  };
+};
+
+const mapBetRow = (row: BetWithMarket) => {
+  const poolYes = Number(row.markets?.pool_yes ?? 0);
+  const poolNo = Number(row.markets?.pool_no ?? 0);
+  const total = poolYes + poolNo || 1;
+  const priceYes = poolYes / total;
+  const priceNo = poolNo / total;
+
+  return {
+    id: row.id,
+    marketId: row.market_id,
+    side: row.side,
+    amount: Number(row.amount),
+    status: row.status,
+    payout: row.payout,
+    createdAt: new Date(row.created_at).toISOString(),
+    marketTitleRu: row.markets?.title_rus ?? "",
+    marketTitleEn: row.markets?.title_eng ?? "",
+    marketOutcome: row.markets?.outcome ?? null,
+    expiresAt: row.markets?.expires_at
+      ? new Date(row.markets.expires_at).toISOString()
+      : null,
+    priceYes,
+    priceNo,
+  };
+};
 
 const betSummary = z.object({
   id: z.string(),
@@ -11,7 +73,8 @@ const betSummary = z.object({
   status: z.string(),
   payout: z.number().nullable(),
   createdAt: z.string(),
-  marketTitle: z.string(),
+  marketTitleRu: z.string(),
+  marketTitleEn: z.string(),
   marketOutcome: z.enum(["YES", "NO"]).nullable(),
   expiresAt: z.string().nullable(),
   priceYes: z.number().nullable(),
@@ -20,7 +83,8 @@ const betSummary = z.object({
 
 const marketOutput = z.object({
   id: z.string(),
-  title: z.string(),
+  titleRu: z.string(),
+  titleEn: z.string(),
   description: z.string().nullable(),
   poolYes: z.number(),
   poolNo: z.number(),
@@ -41,7 +105,7 @@ export const marketRouter = router({
       const query = supabase
         .from("markets")
         .select(
-          "id, title, description, pool_yes, pool_no, expires_at, outcome"
+          "id, title_rus, title_eng, description, pool_yes, pool_no, expires_at, outcome"
         )
         .order("id", { ascending: true });
 
@@ -57,25 +121,8 @@ export const marketRouter = router({
         });
       }
 
-      return (
-        data?.map((m) => {
-          const { priceYes, priceNo } = calculatePrices(
-            Number(m.pool_yes),
-            Number(m.pool_no)
-          );
-          return {
-            id: String(m.id),
-            title: m.title,
-            description: m.description,
-            poolYes: Number(m.pool_yes),
-            poolNo: Number(m.pool_no),
-            expiresAt: new Date(m.expires_at).toISOString(),
-            outcome: m.outcome as "YES" | "NO" | null,
-            priceYes,
-            priceNo,
-          };
-        }) ?? []
-      );
+      const rows = (data ?? []) as MarketRow[];
+      return rows.map(mapMarketRow);
     }),
 
   placeBet: publicProcedure
@@ -107,18 +154,20 @@ export const marketRouter = router({
         .eq("id", marketId)
         .maybeSingle();
 
-      if (!marketRes.data) {
+      const market = marketRes.data as MarketRow | null;
+
+      if (!market) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
 
-      if (marketRes.data.outcome) {
+      if (market.outcome) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Market already resolved",
         });
       }
 
-      const expiresAt = Date.parse(marketRes.data.expires_at as any);
+      const expiresAt = Date.parse(market.expires_at);
       const graceMs = 5 * 60 * 1000;
       if (Number.isFinite(expiresAt) && expiresAt + graceMs < Date.now()) {
         throw new TRPCError({
@@ -155,7 +204,7 @@ export const marketRouter = router({
         p_market_id: marketId,
         p_side: side,
         p_amount: amount,
-      });
+      } satisfies PlaceBetTxArgs);
 
       if (rpc.error) {
         throw new TRPCError({
@@ -164,10 +213,7 @@ export const marketRouter = router({
         });
       }
 
-      const raw = rpc.data as
-        | { bet_id: string; new_balance: number }
-        | Array<{ bet_id: string; new_balance: number }>
-        | null;
+      const raw = rpc.data as PlaceBetTxResult | PlaceBetTxResult[] | null;
 
       const result = Array.isArray(raw) ? raw[0] : raw;
 
@@ -226,7 +272,7 @@ export const marketRouter = router({
       const rpc = await supabase.rpc("resolve_market_tx", {
         p_market_id: marketId,
         p_outcome: outcome,
-      });
+      } satisfies ResolveMarketArgs);
 
       if (rpc.error) {
         throw new TRPCError({
@@ -235,13 +281,7 @@ export const marketRouter = router({
         });
       }
 
-      const result = rpc.data as {
-        market_id: string;
-        outcome: "YES" | "NO";
-        total_pool: number;
-        winner_pool: number;
-        updated_bets_count: number;
-      } | null;
+      const result = rpc.data as ResolveMarketResult | null;
 
       if (!result) {
         throw new TRPCError({
@@ -279,7 +319,8 @@ export const marketRouter = router({
             payout,
             created_at,
             markets:market_id (
-              title,
+              title_rus,
+              title_eng,
               outcome,
               pool_yes,
               pool_no,
@@ -297,38 +338,15 @@ export const marketRouter = router({
         });
       }
 
-      return (
-        data?.map((row: any) => {
-          const poolYes = Number(row.markets?.pool_yes ?? 0);
-          const poolNo = Number(row.markets?.pool_no ?? 0);
-          const total = poolYes + poolNo;
-          const priceYes = total === 0 ? 0.5 : poolNo / total;
-          const priceNo = total === 0 ? 0.5 : poolYes / total;
-
-          return {
-            id: String(row.id),
-            marketId: String(row.market_id),
-            side: row.side as "YES" | "NO",
-            amount: Number(row.amount),
-            status: row.status,
-            payout: row.payout !== null ? Number(row.payout) : null,
-            createdAt: new Date(row.created_at).toISOString(),
-            marketTitle: row.markets?.title ?? "—",
-            marketOutcome: row.markets?.outcome ?? null,
-            expiresAt: row.markets?.expires_at
-              ? new Date(row.markets.expires_at).toISOString()
-              : null,
-            priceYes,
-            priceNo,
-          };
-        }) ?? []
-      );
+      const rows = (data ?? []) as BetWithMarket[];
+      return rows.map(mapBetRow);
     }),
 
   createMarket: publicProcedure
     .input(
       z.object({
-        title: z.string().min(3),
+        titleRu: z.string().min(3),
+        titleEn: z.string().min(3),
         description: z.string().optional().nullable(),
         expiresAt: z.string(),
         poolYes: z.number().optional().default(0),
@@ -338,7 +356,8 @@ export const marketRouter = router({
     .output(
       z.object({
         id: z.string(),
-        title: z.string(),
+        titleRu: z.string().nullable(),
+        titleEn: z.string().nullable(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -355,14 +374,15 @@ export const marketRouter = router({
       const { data, error } = await supabase
         .from("markets")
         .insert({
-          title: input.title.trim(),
+          title_rus: input.titleRu.trim(),
+          title_eng: input.titleEn.trim(),
           description: input.description ?? null,
           pool_yes: input.poolYes ?? 0,
           pool_no: input.poolNo ?? 0,
           expires_at: new Date(expiresAtMs).toISOString(),
           outcome: null,
         })
-        .select("id, title")
+        .select("id, title_rus, title_eng")
         .single();
 
       if (error || !data) {
@@ -372,7 +392,7 @@ export const marketRouter = router({
         });
       }
 
-      return { id: String(data.id), title: data.title };
+      return { id: data.id, titleRu: data.title_rus, titleEn: data.title_eng };
     }),
 });
 

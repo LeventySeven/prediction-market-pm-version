@@ -7,7 +7,8 @@
  *  - SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)
  *  - SUPABASE_SERVICE_ROLE_KEY
  */
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type PostgrestError } from "@supabase/supabase-js";
+import type { Database } from "../src/types/database";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -17,18 +18,48 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient<Database, "public">(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+type IdRow = { id: string };
+type PlaceBetArgs = Database["public"]["Functions"]["place_bet_tx"]["Args"];
+type PlaceBetResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"];
+type UserIdRow = Pick<Database["public"]["Tables"]["users"]["Row"], "id">;
+type MarketIdRow = Pick<Database["public"]["Tables"]["markets"]["Row"], "id">;
+
+type RpcResponse<T> = {
+  data: T | null;
+  error: PostgrestError | null;
+};
+
+const callPlaceBetTx = (params: PlaceBetArgs) => {
+  const rpc = supabase.rpc as unknown as (
+    fn: "place_bet_tx",
+    rpcParams: PlaceBetArgs
+  ) => Promise<RpcResponse<PlaceBetResult>>;
+  return rpc("place_bet_tx", params);
+};
 
 async function main() {
-  const { data: users } = await supabase.from("users").select("id").limit(5);
-  const { data: markets } = await supabase.from("markets").select("id").limit(10);
+  const { data: rawUsers } = await supabase
+    .from("users")
+    .select("id")
+    .limit(5)
+    .returns<UserIdRow[]>();
+  const { data: rawMarkets } = await supabase
+    .from("markets")
+    .select("id")
+    .limit(10)
+    .returns<MarketIdRow[]>();
 
-  if (!users?.length || !markets?.length) {
+  const users: IdRow[] = (rawUsers ?? []).map(({ id }) => ({ id }));
+  const markets: IdRow[] = (rawMarkets ?? []).map(({ id }) => ({ id }));
+
+  if (users.length === 0 || markets.length === 0) {
     console.log("No users or markets found; skipping seeding bets.");
     return;
   }
 
-  const bets = [];
+  const bets: PlaceBetArgs[] = [];
   let userIdx = 0;
   for (const market of markets) {
     const user = users[userIdx % users.length];
@@ -42,7 +73,7 @@ async function main() {
   }
 
   for (const b of bets) {
-    const rpc = await supabase.rpc("place_bet_tx", b as any);
+    const rpc = await callPlaceBetTx(b);
     if (rpc.error) {
       console.error("Failed to place bet", b, rpc.error);
     } else {

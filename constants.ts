@@ -50,6 +50,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '1',
     title: 'Разблокируют ли YouTube в РФ до Января 2026?',
+    titleRu: 'Разблокируют ли YouTube в РФ до Января 2026?',
+    titleEn: 'Will YouTube be unblocked in Russia by Jan 2026?',
     category: 'SOCIAL',
     imageUrl: 'https://ui-avatars.com/api/?name=YouTube&background=000&color=fff&size=128&font-size=0.4&bold=true',
     volume: '$3.2m',
@@ -65,6 +67,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '2',
     title: 'Привлекут ли Долину к ответственности за схему с квартирой?',
+    titleRu: 'Привлекут ли Долину к ответственности за схему с квартирой?',
+    titleEn: 'Will Larisa Dolina face charges over the apartment scheme?',
     category: 'CELEBS',
     imageUrl: 'https://ui-avatars.com/api/?name=Larisa+Dolina&background=000&color=fff&size=128',
     volume: '$840k',
@@ -79,6 +83,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '3',
     title: 'Займет ли песня "Баобаб" (Ivan Zolo) топ-1 в Яндекс Музыке?',
+    titleRu: 'Займет ли песня "Баобаб" (Ivan Zolo) топ-1 в Яндекс Музыке?',
+    titleEn: 'Will "Baobab" by Ivan Zolo hit #1 on Yandex Music?',
     category: 'MUSIC',
     imageUrl: 'https://ui-avatars.com/api/?name=Ivan+Zolo&background=000&color=fff&size=128',
     volume: '$125k',
@@ -93,6 +99,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '4',
     title: 'Будет ли Bitcoin стоить выше $125,000 к концу 2025?',
+    titleRu: 'Будет ли Bitcoin стоить выше $125,000 к концу 2025?',
+    titleEn: 'Will Bitcoin be above $125,000 by end of 2025?',
     category: 'CRYPTO',
     imageUrl: 'https://ui-avatars.com/api/?name=Bitcoin&background=000&color=fff&size=128',
     volume: '$45m',
@@ -107,6 +115,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '5',
     title: 'Курс доллара выше 110₽ на конец 2025 года?',
+    titleRu: 'Курс доллара выше 110₽ на конец 2025 года?',
+    titleEn: 'Will USD/RUB exceed 110 by year-end 2025?',
     category: 'WORLD',
     imageUrl: 'https://ui-avatars.com/api/?name=USD+RUB&background=000&color=fff&size=128',
     volume: '$12.1m',
@@ -121,6 +131,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '6',
     title: 'Станет ли ChatGPT приложением №1 в RuStore/AppStore в 2025?',
+    titleRu: 'Станет ли ChatGPT приложением №1 в RuStore/AppStore в 2025?',
+    titleEn: 'Will ChatGPT hit #1 in RuStore/App Store in 2025?',
     category: 'SOCIAL',
     imageUrl: 'https://ui-avatars.com/api/?name=ChatGPT&background=000&color=fff&size=128',
     volume: '$2.4m',
@@ -135,6 +147,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '7',
     title: 'Превысит ли выручка Wildberries 4 трлн руб в 2025?',
+    titleRu: 'Превысит ли выручка Wildberries 4 трлн руб в 2025?',
+    titleEn: 'Will Wildberries revenue exceed 4T RUB in 2025?',
     category: 'WORLD',
     imageUrl: 'https://ui-avatars.com/api/?name=WB&background=000&color=fff&size=128',
     volume: '$1.8m',
@@ -149,6 +163,8 @@ export const MOCK_MARKETS: Market[] = [
   {
     id: '8',
     title: 'Состояние Олега Тинькова >$900M в конце 2025?',
+    titleRu: 'Состояние Олега Тинькова >$900M в конце 2025?',
+    titleEn: 'Will Oleg Tinkov’s net worth exceed $900M by end of 2025?',
     category: 'CELEBS',
     imageUrl: 'https://ui-avatars.com/api/?name=Oleg+Tinkov&background=000&color=fff&size=128',
     volume: '$550k',

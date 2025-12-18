@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Market } from '../types';
 import { Clock } from 'lucide-react';
+import { formatTimeRemaining } from '../lib/time';
 
 interface MarketCardProps {
   market: Market;
@@ -10,28 +11,25 @@ interface MarketCardProps {
 
 const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' }) => {
   const [timeLeft, setTimeLeft] = useState('');
+  const localizedTitle =
+    lang === 'RU'
+      ? market.titleRu ?? market.titleEn ?? market.title
+      : market.titleEn ?? market.titleRu ?? market.title;
 
   useEffect(() => {
-    const calculateTimeLeft = () => {
-      const difference = +new Date(market.endDate) - +new Date();
-      if (difference > 0) {
-        const days = Math.floor(difference / (1000 * 60 * 60 * 24));
-        const hours = Math.floor((difference / (1000 * 60 * 60)) % 24);
-        const minutes = Math.floor((difference / 1000 / 60) % 60);
-        const seconds = Math.floor((difference / 1000) % 60);
-        return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-      }
-      return lang === 'RU' ? 'Завершено' : 'Ended';
+    const update = () => {
+      setTimeLeft(formatTimeRemaining(market.endDate, 'hours', lang));
     };
-
-    const timer = setInterval(() => {
-      setTimeLeft(calculateTimeLeft());
-    }, 1000);
-    
-    setTimeLeft(calculateTimeLeft());
-
+    update();
+    const timer = setInterval(update, 60000);
     return () => clearInterval(timer);
   }, [market.endDate, lang]);
+
+  const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
+  const noLabel = lang === 'RU' ? 'Нет' : 'No';
+  const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
+  const investedLabel = lang === 'RU' ? 'Инвестировано' : 'Invested';
+  const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
 
   return (
     <div 
@@ -50,11 +48,11 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
       <div className="flex items-start gap-3 mb-6 mt-1">
         <img 
           src={market.imageUrl} 
-          alt={market.title} 
+          alt={localizedTitle} 
           className="w-10 h-10 rounded-full grayscale opacity-80 group-hover:opacity-100 transition-opacity bg-zinc-900 object-cover flex-shrink-0 border border-zinc-800"
         />
         <h3 className="text-[15px] font-medium tracking-tight text-zinc-100 leading-snug group-hover:text-white transition-colors line-clamp-3">
-          {market.title}
+          {localizedTitle}
         </h3>
       </div>
 
@@ -63,7 +61,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         <div className="flex items-end justify-between mb-2">
             <span className="text-2xl font-bold text-[#BEFF1D] leading-none tracking-tight">{market.chance}%</span>
             <span className="text-xs text-zinc-500 font-medium uppercase tracking-wide">
-                {lang === 'RU' ? 'Вероятность' : 'Chance'}
+                {chanceLabel}
             </span>
         </div>
         
@@ -82,12 +80,12 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         {/* Inline info instead of buttons */}
         <div className="flex items-center justify-between gap-3 text-sm text-neutral-300">
           <span className="flex items-center gap-1">
-            <span className="text-[#BEFF1D] font-semibold">Да</span>
+            <span className="text-[#BEFF1D] font-semibold">{yesLabel}</span>
             <span>${market.yesPrice}</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="font-semibold" style={{ color: 'rgba(250, 73, 159, 1)' }}>
-              Нет
+              {noLabel}
             </span>
             <span>${market.noPrice}</span>
           </span>
@@ -96,7 +94,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
         {/* Footer Meta */}
         <div className="flex items-center gap-4 text-[10px] uppercase tracking-wider text-zinc-500 mt-4 pt-3 border-t border-zinc-800/50">
             <div className="flex items-center gap-1">
-                <span>{lang === 'RU' ? 'Объем' : 'Vol'}</span>
+                <span>{volLabel}</span>
                 <span className="text-zinc-400 font-medium">{market.volume}</span>
             </div>
             <div className="flex items-center gap-1 ml-auto font-mono text-[#BEFF1D]">

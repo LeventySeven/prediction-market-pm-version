@@ -7,11 +7,163 @@ interface AuthModalProps {
   onClose: () => void;
   onLogin: (payload: { emailOrUsername: string; password: string }) => void | Promise<void>;
   onSignUp: (payload: { email: string; username: string; password: string }) => void | Promise<void>;
+  lang?: 'RU' | 'EN';
 }
 
 type AuthMode = 'SIGN_IN' | 'SIGN_UP';
 
-const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp }) => {
+const friendlyMessages = {
+  RU: {
+    loginTitle: 'Войдите в Normis',
+    signupTitle: 'Создайте аккаунт Normis',
+    loginSubtitle: 'Используйте email или username и пароль.',
+    signupSubtitle: 'Заполните все поля, чтобы зарегистрироваться.',
+    loginTab: 'Вход',
+    signupTab: 'Регистрация',
+    emailOrUsername: 'Email или Username',
+    email: 'Email',
+    username: 'Username',
+    password: 'Пароль',
+    placeholderEmail: 'name@example.com',
+    placeholderUsername: 'normis_trader',
+    placeholderPassword: '********',
+    loginButton: 'Войти',
+    signupButton: 'Создать аккаунт',
+    loginRequired: 'Введите email/username и пароль.',
+    signupRequired: 'Заполните email, username и пароль.',
+    genericError: 'Не удалось выполнить запрос',
+  },
+  EN: {
+    loginTitle: 'Log in to Normis',
+    signupTitle: 'Create your Normis account',
+    loginSubtitle: 'Use your email or username plus password.',
+    signupSubtitle: 'All fields are required.',
+    loginTab: 'Log in',
+    signupTab: 'Sign up',
+    emailOrUsername: 'Email or Username',
+    email: 'Email',
+    username: 'Username',
+    password: 'Password',
+    placeholderEmail: 'name@example.com',
+    placeholderUsername: 'normis_trader',
+    placeholderPassword: '********',
+    loginButton: 'Log in',
+    signupButton: 'Create account',
+    loginRequired: 'Enter email/username and password.',
+    signupRequired: 'Fill in email, username, and password.',
+    genericError: 'Request failed',
+  },
+};
+
+const translateFieldError = (
+  lang: 'RU' | 'EN',
+  opts: { field?: string; validation?: string; code?: string; message?: string }
+) => {
+  const field = opts.field?.toLowerCase();
+  const validation = opts.validation?.toLowerCase();
+  const code = opts.code?.toLowerCase();
+
+  if (validation === 'email' || field === 'email') {
+    return lang === 'RU' ? 'Укажите корректный email.' : 'Enter a valid email address.';
+  }
+
+  if (validation === 'regex' || field === 'username') {
+    return lang === 'RU'
+      ? 'Username может содержать только буквы, цифры, _, . или -.'
+      : 'Username may contain letters, numbers, _, ., or -.';
+  }
+
+  if (field === 'password' || validation === 'password' || code === 'too_small') {
+    return lang === 'RU'
+      ? 'Пароль должен содержать минимум 8 символов.'
+      : 'Password must contain at least 8 characters.';
+  }
+
+  return opts.message ?? friendlyMessages[lang].genericError;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const getZodFieldErrors = (
+  error: unknown
+): Record<string, string[] | undefined> | undefined => {
+  if (!isRecord(error)) return undefined;
+  const data = error.data;
+  if (!isRecord(data)) return undefined;
+  const zodError = data.zodError;
+  if (!isRecord(zodError)) return undefined;
+  const fieldErrors = zodError.fieldErrors;
+  if (!isRecord(fieldErrors)) return undefined;
+  const result: Record<string, string[] | undefined> = {};
+  Object.entries(fieldErrors).forEach(([key, value]) => {
+    if (value === undefined) {
+      result[key] = undefined;
+    } else if (isStringArray(value)) {
+      result[key] = value;
+    }
+  });
+  return result;
+};
+
+const getMessageString = (error: unknown): string | undefined => {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  if (isRecord(error) && typeof error.message === 'string') {
+    return error.message;
+  }
+  return undefined;
+};
+
+const formatErrorMessage = (err: unknown, lang: 'RU' | 'EN'): string => {
+  const t = friendlyMessages[lang];
+  const zodErrors = getZodFieldErrors(err);
+  if (zodErrors) {
+    const messages = Object.entries(zodErrors)
+      .flatMap(([field, list]) =>
+        (list ?? []).map((msg) => translateFieldError(lang, { field, message: msg }))
+      )
+      .filter(Boolean);
+    if (messages.length) {
+      return messages.join(' ');
+    }
+  }
+
+  const messageString = getMessageString(err);
+  if (messageString) {
+    try {
+      const parsed = JSON.parse(messageString);
+      if (Array.isArray(parsed)) {
+        const parsedMessages = parsed
+          .map((item) =>
+            typeof item === 'object' && item !== null
+              ? translateFieldError(lang, {
+                  field: Array.isArray(item.path) ? item.path[0] : undefined,
+                  validation:
+                    typeof item.validation === 'string' ? item.validation : undefined,
+                  code: typeof item.code === 'string' ? item.code : undefined,
+                  message: typeof item.message === 'string' ? item.message : undefined,
+                })
+              : JSON.stringify(item)
+          )
+          .filter(Boolean);
+        if (parsedMessages.length) {
+          return parsedMessages.join(' ');
+        }
+      }
+    } catch {
+      // messageString was not JSON; fall through
+    }
+    return translateFieldError(lang, { message: messageString });
+  }
+
+  return t.genericError;
+};
+
+const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp, lang = 'RU' }) => {
   const [mode, setMode] = useState<AuthMode>('SIGN_IN');
   const [emailOrUsername, setEmailOrUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -20,18 +172,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const modalTitle = useMemo(
-    () => (mode === 'SIGN_IN' ? 'Log in to Normis' : 'Create your Normis account'),
-    [mode]
-  );
-
-  const modalSubtitle = useMemo(
-    () =>
-      mode === 'SIGN_IN'
-        ? 'Use your email or username plus password.'
-        : 'All fields are required by Supabase.',
-    [mode]
-  );
+  const t = friendlyMessages[lang];
+  const modalTitle = mode === 'SIGN_IN' ? t.loginTitle : t.signupTitle;
+  const modalSubtitle = mode === 'SIGN_IN' ? t.loginSubtitle : t.signupSubtitle;
 
   const handleSubmit = async () => {
     try {
@@ -39,7 +182,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
       setLoading(true);
       if (mode === 'SIGN_IN') {
         if (!emailOrUsername.trim() || !password.trim()) {
-          setError('Введите почту/username и пароль');
+          setError(t.loginRequired);
           setLoading(false);
           return;
         }
@@ -48,7 +191,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
         );
       } else {
         if (!email.trim() || !username.trim() || !password.trim()) {
-          setError('Заполните email, username и пароль');
+          setError(t.signupRequired);
           setLoading(false);
           return;
         }
@@ -61,8 +204,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
         );
       }
       onClose();
-    } catch (err: any) {
-      setError(err?.message ?? 'Не удалось выполнить запрос');
+    } catch (err: unknown) {
+      setError(formatErrorMessage(err, lang));
     } finally {
       setLoading(false);
     }
@@ -92,7 +235,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
           className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#BEFF1D] focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-zinc-800 data-[state=open]:text-zinc-500"
         >
           <X size={16} className="text-zinc-400" />
-        </button>
+      </button>
 
         <div className="flex flex-col space-y-1.5 text-center sm:text-left mb-6">
             <h2 className="text-lg font-semibold leading-none tracking-tight text-white">

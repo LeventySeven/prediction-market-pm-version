@@ -6,7 +6,8 @@ type AdminMarketModalProps = {
   isOpen: boolean;
   onClose: () => void;
   onCreate: (payload: {
-    title: string;
+    titleRu: string;
+    titleEn: string;
     description?: string | null;
     expiresAt: string;
     poolYes?: number;
@@ -19,7 +20,8 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
   onClose,
   onCreate,
 }) => {
-  const [title, setTitle] = useState("");
+  const [titleRu, setTitleRu] = useState("");
+  const [titleEn, setTitleEn] = useState("");
   const [description, setDescription] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [poolYes, setPoolYes] = useState("0");
@@ -30,7 +32,10 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
   const numericYes = Number(poolYes) || 0;
   const numericNo = Number(poolNo) || 0;
 
-  const isValid = title.trim().length >= 3 && expiresAt.trim().length > 0;
+  const isValid =
+    titleRu.trim().length >= 3 &&
+    titleEn.trim().length >= 3 &&
+    expiresAt.trim().length > 0;
 
   const totalPool = useMemo(() => {
     const sum = numericYes + numericNo;
@@ -39,26 +44,38 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
   if (!isOpen) return null;
 
+  const getErrorMessage = (error: unknown) => {
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    if (typeof error === "object" && error !== null && "message" in error) {
+      const possible = (error as { message?: unknown }).message;
+      if (typeof possible === "string") return possible;
+    }
+    return "Не удалось создать рынок";
+  };
+
   const handleSubmit = async () => {
     if (!isValid) return;
     setError(null);
     setLoading(true);
     try {
       await onCreate({
-        title: title.trim(),
+        titleRu: titleRu.trim(),
+        titleEn: titleEn.trim(),
         description: description.trim() || null,
         expiresAt,
         poolYes: numericYes,
         poolNo: numericNo,
       });
-      setTitle("");
+      setTitleRu("");
+      setTitleEn("");
       setDescription("");
       setExpiresAt("");
       setPoolYes("0");
       setPoolNo("0");
       onClose();
-    } catch (err: any) {
-      setError(err?.message || "Не удалось создать рынок");
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -83,20 +100,31 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
           <h2 className="text-2xl font-bold text-white">Создать рынок</h2>
           <p className="text-sm text-neutral-400">
             Если ваша учетная запись в Supabase имеет флаг <code className="text-[#BEFF1D]">is_admin</code>, вы можете
-            публиковать события прямо отсюда. Новые рынки появляются на главном экране сразу после создания.
+            публиковать события прямо отсюда. Новые рынки появляются на главном экране сразу после создания. Заполните поля на двух языках — интерфейс автоматически покажет нужную версию.
           </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 text-sm text-neutral-200">
           <div className="lg:col-span-3 space-y-4">
-            <div>
-            <label className="block text-xs text-neutral-400 mb-1">Название</label>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Например: Bitcoin > $125k к концу 2025?"
-              className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none"
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Название (RU)</label>
+                <input
+                  value={titleRu}
+                  onChange={(e) => setTitleRu(e.target.value)}
+                  placeholder="Например: Bitcoin > $125k к концу 2025?"
+                  className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Title (EN)</label>
+                <input
+                  value={titleEn}
+                  onChange={(e) => setTitleEn(e.target.value)}
+                  placeholder="e.g. Bitcoin > $125k by 2025?"
+                  className="w-full bg-black border border-neutral-700 rounded-lg p-3 text-white focus:border-[#BEFF1D] focus:outline-none"
+                />
+              </div>
             </div>
             <div>
               <label className="block text-xs text-neutral-400 mb-1">Описание</label>
@@ -169,11 +197,17 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
           <div className="lg:col-span-2 bg-black/40 border border-neutral-800 rounded-2xl p-4 space-y-4">
             <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-neutral-500 mb-1">Предпросмотр</p>
-              <h3 className="text-lg font-semibold text-white line-clamp-2">{title || "Название события"}</h3>
+              <p className="text-xs uppercase tracking-[0.3em] text-neutral-500 mb-1">Предпросмотр (RU)</p>
+              <h3 className="text-lg font-semibold text-white line-clamp-2">{titleRu || "Название события"}</h3>
               <p className="text-sm text-neutral-400 line-clamp-3">
                 {description || "Короткое описание условия и критериев разрешения."}
               </p>
+              <div className="mt-4 text-xs text-neutral-500">
+                <span className="font-semibold text-white block mb-1">EN:</span>
+                <p className="text-neutral-400 line-clamp-2">
+                  {titleEn || "Event title in English"}
+                </p>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="bg-neutral-900/80 border border-neutral-800 rounded-lg p-3">

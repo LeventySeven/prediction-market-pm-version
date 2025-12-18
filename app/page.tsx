@@ -54,7 +54,25 @@ export default function HomePage() {
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   const [showAdminModal, setShowAdminModal] = useState(false);
 
-  const formatBetError = (msg?: string) => {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const getUnknownErrorMessage = (error: unknown): string | undefined => {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (isRecord(error)) {
+    if (typeof error.message === "string") {
+      return error.message;
+    }
+    const data = error.data;
+    if (isRecord(data) && typeof data.message === "string") {
+      return data.message;
+    }
+  }
+  return undefined;
+};
+
+const formatBetError = (msg?: string) => {
     if (!msg) return "Не удалось поставить ставку";
     if (msg.includes("MARKET_EXPIRED") || msg.toLowerCase().includes("expired")) {
       return "Событие завершено, ставки закрыты.";
@@ -139,7 +157,7 @@ export default function HomePage() {
           isAdmin: me.isAdmin,
         });
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Failed to refresh session user", err);
     }
   }, []);
@@ -151,27 +169,33 @@ export default function HomePage() {
       const bets = await trpcClient.market.myBets.query();
       const normalized: Bet[] = (bets || [])
         .filter((b): b is NonNullable<typeof b> => !!b && b.id !== undefined)
-        .map((b) => ({
-          id: String(b.id),
-          marketId: String(b.marketId),
-          marketTitle: b.marketTitle ?? "—",
-          side: b.side,
-          amount: Number(b.amount ?? 0),
-          status: b.status ?? "open",
-          payout: b.payout !== null && b.payout !== undefined ? Number(b.payout) : null,
-          createdAt: b.createdAt ?? new Date().toISOString(),
-          marketOutcome: b.marketOutcome ?? null,
-          expiresAt: b.expiresAt ?? null,
-          priceYes: b.priceYes ?? null,
-          priceNo: b.priceNo ?? null,
-        }));
+        .map((b) => {
+          const titleRu = b.marketTitleRu ?? "—";
+          const titleEn = b.marketTitleEn ?? titleRu;
+          return {
+            id: String(b.id),
+            marketId: String(b.marketId),
+            marketTitle: lang === "RU" ? titleRu : titleEn,
+            marketTitleRu: titleRu,
+            marketTitleEn: titleEn,
+            side: b.side,
+            amount: Number(b.amount ?? 0),
+            status: b.status ?? "open",
+            payout: b.payout !== null && b.payout !== undefined ? Number(b.payout) : null,
+            createdAt: b.createdAt ?? new Date().toISOString(),
+            marketOutcome: b.marketOutcome ?? null,
+            expiresAt: b.expiresAt ?? null,
+            priceYes: b.priceYes ?? null,
+            priceNo: b.priceNo ?? null,
+          };
+        });
       setMyBets(normalized);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Failed to load bets", err);
     } finally {
       setLoadingBets(false);
     }
-  }, [user]);
+  }, [user, lang]);
 
   // Fetch session user via auth.me
   useEffect(() => {
@@ -191,13 +215,15 @@ export default function HomePage() {
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
       });
-      if (response && response.length > 0) {
-        const mapped: Market[] = response.map((m) => ({
+      const mapped: Market[] =
+        response?.map((m) => ({
           id: String(m.id),
-          title: m.title,
+          title: lang === "RU" ? m.titleRu : m.titleEn,
+          titleRu: m.titleRu,
+          titleEn: m.titleEn,
           category: "ALL",
           imageUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-            m.title
+            lang === "RU" ? m.titleRu : m.titleEn
           )}&background=random&color=fff&size=128`,
           volume: `$${(Number(m.poolYes) + Number(m.poolNo)).toFixed(2)}`,
           endDate: new Date(m.expiresAt).toISOString(),
@@ -209,23 +235,20 @@ export default function HomePage() {
           poolNo: Number(m.poolNo),
           history: buildHistoryFromPools(Number(m.poolYes), Number(m.poolNo)),
           comments: [],
-        }));
-        setMarkets(mapped);
-      } else {
-        setMarkets(MOCK_MARKETS);
-      }
+        })) ?? [];
+      setMarkets(mapped);
       if (user) {
         await loadMyBets();
       }
-    } catch (err) {
-      console.error("Failed to load markets; fallback to mocks", err);
-      setMarketsLoadingMessage("Не удалось загрузить рынки, показаны демо данные.");
-      setMarkets(MOCK_MARKETS);
+    } catch (err: unknown) {
+      console.error("Failed to load markets", err);
+      setMarketsLoadingMessage("Не удалось загрузить рынки, попробуйте позже.");
+      setMarkets([]);
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [user, loadMyBets]);
+  }, [user, loadMyBets, lang]);
 
   useEffect(() => {
     void loadMarkets();
@@ -246,12 +269,14 @@ export default function HomePage() {
       markets.filter((market) => {
         const matchesCategory =
           activeCategory === "ALL" || market.category === activeCategory;
-        const matchesSearch = market.title
+        const targetTitle =
+          lang === "RU" ? market.titleRu : market.titleEn;
+        const matchesSearch = targetTitle
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
         return matchesCategory && matchesSearch;
       }),
-    [activeCategory, searchQuery, markets]
+    [activeCategory, searchQuery, markets, lang]
   );
 
   const selectedMarket = useMemo(
@@ -271,6 +296,9 @@ export default function HomePage() {
           void loadMyBets();
         }}
         onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
+        onHelpClick={() => setShowOnboarding(true)}
+        lang={lang}
+        onToggleLang={handleToggleLang}
       />
 
       <main>
@@ -320,9 +348,9 @@ export default function HomePage() {
                   newBalance: res.newBalance,
                   errorMessage: null,
                 });
-              } catch (err: any) {
+              } catch (err: unknown) {
                 console.error("placeBet failed", err);
-                const friendly = formatBetError(err?.message || err?.data?.message);
+                const friendly = formatBetError(getUnknownErrorMessage(err));
                 await loadMarkets();
                 await refreshUser();
                 await loadMyBets();
@@ -366,6 +394,7 @@ export default function HomePage() {
                     key={market.id}
                     market={market}
                     onClick={() => setSelectedMarketId(market.id)}
+                    lang={lang}
                   />
                 ))
               ) : (
@@ -390,6 +419,7 @@ export default function HomePage() {
         onClose={() => setShowAuth(false)}
         onSignUp={handleSignUp}
         onLogin={handleLoginSubmit}
+        lang={lang}
       />
       <UserProfileModal
         isOpen={showProfile}
@@ -404,7 +434,7 @@ export default function HomePage() {
         onLogout={async () => {
           try {
             await trpcClient.auth.logout.mutate();
-          } catch (err) {
+          } catch (err: unknown) {
             console.error("logout failed", err);
           } finally {
             setUser(null);
@@ -430,7 +460,7 @@ export default function HomePage() {
             await trpcClient.market.createMarket.mutate(payload);
             await loadMarkets();
             setShowAdminModal(false);
-          } catch (err) {
+          } catch (err: unknown) {
             console.error("Failed to create market", err);
             throw err;
           }
