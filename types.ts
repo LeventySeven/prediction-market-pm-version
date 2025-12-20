@@ -15,38 +15,73 @@ export interface Comment {
   likes: number;
 }
 
+export type MarketState = "open" | "closed" | "resolved" | "cancelled";
+
 export interface Market {
   id: string;
   title: string;
   titleRu: string;
   titleEn: string;
+  state: MarketState;
   outcome: "YES" | "NO" | null;
   category: Category;
   imageUrl: string;
   volume: string;
-  endDate: string; // ISO format or parsable date
+  closesAt: string; // Trading stops
+  expiresAt: string; // Event end
   yesPrice: number;
   noPrice: number;
   chance: number; // Percentage for YES
-  description: string; // Rules text
+  description: string;
   history: HistoryPoint[];
   comments: Comment[];
-  isNew?: boolean; // New flag for the badge
-  poolYes?: number;
-  poolNo?: number;
+  isNew?: boolean;
+  // LMSR specific
+  liquidityB?: number;
+  feeBps?: number;
+  settlementAsset?: string;
 }
 
-export interface PortfolioPosition {
+/**
+ * User position in a market (shares held)
+ */
+export interface Position {
+  marketId: string;
+  outcome: "YES" | "NO";
+  shares: number;
+  avgEntryPrice: number | null;
+  marketTitleRu: string;
+  marketTitleEn: string;
+  marketState: MarketState;
+  marketOutcome: "YES" | "NO" | null;
+  closesAt: string | null;
+  expiresAt: string | null;
+}
+
+/**
+ * Trade record (buy or sell)
+ */
+export interface Trade {
   id: string;
   marketId: string;
-  marketTitle: string;
-  type: 'YES' | 'NO';
-  shares: number;
-  avgPrice: number;
-  currentPrice: number;
-  endDate: string;
+  action: "buy" | "sell";
+  outcome: "YES" | "NO";
+  collateralGross: number;
+  fee: number;
+  collateralNet: number;
+  sharesDelta: number;
+  priceBefore: number;
+  priceAfter: number;
+  createdAt: string;
+  marketTitleRu: string;
+  marketTitleEn: string;
+  marketState: MarketState;
+  marketOutcome: "YES" | "NO" | null;
 }
 
+/**
+ * Legacy Bet type - mapped from Position for backwards compatibility
+ */
 export interface Bet {
   id: string;
   marketId: string;
@@ -66,12 +101,23 @@ export interface Bet {
   shares: number | null;
 }
 
+export interface PortfolioPosition {
+  id: string;
+  marketId: string;
+  marketTitle: string;
+  type: 'YES' | 'NO';
+  shares: number;
+  avgPrice: number;
+  currentPrice: number;
+  endDate: string;
+}
+
 export interface User {
   id: string;
   email?: string;
   username?: string;
   walletAddress?: string;
-  balance: number;
+  balance: number; // In major units (e.g., 1.5 VCOIN)
   isAdmin?: boolean;
   pnl?: number; // Total Profit/Loss
   portfolio?: PortfolioPosition[];
@@ -83,4 +129,27 @@ export interface User {
 export interface LeaderboardUser extends User {
   rank: number;
   avatar: string;
+}
+
+/**
+ * Wallet balance (multi-asset support)
+ */
+export interface WalletBalance {
+  assetCode: string;
+  balanceMinor: number;
+  balanceMajor: number;
+  decimals: number;
+}
+
+/**
+ * Price candle for charts
+ */
+export interface PriceCandle {
+  bucket: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  tradesCount: number;
 }

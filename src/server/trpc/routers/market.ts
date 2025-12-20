@@ -1,86 +1,126 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import { calculatePrices } from "../helpers/pricing";
+import { calculateLMSRPrices, toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
 
-type MarketRow = Database["public"]["Tables"]["markets"]["Row"];
-type BetRow = Database["public"]["Tables"]["bets"]["Row"];
-type BetWithMarket = BetRow & {
-  markets: Pick<
-    MarketRow,
-    "title_rus" | "title_eng" | "outcome" | "pool_yes" | "pool_no" | "expires_at"
-  > | null;
-};
-type PlaceBetTxArgs = Database["public"]["Functions"]["place_bet_tx"]["Args"];
-type PlaceBetTxResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"];
-type ResolveMarketArgs =
-  Database["public"]["Functions"]["resolve_market_tx"]["Args"];
-type ResolveMarketResult =
-  Database["public"]["Functions"]["resolve_market_tx"]["Returns"];
+// Default asset for the platform
+const DEFAULT_ASSET = "VCOIN";
+const VCOIN_DECIMALS = 6;
 
-const mapMarketRow = (row: MarketRow) => {
-  const { priceYes, priceNo } = calculatePrices(
-    Number(row.pool_yes),
-    Number(row.pool_no)
-  );
+type MarketRow = Database["public"]["Tables"]["markets"]["Row"];
+type AmmStateRow = Database["public"]["Tables"]["market_amm_state"]["Row"];
+type PositionRow = Database["public"]["Tables"]["positions"]["Row"];
+type TradeRow = Database["public"]["Tables"]["trades"]["Row"];
+type WalletBalanceRow = Database["public"]["Tables"]["wallet_balances"]["Row"];
+
+type MarketWithAmm = MarketRow & {
+  market_amm_state: AmmStateRow | null;
+};
+
+type PositionWithMarket = PositionRow & {
+  markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome" | "closes_at" | "expires_at"> | null;
+};
+
+type TradeWithMarket = TradeRow & {
+  markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome"> | null;
+};
+
+// RPC return types
+type PlaceBetResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"];
+type SellPositionResult = Database["public"]["Functions"]["sell_position_tx"]["Returns"];
+type ResolveMarketResult = Database["public"]["Functions"]["resolve_market_service_tx"]["Returns"];
+
+const mapMarketRow = (row: MarketWithAmm) => {
+  const amm = row.market_amm_state;
+  const { priceYes, priceNo } = amm
+    ? calculateLMSRPrices(Number(amm.q_yes), Number(amm.q_no), Number(amm.b))
+    : { priceYes: 0.5, priceNo: 0.5 };
 
   return {
     id: row.id,
     titleRu: row.title_rus,
     titleEn: row.title_eng,
     description: row.description,
-    poolYes: Number(row.pool_yes),
-    poolNo: Number(row.pool_no),
+    state: row.state,
+    closesAt: new Date(row.closes_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(),
-    outcome: row.outcome,
+    outcome: row.resolve_outcome,
+    settlementAsset: row.settlement_asset_code,
+    feeBps: row.fee_bps,
+    liquidityB: Number(row.liquidity_b),
     priceYes,
     priceNo,
+    // Volume can be derived from fee_accumulated or trades
+    volume: amm ? toMajorUnits(Number(amm.fee_accumulated_minor) * 100 / Math.max(row.fee_bps, 1), VCOIN_DECIMALS) : 0,
   };
 };
 
-const mapBetRow = (row: BetWithMarket) => {
-  const poolYes = Number(row.markets?.pool_yes ?? 0);
-  const poolNo = Number(row.markets?.pool_no ?? 0);
-  const { priceYes, priceNo } = calculatePrices(poolYes, poolNo);
+const mapPositionRow = (row: PositionWithMarket, decimals: number) => {
+  return {
+    marketId: row.market_id,
+    outcome: row.outcome,
+    shares: Number(row.shares),
+    avgEntryPrice: row.avg_entry_price ? Number(row.avg_entry_price) : null,
+    marketTitleRu: row.markets?.title_rus ?? "",
+    marketTitleEn: row.markets?.title_eng ?? "",
+    marketState: row.markets?.state ?? "open",
+    marketOutcome: row.markets?.resolve_outcome ?? null,
+    closesAt: row.markets?.closes_at ? new Date(row.markets.closes_at).toISOString() : null,
+    expiresAt: row.markets?.expires_at ? new Date(row.markets.expires_at).toISOString() : null,
+  };
+};
 
+const mapTradeRow = (row: TradeWithMarket, decimals: number) => {
   return {
     id: row.id,
     marketId: row.market_id,
-    side: row.side,
-    amount: Number(row.amount),
-    status: row.status,
-    payout: row.payout,
+    action: row.action,
+    outcome: row.outcome,
+    collateralGross: toMajorUnits(Number(row.collateral_gross_minor), decimals),
+    fee: toMajorUnits(Number(row.fee_minor), decimals),
+    collateralNet: toMajorUnits(Number(row.collateral_net_minor), decimals),
+    sharesDelta: Number(row.shares_delta),
+    priceBefore: Number(row.price_before),
+    priceAfter: Number(row.price_after),
     createdAt: new Date(row.created_at).toISOString(),
-    priceAtBet: row.price_at_bet ? Number(row.price_at_bet) : null,
-    shares: row.shares ? Number(row.shares) : null,
     marketTitleRu: row.markets?.title_rus ?? "",
     marketTitleEn: row.markets?.title_eng ?? "",
-    marketOutcome: row.markets?.outcome ?? null,
-    expiresAt: row.markets?.expires_at
-      ? new Date(row.markets.expires_at).toISOString()
-      : null,
-    priceYes,
-    priceNo,
+    marketState: row.markets?.state ?? "open",
+    marketOutcome: row.markets?.resolve_outcome ?? null,
   };
 };
 
-const betSummary = z.object({
-  id: z.string(),
+// Zod schemas for output
+const positionSummary = z.object({
   marketId: z.string(),
-  side: z.enum(["YES", "NO"]),
-  amount: z.number(),
-  status: z.string(),
-  payout: z.number().nullable(),
-  createdAt: z.string(),
-  priceAtBet: z.number().nullable(),
-  shares: z.number().nullable(),
+  outcome: z.enum(["YES", "NO"]),
+  shares: z.number(),
+  avgEntryPrice: z.number().nullable(),
   marketTitleRu: z.string(),
   marketTitleEn: z.string(),
+  marketState: z.string(),
   marketOutcome: z.enum(["YES", "NO"]).nullable(),
+  closesAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
-  priceYes: z.number().nullable(),
-  priceNo: z.number().nullable(),
+});
+
+const tradeSummary = z.object({
+  id: z.string(),
+  marketId: z.string(),
+  action: z.enum(["buy", "sell"]),
+  outcome: z.enum(["YES", "NO"]),
+  collateralGross: z.number(),
+  fee: z.number(),
+  collateralNet: z.number(),
+  sharesDelta: z.number(),
+  priceBefore: z.number(),
+  priceAfter: z.number(),
+  createdAt: z.string(),
+  marketTitleRu: z.string(),
+  marketTitleEn: z.string(),
+  marketState: z.string(),
+  marketOutcome: z.enum(["YES", "NO"]).nullable(),
 });
 
 const marketOutput = z.object({
@@ -88,12 +128,16 @@ const marketOutput = z.object({
   titleRu: z.string(),
   titleEn: z.string(),
   description: z.string().nullable(),
-  poolYes: z.number(),
-  poolNo: z.number(),
+  state: z.string(),
+  closesAt: z.string(),
   expiresAt: z.string(),
   outcome: z.enum(["YES", "NO"]).nullable(),
+  settlementAsset: z.string(),
+  feeBps: z.number(),
+  liquidityB: z.number(),
   priceYes: z.number(),
   priceNo: z.number(),
+  volume: z.number(),
 });
 
 export const marketRouter = router({
@@ -104,15 +148,17 @@ export const marketRouter = router({
       const { supabase } = ctx;
       const onlyOpen = input?.onlyOpen ?? false;
 
-      const query = supabase
+      let query = supabase
         .from("markets")
-        .select(
-          "id, title_rus, title_eng, description, pool_yes, pool_no, expires_at, outcome"
-        )
-        .order("id", { ascending: true });
+        .select(`
+          id, title_rus, title_eng, description, state, closes_at, expires_at,
+          resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor)
+        `)
+        .order("created_at", { ascending: false });
 
       if (onlyOpen) {
-        query.is("outcome", null);
+        query = query.eq("state", "open");
       }
 
       const { data, error } = await query;
@@ -123,10 +169,36 @@ export const marketRouter = router({
         });
       }
 
-      const rows = (data ?? []) as MarketRow[];
+      const rows = (data ?? []) as MarketWithAmm[];
       return rows.map(mapMarketRow);
     }),
 
+  getMarket: publicProcedure
+    .input(z.object({ marketId: z.string().uuid() }))
+    .output(marketOutput)
+    .query(async ({ ctx, input }) => {
+      const { supabase } = ctx;
+
+      const { data, error } = await supabase
+        .from("markets")
+        .select(`
+          id, title_rus, title_eng, description, state, closes_at, expires_at,
+          resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor)
+        `)
+        .eq("id", input.marketId)
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+      }
+
+      return mapMarketRow(data as MarketWithAmm);
+    }),
+
+  /**
+   * Place a bet (buy shares) - calls RPC that uses auth.uid()
+   */
   placeBet: publicProcedure
     .input(
       z.object({
@@ -137,9 +209,11 @@ export const marketRouter = router({
     )
     .output(
       z.object({
-        betId: z.string(),
-        userId: z.string(),
-        newBalance: z.number(),
+        tradeId: z.string(),
+        newBalanceMinor: z.number(),
+        sharesBought: z.number(),
+        priceBefore: z.number(),
+        priceAfter: z.number(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -150,102 +224,118 @@ export const marketRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
-      const marketRes = await supabase
-        .from("markets")
-        .select("id, outcome, expires_at")
-        .eq("id", marketId)
-        .maybeSingle();
-
-      const market = marketRes.data as MarketRow | null;
-
-      if (!market) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-      }
-
-      if (market.outcome) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Market already resolved",
-        });
-      }
-
-      const expiresAt = Date.parse(market.expires_at);
-      const graceMs = 5 * 60 * 1000;
-      if (Number.isFinite(expiresAt) && expiresAt + graceMs < Date.now()) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "MARKET_EXPIRED",
-        });
-      }
-
-      const userRes = await supabase
-        .from("users")
-        .select("id, balance")
-        .eq("id", authUser.id)
-        .maybeSingle();
-
-      if (!userRes.data) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
-      }
-
-      const balance = Number(userRes.data.balance);
-      if (balance < amount) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "INSUFFICIENT_BALANCE",
-        });
-      }
-
-      /**
-       * Transaction note:
-       * For true atomicity use a Postgres function (example in db/functions/place_bet_tx.sql)
-       * and call via supabase.rpc. PostgREST does not support multi-step transactions.
-       */
-      const rpc = await supabase.rpc("place_bet_tx", {
-        p_user_id: authUser.id,
+      // Call the RPC - it uses auth.uid() internally, no user_id passed
+      const { data, error } = await supabase.rpc("place_bet_tx", {
         p_market_id: marketId,
         p_side: side,
         p_amount: amount,
-      } satisfies PlaceBetTxArgs);
+      });
 
-      if (rpc.error) {
+      if (error) {
+        // Map common DB errors to user-friendly messages
+        const msg = error.message || "";
+        if (msg.includes("INSUFFICIENT_BALANCE")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_BALANCE" });
+        }
+        if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
+        }
+        if (msg.includes("MARKET_NOT_FOUND")) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+        }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: rpc.error.message,
+          message: error.message,
         });
       }
 
-      const raw = rpc.data as PlaceBetTxResult | PlaceBetTxResult[] | null;
+      const result = (Array.isArray(data) ? data[0] : data) as PlaceBetResult | null;
 
-      const result = Array.isArray(raw) ? raw[0] : raw;
-
-      let betId = result?.bet_id ? String(result.bet_id) : null;
-      let newBalance = result?.new_balance ? Number(result.new_balance) : null;
-
-      // Fallback: if RPC returned no row, fetch balance manually to avoid throwing after a successful tx.
-      if (!newBalance) {
-        const fallback = await supabase
-          .from("users")
-          .select("balance")
-          .eq("id", authUser.id)
-          .maybeSingle();
-        if (fallback.data) {
-          newBalance = Number(fallback.data.balance);
-        }
-      }
-
-      if (!betId) {
-        // We may not have the bet id; return 'unknown' as placeholder rather than failing the call.
-        betId = "unknown";
+      if (!result) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to place bet",
+        });
       }
 
       return {
-        betId,
-        userId: authUser.id,
-        newBalance: newBalance ?? 0,
+        tradeId: String(result.trade_id),
+        newBalanceMinor: Number(result.new_balance_minor),
+        sharesBought: Number(result.shares_bought),
+        priceBefore: Number(result.price_before),
+        priceAfter: Number(result.price_after),
       };
     }),
 
+  /**
+   * Sell position (cash out shares) - calls RPC that uses auth.uid()
+   */
+  sellPosition: publicProcedure
+    .input(
+      z.object({
+        marketId: z.string().uuid(),
+        side: z.enum(["YES", "NO"]),
+        shares: z.number().positive(),
+      })
+    )
+    .output(
+      z.object({
+        tradeId: z.string(),
+        receivedMinor: z.number(),
+        newBalanceMinor: z.number(),
+        priceBefore: z.number(),
+        priceAfter: z.number(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { supabase, authUser } = ctx;
+      const { marketId, side, shares } = input;
+
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data, error } = await supabase.rpc("sell_position_tx", {
+        p_market_id: marketId,
+        p_side: side,
+        p_shares: shares,
+      });
+
+      if (error) {
+        const msg = error.message || "";
+        if (msg.includes("INSUFFICIENT_SHARES")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_SHARES" });
+        }
+        if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      const result = (Array.isArray(data) ? data[0] : data) as SellPositionResult | null;
+
+      if (!result) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to sell position",
+        });
+      }
+
+      return {
+        tradeId: String(result.trade_id),
+        receivedMinor: Number(result.received_minor),
+        newBalanceMinor: Number(result.new_balance_minor),
+        priceBefore: Number(result.price_before),
+        priceAfter: Number(result.price_after),
+      };
+    }),
+
+  /**
+   * Resolve market (admin only) - calls service RPC
+   */
   resolveMarket: publicProcedure
     .input(
       z.object({
@@ -257,9 +347,8 @@ export const marketRouter = router({
       z.object({
         marketId: z.string(),
         outcome: z.enum(["YES", "NO"]),
-        totalPool: z.number(),
-        winnerPool: z.number(),
-        updatedBetsCount: z.number(),
+        totalPayoutMinor: z.number(),
+        winnersCount: z.number(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -269,24 +358,21 @@ export const marketRouter = router({
       }
       const { marketId, outcome } = input;
 
-      /**
-       * Transaction note:
-       * This expects a Postgres function resolve_market_tx defined in db/functions/resolve_market_tx.sql.
-       * It performs all updates atomically.
-       */
-      const rpc = await supabase.rpc("resolve_market_tx", {
+      // This RPC should be called with service_role for production
+      // For now we call it as admin user - the DB function should check admin status
+      const { data, error } = await supabase.rpc("resolve_market_service_tx", {
         p_market_id: marketId,
         p_outcome: outcome,
-      } satisfies ResolveMarketArgs);
+      });
 
-      if (rpc.error) {
+      if (error) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: rpc.error.message,
+          message: error.message,
         });
       }
 
-      const result = rpc.data as ResolveMarketResult | null;
+      const result = (Array.isArray(data) ? data[0] : data) as ResolveMarketResult | null;
 
       if (!result) {
         throw new TRPCError({
@@ -297,15 +383,17 @@ export const marketRouter = router({
 
       return {
         marketId: String(result.market_id),
-        outcome: result.outcome,
-        totalPool: Number(result.total_pool),
-        winnerPool: Number(result.winner_pool),
-        updatedBetsCount: Number(result.updated_bets_count),
+        outcome: result.outcome as "YES" | "NO",
+        totalPayoutMinor: Number(result.total_payout_minor),
+        winnersCount: Number(result.winners_count),
       };
     }),
 
-  myBets: publicProcedure
-    .output(z.array(betSummary))
+  /**
+   * Get user's positions (open holdings)
+   */
+  myPositions: publicProcedure
+    .output(z.array(positionSummary))
     .query(async ({ ctx }) => {
       const { supabase, authUser } = ctx;
       if (!authUser) {
@@ -313,30 +401,14 @@ export const marketRouter = router({
       }
 
       const { data, error } = await supabase
-        .from("bets")
-        .select(
-          `
-            id,
-            market_id,
-            side,
-            amount,
-            status,
-            payout,
-            price_at_bet,
-            shares,
-            created_at,
-            markets:market_id (
-              title_rus,
-              title_eng,
-              outcome,
-              pool_yes,
-              pool_no,
-              expires_at
-            )
-          `
-        )
+        .from("positions")
+        .select(`
+          user_id, market_id, outcome, shares, avg_entry_price, updated_at,
+          markets:market_id (title_rus, title_eng, state, resolve_outcome, closes_at, expires_at)
+        `)
         .eq("user_id", authUser.id)
-        .order("created_at", { ascending: false });
+        .gt("shares", 0)
+        .order("updated_at", { ascending: false });
 
       if (error) {
         throw new TRPCError({
@@ -345,19 +417,210 @@ export const marketRouter = router({
         });
       }
 
-      const rows = (data ?? []) as BetWithMarket[];
-      return rows.map(mapBetRow);
+      const rows = (data ?? []) as PositionWithMarket[];
+      return rows.map((r) => mapPositionRow(r, VCOIN_DECIMALS));
     }),
 
+  /**
+   * Get user's trade history
+   */
+  myTrades: publicProcedure
+    .output(z.array(tradeSummary))
+    .query(async ({ ctx }) => {
+      const { supabase, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data, error } = await supabase
+        .from("trades")
+        .select(`
+          id, market_id, user_id, action, outcome, asset_code,
+          collateral_gross_minor, fee_minor, collateral_net_minor,
+          shares_delta, price_before, price_after, created_at,
+          markets:market_id (title_rus, title_eng, state, resolve_outcome)
+        `)
+        .eq("user_id", authUser.id)
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      const rows = (data ?? []) as TradeWithMarket[];
+      return rows.map((r) => mapTradeRow(r, VCOIN_DECIMALS));
+    }),
+
+  /**
+   * Get wallet balance for current user
+   */
+  myWalletBalance: publicProcedure
+    .output(
+      z.object({
+        balanceMinor: z.number(),
+        balanceMajor: z.number(),
+        assetCode: z.string(),
+        decimals: z.number(),
+      })
+    )
+    .query(async ({ ctx }) => {
+      const { supabase, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data, error } = await supabase
+        .from("wallet_balances")
+        .select("user_id, asset_code, balance_minor")
+        .eq("user_id", authUser.id)
+        .eq("asset_code", DEFAULT_ASSET)
+        .maybeSingle();
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      const balanceMinor = data?.balance_minor ?? 0;
+
+      return {
+        balanceMinor: Number(balanceMinor),
+        balanceMajor: toMajorUnits(Number(balanceMinor), VCOIN_DECIMALS),
+        assetCode: DEFAULT_ASSET,
+        decimals: VCOIN_DECIMALS,
+      };
+    }),
+
+  /**
+   * Get price candles for market chart
+   */
+  getPriceCandles: publicProcedure
+    .input(
+      z.object({
+        marketId: z.string().uuid(),
+        limit: z.number().min(1).max(1000).optional().default(100),
+      })
+    )
+    .output(
+      z.array(
+        z.object({
+          bucket: z.string(),
+          open: z.number(),
+          high: z.number(),
+          low: z.number(),
+          close: z.number(),
+          volume: z.number(),
+          tradesCount: z.number(),
+        })
+      )
+    )
+    .query(async ({ ctx, input }) => {
+      const { supabase } = ctx;
+
+      const { data, error } = await supabase
+        .from("market_price_candles")
+        .select("market_id, bucket, open_price, high_price, low_price, close_price, volume_minor, trades_count")
+        .eq("market_id", input.marketId)
+        .order("bucket", { ascending: true })
+        .limit(input.limit);
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      return (data ?? []).map((c) => ({
+        bucket: c.bucket,
+        open: Number(c.open_price),
+        high: Number(c.high_price),
+        low: Number(c.low_price),
+        close: Number(c.close_price),
+        volume: toMajorUnits(Number(c.volume_minor), VCOIN_DECIMALS),
+        tradesCount: c.trades_count,
+      }));
+    }),
+
+  /**
+   * Get public trades feed (no user identities)
+   */
+  getPublicTrades: publicProcedure
+    .input(
+      z.object({
+        marketId: z.string().uuid().optional(),
+        limit: z.number().min(1).max(100).optional().default(50),
+      })
+    )
+    .output(
+      z.array(
+        z.object({
+          id: z.string(),
+          marketId: z.string(),
+          action: z.enum(["buy", "sell"]),
+          outcome: z.enum(["YES", "NO"]),
+          collateralGross: z.number(),
+          sharesDelta: z.number(),
+          priceBefore: z.number(),
+          priceAfter: z.number(),
+          createdAt: z.string(),
+        })
+      )
+    )
+    .query(async ({ ctx, input }) => {
+      const { supabase } = ctx;
+
+      let query = supabase
+        .from("trades_public")
+        .select("id, market_id, action, outcome, collateral_gross_minor, shares_delta, price_before, price_after, created_at")
+        .order("created_at", { ascending: false })
+        .limit(input.limit);
+
+      if (input.marketId) {
+        query = query.eq("market_id", input.marketId);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      return (data ?? []).map((t) => ({
+        id: t.id,
+        marketId: t.market_id,
+        action: t.action as "buy" | "sell",
+        outcome: t.outcome as "YES" | "NO",
+        collateralGross: toMajorUnits(Number(t.collateral_gross_minor), VCOIN_DECIMALS),
+        sharesDelta: Number(t.shares_delta),
+        priceBefore: Number(t.price_before),
+        priceAfter: Number(t.price_after),
+        createdAt: new Date(t.created_at).toISOString(),
+      }));
+    }),
+
+  /**
+   * Create market (admin only)
+   */
   createMarket: publicProcedure
     .input(
       z.object({
         titleRu: z.string().min(3),
         titleEn: z.string().min(3),
         description: z.string().optional().nullable(),
+        closesAt: z.string(),
         expiresAt: z.string(),
-        poolYes: z.number().optional().default(0),
-        poolNo: z.number().optional().default(0),
+        liquidityB: z.number().positive().optional().default(100),
+        feeBps: z.number().min(0).max(2000).optional().default(200),
       })
     )
     .output(
@@ -373,33 +636,58 @@ export const marketRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
       }
 
+      const closesAtMs = Date.parse(input.closesAt);
       const expiresAtMs = Date.parse(input.expiresAt);
-      if (!Number.isFinite(expiresAtMs)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid expiresAt" });
+      if (!Number.isFinite(closesAtMs) || !Number.isFinite(expiresAtMs)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid dates" });
       }
 
-      const { data, error } = await supabase
+      // Insert market
+      const { data: market, error: marketError } = await supabase
         .from("markets")
         .insert({
           title_rus: input.titleRu.trim(),
           title_eng: input.titleEn.trim(),
           description: input.description ?? null,
-          pool_yes: input.poolYes ?? 0,
-          pool_no: input.poolNo ?? 0,
+          state: "open",
+          closes_at: new Date(closesAtMs).toISOString(),
           expires_at: new Date(expiresAtMs).toISOString(),
-          outcome: null,
+          settlement_asset_code: DEFAULT_ASSET,
+          fee_bps: input.feeBps,
+          liquidity_b: input.liquidityB,
+          amm_type: "lmsr",
         })
         .select("id, title_rus, title_eng")
         .single();
 
-      if (error || !data) {
+      if (marketError || !market) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: error?.message ?? "Failed to create market",
+          message: marketError?.message ?? "Failed to create market",
         });
       }
 
-      return { id: data.id, titleRu: data.title_rus, titleEn: data.title_eng };
+      // Insert AMM state
+      const { error: ammError } = await supabase
+        .from("market_amm_state")
+        .insert({
+          market_id: market.id,
+          b: input.liquidityB,
+          q_yes: 0,
+          q_no: 0,
+          last_price_yes: 0.5,
+          fee_accumulated_minor: 0,
+        });
+
+      if (ammError) {
+        // Rollback by deleting market (not ideal, but simple)
+        await supabase.from("markets").delete().eq("id", market.id);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: ammError.message,
+        });
+      }
+
+      return { id: market.id, titleRu: market.title_rus, titleEn: market.title_eng };
     }),
 });
-
