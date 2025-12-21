@@ -25,17 +25,11 @@ const authColumns = `${publicColumns}, password_hash`;
 const USERS_TABLE = "users" as const;
 const WALLET_BALANCES_TABLE = "wallet_balances" as const;
 
-type DbUserRow = {
-  id: number | string;
-  email: string;
-  username: string;
-  display_name: string | null;
-  created_at: string;
-  is_admin: boolean;
-};
+type DbUserRow = Database["public"]["Tables"]["users"]["Row"];
 
 type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 type WalletBalanceInsert = Database["public"]["Tables"]["wallet_balances"]["Insert"];
+type WalletBalanceRow = Pick<Database["public"]["Tables"]["wallet_balances"]["Row"], "balance_minor">;
 
 const toPublicUser = (row: DbUserRow, balanceMinor: number = 0): PublicUser => ({
   id: String(row.id),
@@ -116,7 +110,7 @@ export const authRouter = router({
       });
       setCookie(authCookie(token));
 
-      return { user: toPublicUser(inserted.data, 0) };
+      return { user: toPublicUser(inserted.data as DbUserRow, 0) };
     }),
 
   login: publicProcedure
@@ -145,7 +139,8 @@ export const authRouter = router({
         });
       }
 
-      const valid = await verifyPassword(input.password, data.password_hash);
+      const authRow = data as DbUserRow;
+      const valid = await verifyPassword(input.password, authRow.password_hash);
       if (!valid) {
         throw new TRPCError({
           code: "UNAUTHORIZED",
@@ -154,24 +149,25 @@ export const authRouter = router({
       }
 
       // Fetch wallet balance
-      const { data: wallet } = await supabase
+      const { data: walletRow } = await supabase
         .from("wallet_balances")
         .select("balance_minor")
-        .eq("user_id", data.id)
+        .eq("user_id", authRow.id)
         .eq("asset_code", DEFAULT_ASSET)
         .maybeSingle();
 
-      const balanceMinor = wallet?.balance_minor ?? 0;
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
 
       const token = await signAuthToken({
-        sub: String(data.id),
-        email: data.email,
-        username: data.username,
-        isAdmin: Boolean(data.is_admin),
+        sub: String(authRow.id),
+        email: authRow.email,
+        username: authRow.username,
+        isAdmin: Boolean(authRow.is_admin),
       });
       setCookie(authCookie(token));
 
-      return { user: toPublicUser(data, Number(balanceMinor)) };
+      return { user: toPublicUser(authRow, Number(balanceMinor)) };
     }),
 
   me: publicProcedure.query(async ({ ctx }) => {
@@ -187,18 +183,20 @@ export const authRouter = router({
         .eq("id", payload.sub)
         .maybeSingle();
       if (error || !data) return null;
+      const currentUser = data as DbUserRow;
 
       // Fetch wallet balance
-      const { data: wallet } = await supabase
+      const { data: walletRow } = await supabase
         .from("wallet_balances")
         .select("balance_minor")
-        .eq("user_id", data.id)
+        .eq("user_id", currentUser.id)
         .eq("asset_code", DEFAULT_ASSET)
         .maybeSingle();
 
-      const balanceMinor = wallet?.balance_minor ?? 0;
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
 
-      return toPublicUser(data, Number(balanceMinor));
+      return toPublicUser(currentUser, Number(balanceMinor));
     } catch {
       return null;
     }

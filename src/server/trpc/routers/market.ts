@@ -3,6 +3,9 @@ import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { calculateLMSRPrices, toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+type SupabaseAnyClient = SupabaseClient<Database, "public", any>;
 
 // Default asset for the platform
 const DEFAULT_ASSET = "VCOIN";
@@ -12,11 +15,12 @@ type MarketRow = Database["public"]["Tables"]["markets"]["Row"];
 type AmmStateRow = Database["public"]["Tables"]["market_amm_state"]["Row"];
 type PositionRow = Database["public"]["Tables"]["positions"]["Row"];
 type TradeRow = Database["public"]["Tables"]["trades"]["Row"];
-type WalletBalanceRow = Database["public"]["Tables"]["wallet_balances"]["Row"];
-
 type MarketWithAmm = MarketRow & {
   market_amm_state: AmmStateRow | null;
 };
+
+type WalletBalanceRowBase = Database["public"]["Tables"]["wallet_balances"]["Row"];
+type WalletBalanceRow = Pick<WalletBalanceRowBase, "balance_minor">;
 
 type PositionWithMarket = PositionRow & {
   markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome" | "closes_at" | "expires_at"> | null;
@@ -225,7 +229,7 @@ export const marketRouter = router({
       }
 
       // Call the RPC - it uses auth.uid() internally, no user_id passed
-      const { data, error } = await supabase.rpc("place_bet_tx", {
+      const { data, error } = await (supabase as SupabaseAnyClient).rpc("place_bet_tx", {
         p_market_id: marketId,
         p_side: side,
         p_amount: amount,
@@ -241,8 +245,8 @@ export const marketRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
         }
         if (msg.includes("MARKET_NOT_FOUND")) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-        }
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+      }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
@@ -295,7 +299,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
-      const { data, error } = await supabase.rpc("sell_position_tx", {
+      const { data, error } = await (supabase as SupabaseAnyClient).rpc("sell_position_tx", {
         p_market_id: marketId,
         p_side: side,
         p_shares: shares,
@@ -360,7 +364,7 @@ export const marketRouter = router({
 
       // This RPC should be called with service_role for production
       // For now we call it as admin user - the DB function should check admin status
-      const { data, error } = await supabase.rpc("resolve_market_service_tx", {
+      const { data, error } = await (supabase as SupabaseAnyClient).rpc("resolve_market_service_tx", {
         p_market_id: marketId,
         p_outcome: outcome,
       });
@@ -487,10 +491,11 @@ export const marketRouter = router({
         });
       }
 
-      const balanceMinor = data?.balance_minor ?? 0;
+      const walletRow = data as WalletBalanceRow | null;
+      const balanceMinor = walletRow ? Number(walletRow.balance_minor ?? 0) : 0;
 
       return {
-        balanceMinor: Number(balanceMinor),
+        balanceMinor,
         balanceMajor: toMajorUnits(Number(balanceMinor), VCOIN_DECIMALS),
         assetCode: DEFAULT_ASSET,
         decimals: VCOIN_DECIMALS,
@@ -537,15 +542,19 @@ export const marketRouter = router({
         });
       }
 
-      return (data ?? []).map((c) => ({
-        bucket: c.bucket,
-        open: Number(c.open_price),
-        high: Number(c.high_price),
-        low: Number(c.low_price),
-        close: Number(c.close_price),
-        volume: toMajorUnits(Number(c.volume_minor), VCOIN_DECIMALS),
-        tradesCount: c.trades_count,
-      }));
+      type CandleRow = Database["public"]["Tables"]["market_price_candles"]["Row"];
+      return (data ?? []).map((c) => {
+        const candle = c as CandleRow;
+        return {
+          bucket: candle.bucket,
+          open: Number(candle.open_price),
+          high: Number(candle.high_price),
+          low: Number(candle.low_price),
+          close: Number(candle.close_price),
+          volume: toMajorUnits(Number(candle.volume_minor), VCOIN_DECIMALS),
+          tradesCount: candle.trades_count,
+        };
+      });
     }),
 
   /**
@@ -595,17 +604,21 @@ export const marketRouter = router({
         });
       }
 
-      return (data ?? []).map((t) => ({
-        id: t.id,
-        marketId: t.market_id,
-        action: t.action as "buy" | "sell",
-        outcome: t.outcome as "YES" | "NO",
-        collateralGross: toMajorUnits(Number(t.collateral_gross_minor), VCOIN_DECIMALS),
-        sharesDelta: Number(t.shares_delta),
-        priceBefore: Number(t.price_before),
-        priceAfter: Number(t.price_after),
-        createdAt: new Date(t.created_at).toISOString(),
-      }));
+      type PublicTradeRow = Database["public"]["Views"]["trades_public"]["Row"];
+      return (data ?? []).map((t) => {
+        const trade = t as PublicTradeRow;
+        return {
+          id: trade.id,
+          marketId: trade.market_id,
+          action: trade.action as "buy" | "sell",
+          outcome: trade.outcome as "YES" | "NO",
+          collateralGross: toMajorUnits(Number(trade.collateral_gross_minor), VCOIN_DECIMALS),
+          sharesDelta: Number(trade.shares_delta),
+          priceBefore: Number(trade.price_before),
+          priceAfter: Number(trade.price_after),
+          createdAt: new Date(trade.created_at).toISOString(),
+        };
+      });
     }),
 
   /**
@@ -643,7 +656,7 @@ export const marketRouter = router({
       }
 
       // Insert market
-      const { data: market, error: marketError } = await supabase
+      const { data: market, error: marketError } = await (supabase as SupabaseAnyClient)
         .from("markets")
         .insert({
           title_rus: input.titleRu.trim(),
@@ -668,7 +681,7 @@ export const marketRouter = router({
       }
 
       // Insert AMM state
-      const { error: ammError } = await supabase
+      const { error: ammError } = await (supabase as SupabaseAnyClient)
         .from("market_amm_state")
         .insert({
           market_id: market.id,

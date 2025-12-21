@@ -11,6 +11,14 @@ const VCOIN_DECIMALS = 6;
 type UserRow = Database["public"]["Tables"]["users"]["Row"];
 type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 type WalletBalanceInsert = Database["public"]["Tables"]["wallet_balances"]["Insert"];
+type WalletBalanceRow = Pick<
+  Database["public"]["Tables"]["wallet_balances"]["Row"],
+  "balance_minor"
+>;
+type WalletTransactionRow = Pick<
+  Database["public"]["Tables"]["wallet_transactions"]["Row"],
+  "id" | "asset_code" | "amount_minor" | "kind" | "market_id" | "trade_id" | "created_at"
+>;
 
 const userShape = {
   id: z.string(),
@@ -67,16 +75,19 @@ export const userRouter = router({
         });
       }
 
-      if (existing.data) {
+      const existingRow = existing.data as UserRow | null;
+      if (existingRow) {
         // Fetch wallet balance for existing user
-        const { data: wallet } = await supabase
+        const { data: walletRow } = await supabase
           .from("wallet_balances")
           .select("balance_minor")
-          .eq("user_id", existing.data.id)
+          .eq("user_id", existingRow.id)
           .eq("asset_code", DEFAULT_ASSET)
           .maybeSingle();
 
-        return formatUser(existing.data as UserRow, Number(wallet?.balance_minor ?? 0));
+        const wallet = walletRow as WalletBalanceRow | null;
+        const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+        return formatUser(existingRow, balanceMinor);
       }
 
       const payload: UserInsert = {
@@ -123,20 +134,20 @@ export const userRouter = router({
     .query(async ({ ctx, input }) => {
       const { supabase } = ctx;
 
-      const user = await supabase
-        .from("users")
+      const userResult = await (supabase as unknown as SupabaseClient<any>)
+        .from(USERS_TABLE)
         .select(selectColumns)
         .eq("id", input.userId)
         .maybeSingle();
 
-      if (user.error) {
+      if (userResult.error) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: user.error.message,
+          message: userResult.error.message,
         });
       }
 
-      if (!user.data) {
+      if (!userResult.data) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "User not found",
@@ -144,14 +155,20 @@ export const userRouter = router({
       }
 
       // Fetch wallet balance
-      const { data: wallet } = await supabase
+      const targetUser = userResult.data as UserRow | null;
+      if (!targetUser) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "User not found after registration" });
+      }
+      const { data: walletRow } = await supabase
         .from("wallet_balances")
         .select("balance_minor")
-        .eq("user_id", user.data.id)
+        .eq("user_id", targetUser.id)
         .eq("asset_code", DEFAULT_ASSET)
         .maybeSingle();
 
-      return formatUser(user.data as UserRow, Number(wallet?.balance_minor ?? 0));
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+      return formatUser(targetUser, balanceMinor);
     }),
 
   /**
@@ -192,7 +209,8 @@ export const userRouter = router({
         });
       }
 
-      return (data ?? []).map((tx) => ({
+      const rows = (data ?? []) as WalletTransactionRow[];
+      return rows.map((tx) => ({
         id: tx.id,
         assetCode: tx.asset_code,
         amountMinor: Number(tx.amount_minor),
