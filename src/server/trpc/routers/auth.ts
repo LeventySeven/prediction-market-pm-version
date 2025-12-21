@@ -102,7 +102,7 @@ export const authRouter = router({
 
       const inserted = await supabaseAny
         .from(USERS_TABLE)
-        .insert(payload)
+        .upsert(payload, { onConflict: "id" })
         .select(publicColumns)
         .single();
 
