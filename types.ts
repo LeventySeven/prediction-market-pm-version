@@ -101,17 +101,6 @@ export interface Bet {
   shares: number | null;
 }
 
-export interface PortfolioPosition {
-  id: string;
-  marketId: string;
-  marketTitle: string;
-  type: 'YES' | 'NO';
-  shares: number;
-  avgPrice: number;
-  currentPrice: number;
-  endDate: string;
-}
-
 export interface User {
   id: string;
   email?: string;
@@ -120,7 +109,6 @@ export interface User {
   balance: number; // In major units (e.g., 1.5 VCOIN)
   isAdmin?: boolean;
   pnl?: number; // Total Profit/Loss
-  portfolio?: PortfolioPosition[];
   name?: string; // Display name
   referrals?: number;
   avatar?: string;
@@ -129,6 +117,19 @@ export interface User {
 export interface LeaderboardUser extends User {
   rank: number;
   avatar: string;
+  betCount?: number;
+}
+
+export interface PublicTrade {
+  id: string;
+  marketId: string;
+  action: "buy" | "sell";
+  outcome: "YES" | "NO";
+  collateralGross: number;
+  sharesDelta: number;
+  priceBefore: number;
+  priceAfter: number;
+  createdAt: string;
 }
 
 /**

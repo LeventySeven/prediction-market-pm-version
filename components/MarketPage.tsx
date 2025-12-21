@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Market, User, Position } from '../types';
+import { Market, User, Position, PriceCandle, PublicTrade } from '../types';
 import Button from './Button';
 import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, TrendingDown } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
@@ -31,6 +31,9 @@ interface MarketPageProps {
   onResolveOutcome?: (params: { marketId: string; outcome: 'YES' | 'NO' }) => Promise<void>;
   userPositions?: Position[];
   lang?: 'RU' | 'EN';
+  priceCandles?: PriceCandle[];
+  publicTrades?: PublicTrade[];
+  insightsLoading?: boolean;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -43,6 +46,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
   onResolveOutcome,
   userPositions = [],
   lang = 'RU',
+  priceCandles = [],
+  publicTrades = [],
+  insightsLoading = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
@@ -56,6 +62,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [sellError, setSellError] = useState<string | null>(null);
   const [resolvingOutcome, setResolvingOutcome] = useState<'YES' | 'NO' | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setComments(market.comments);
+  }, [market]);
 
   // Use closesAt for trading deadline, expiresAt for event end
   const tradingDeadline = market.closesAt || market.expiresAt;
@@ -86,6 +96,21 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const userYesPosition = userPositions.find(p => p.outcome === 'YES');
   const userNoPosition = userPositions.find(p => p.outcome === 'NO');
   const userShares = tradeType === 'YES' ? (userYesPosition?.shares ?? 0) : (userNoPosition?.shares ?? 0);
+
+  const chartSeries = useMemo(() => {
+    if (priceCandles.length > 0) {
+      return priceCandles.map((c) => ({
+        date: new Date(c.bucket).toLocaleTimeString(lang === 'RU' ? 'ru-RU' : 'en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        value: Number((c.close * 100).toFixed(2)),
+      }));
+    }
+    return market.history;
+  }, [priceCandles, market.history, lang]);
+
+  const displayedChance = chartSeries.length > 0 ? chartSeries[chartSeries.length - 1].value : market.chance;
 
   useEffect(() => {
     const update = () => {
@@ -277,50 +302,61 @@ const MarketPage: React.FC<MarketPageProps> = ({
           </div>
 
           {/* Chart */}
-          <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 h-[450px]">
+          <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 h-[450px] relative">
             <div className="flex items-baseline gap-4 mb-8">
-              <span className="text-4xl font-bold tracking-tight text-[#BEFF1D]">{market.chance}%</span>
+              <span className="text-4xl font-bold tracking-tight text-[#BEFF1D]">{displayedChance}%</span>
               <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
                 {lang === 'RU' ? 'Вероятность (Да)' : 'Yes Probability'}
               </span>
             </div>
-            <ResponsiveContainer width="100%" height="80%">
-              <AreaChart data={market.history}>
-                <defs>
-                  <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#BEFF1D" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="#BEFF1D" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{fill: '#52525b', fontSize: 10}} 
-                  tickFormatter={(value) => String(value).toUpperCase()}
-                  minTickGap={40}
-                  dy={10}
-                />
-                <YAxis 
-                  hide domain={[0, 100]} 
-                />
-                <CartesianGrid vertical={false} stroke="#18181b" strokeDasharray="3 3" />
-                <Tooltip 
-                  contentStyle={{backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '6px'}}
-                  itemStyle={{color: '#BEFF1D', fontSize: '12px'}}
-                  labelStyle={{color: '#71717a', fontSize: '10px', textTransform: 'uppercase'}}
-                  formatter={(value: number) => [`${value}%`, lang === 'RU' ? 'Вероятность' : 'Chance']}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="value" 
-                  stroke="#BEFF1D" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorValue)" 
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            {insightsLoading && (
+              <span className="absolute top-6 right-6 text-[11px] uppercase text-zinc-500 tracking-wider">
+                {lang === 'RU' ? 'Обновление...' : 'Updating...'}
+              </span>
+            )}
+            {chartSeries.length > 0 ? (
+              <ResponsiveContainer width="100%" height="80%">
+                <AreaChart data={chartSeries}>
+                  <defs>
+                    <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#BEFF1D" stopOpacity={0.1}/>
+                      <stop offset="95%" stopColor="#BEFF1D" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis 
+                    dataKey="date" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{fill: '#52525b', fontSize: 10}} 
+                    tickFormatter={(value) => String(value).toUpperCase()}
+                    minTickGap={40}
+                    dy={10}
+                  />
+                  <YAxis 
+                    hide domain={[0, 100]} 
+                  />
+                  <CartesianGrid vertical={false} stroke="#18181b" strokeDasharray="3 3" />
+                  <Tooltip 
+                    contentStyle={{backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '6px'}}
+                    itemStyle={{color: '#BEFF1D', fontSize: '12px'}}
+                    labelStyle={{color: '#71717a', fontSize: '10px', textTransform: 'uppercase'}}
+                    formatter={(value: number) => [`${value}%`, lang === 'RU' ? 'Вероятность' : 'Chance']}
+                  />
+                  <Area 
+                    type="monotone" 
+                    dataKey="value" 
+                    stroke="#BEFF1D" 
+                    strokeWidth={2}
+                    fillOpacity={1} 
+                    fill="url(#colorValue)" 
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-[80%] items-center justify-center text-sm text-neutral-500">
+                {lang === 'RU' ? 'Нет данных для графика' : 'No chart data yet'}
+              </div>
+            )}
           </div>
 
           {/* Tabs */}
@@ -384,6 +420,64 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {activeTab === 'ACTIVITY' && (
+              <div className="space-y-4">
+                {insightsLoading && (
+                  <p className="text-sm text-neutral-400">
+                    {lang === 'RU' ? 'Загрузка активности...' : 'Loading activity...'}
+                  </p>
+                )}
+                {!insightsLoading && publicTrades.length === 0 && (
+                  <p className="text-sm text-neutral-500">
+                    {lang === 'RU' ? 'Сделок пока нет' : 'No trades yet'}
+                  </p>
+                )}
+                {publicTrades.map((trade) => {
+                  const isBuy = trade.action === 'buy';
+                  const label =
+                    isBuy
+                      ? lang === 'RU'
+                        ? 'Покупка'
+                        : 'Buy'
+                      : lang === 'RU'
+                      ? 'Продажа'
+                      : 'Sell';
+                  const formattedTime = new Date(trade.createdAt).toLocaleString(
+                    lang === 'RU' ? 'ru-RU' : 'en-US',
+                    {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      day: '2-digit',
+                      month: 'short',
+                    }
+                  );
+                  return (
+                    <div
+                      key={trade.id}
+                      className="flex items-center justify-between border border-zinc-800 rounded-lg p-3 text-sm text-neutral-300"
+                    >
+                      <div>
+                        <p className="font-semibold text-white">
+                          {label} • {trade.outcome}
+                        </p>
+                        <p className="text-[11px] text-neutral-500 uppercase tracking-wider">
+                          {formattedTime}
+                        </p>
+                      </div>
+                      <div className="text-right font-mono">
+                        <p className={isBuy ? 'text-[#BEFF1D]' : 'text-[rgba(250,73,159,1)]'}>
+                          ${trade.collateralGross.toFixed(2)}
+                        </p>
+                        <p className="text-[11px] text-neutral-500">
+                          {Math.abs(trade.sharesDelta).toFixed(2)} sh @ {(trade.priceAfter * 100).toFixed(1)}%
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
