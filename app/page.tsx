@@ -9,7 +9,7 @@ import OnboardingModal from "@/components/OnboardingModal";
 import UserProfileModal from "@/components/UserProfileModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
-import type { Category, Market, User, Bet, Position, Trade } from "@/types";
+import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search } from "lucide-react";
 
@@ -42,6 +42,9 @@ export default function HomePage() {
     errorMessage?: string | null;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
+  const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
+  const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null;
@@ -326,6 +329,50 @@ export default function HomePage() {
     [selectedMarketId, markets]
   );
 
+  useEffect(() => {
+    if (!selectedMarketId) {
+      setMarketCandles([]);
+      setMarketPublicTrades([]);
+      setMarketInsightsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchInsights = async () => {
+      setMarketInsightsLoading(true);
+      try {
+        const [candles, trades] = await Promise.all([
+          trpcClient.market.getPriceCandles.query({ marketId: selectedMarketId, limit: 200 }),
+          trpcClient.market.getPublicTrades.query({ marketId: selectedMarketId, limit: 50 }),
+        ]);
+        if (cancelled) return;
+        setMarketCandles(candles as PriceCandle[]);
+        setMarketPublicTrades(trades as PublicTrade[]);
+      } catch (err: unknown) {
+        console.error("Failed to load market insights", err);
+        if (!cancelled) {
+          setMarketCandles([]);
+          setMarketPublicTrades([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setMarketInsightsLoading(false);
+        }
+      }
+    };
+
+    void fetchInsights();
+    const interval = setInterval(() => {
+      void fetchInsights();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedMarketId]);
+
   /**
    * Handle placing a bet (buying shares)
    */
@@ -462,6 +509,9 @@ export default function HomePage() {
             onPlaceBet={handlePlaceBet}
             onSellPosition={handleSellPosition}
             userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
+            priceCandles={marketCandles}
+            publicTrades={marketPublicTrades}
+            insightsLoading={marketInsightsLoading}
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">

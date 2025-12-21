@@ -24,18 +24,7 @@ export const MOCK_LEADERBOARD: LeaderboardUser[] = [
     balance: 145000,
     pnl: 45200,
     referrals: 124,
-    portfolio: [
-      {
-        id: 'lp1',
-        marketId: '4',
-        marketTitle: 'BTC > 125k',
-        type: 'YES',
-        shares: 5000,
-        avgPrice: 0.2,
-        currentPrice: 0.33,
-        endDate: '2025-12-31',
-      },
-    ],
+    betCount: 4,
   },
   {
     id: 'l2',
@@ -45,18 +34,7 @@ export const MOCK_LEADERBOARD: LeaderboardUser[] = [
     balance: 89000,
     pnl: 21500,
     referrals: 45,
-    portfolio: [
-      {
-        id: 'lp2',
-        marketId: '1',
-        marketTitle: 'YouTube 2026',
-        type: 'NO',
-        shares: 2000,
-        avgPrice: 0.7,
-        currentPrice: 0.85,
-        endDate: '2026-01-01',
-      },
-    ],
+    betCount: 2,
   },
   {
     id: 'l3',
@@ -66,7 +44,7 @@ export const MOCK_LEADERBOARD: LeaderboardUser[] = [
     balance: 56000,
     pnl: 12400,
     referrals: 12,
-    portfolio: [],
+    betCount: 1,
   },
   {
     id: 'l4',
@@ -76,7 +54,7 @@ export const MOCK_LEADERBOARD: LeaderboardUser[] = [
     balance: 42000,
     pnl: 8900,
     referrals: 5,
-    portfolio: [],
+    betCount: 1,
   },
   {
     id: 'l5',
@@ -86,6 +64,6 @@ export const MOCK_LEADERBOARD: LeaderboardUser[] = [
     balance: 31000,
     pnl: -1200,
     referrals: 0,
-    portfolio: [],
+    betCount: 0,
   },
 ];

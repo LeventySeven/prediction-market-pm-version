@@ -55,7 +55,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                 <div className="flex-1">
                     <h3 className="font-bold text-white text-sm group-hover:text-[#BEFF1D] transition-colors">{user.name}</h3>
                     <p className="text-[10px] text-neutral-500 uppercase tracking-wider">
-                        {user.portfolio?.length || 0} {lang === 'RU' ? 'ставок' : 'bets'}
+                        {user.betCount ?? 0} {lang === 'RU' ? 'ставок' : 'bets'}
                     </p>
                 </div>
 
