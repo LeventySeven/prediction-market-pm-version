@@ -40,7 +40,6 @@ export interface Database {
           is_admin: boolean;
           referral_code: string | null;
           created_at: string;
-          password_hash: string | null;
         };
         Insert: {
           id?: string;
@@ -50,7 +49,6 @@ export interface Database {
           is_admin?: boolean;
           referral_code?: string | null;
           created_at?: string;
-          password_hash?: string | null;
         };
         Update: {
           id?: string;
@@ -60,7 +58,6 @@ export interface Database {
           is_admin?: boolean;
           referral_code?: string | null;
           created_at?: string;
-          password_hash?: string | null;
         };
         Relationships: [];
       };
@@ -138,6 +135,9 @@ export interface Database {
           fee_bps: number;
           liquidity_b: number;
           amm_type: string;
+          category_id: string | null;
+          category_label_ru: string | null;
+          category_label_en: string | null;
           created_at: string;
         };
         Insert: {
@@ -153,6 +153,9 @@ export interface Database {
           fee_bps?: number;
           liquidity_b?: number;
           amm_type?: string;
+          category_id?: string | null;
+          category_label_ru?: string | null;
+          category_label_en?: string | null;
           created_at?: string;
         };
         Update: {
@@ -168,9 +171,14 @@ export interface Database {
           fee_bps?: number;
           liquidity_b?: number;
           amm_type?: string;
+          category_id?: string | null;
+          category_label_ru?: string | null;
+          category_label_en?: string | null;
           created_at?: string;
         };
-        Relationships: [];
+        Relationships: [
+          { foreignKeyName: "markets_settlement_asset_code_fkey"; columns: ["settlement_asset_code"]; referencedRelation: "assets"; referencedColumns: ["code"] }
+        ];
       };
       market_amm_state: {
         Row: {

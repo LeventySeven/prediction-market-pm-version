@@ -2,7 +2,6 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { hashPassword, verifyPassword } from "../../auth/password";
 import { authCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
@@ -20,7 +19,6 @@ const usernameSchema = z
 const passwordSchema = z.string().min(8).max(128);
 
 const publicColumns = "id, email, username, display_name, created_at, is_admin";
-const authColumns = `${publicColumns}, password_hash`;
 
 const USERS_TABLE = "users" as const;
 const WALLET_BALANCES_TABLE = "wallet_balances" as const;
@@ -55,11 +53,20 @@ export const authRouter = router({
       const email = input.email.toLowerCase().trim();
       const username = input.username.trim();
 
-      const existing = await supabase
-        .from("users")
+      const supabaseAny = supabase as unknown as SupabaseClient<any>;
+
+      const existing = await supabaseAny
+        .from(USERS_TABLE)
         .select("id")
         .or(`email.eq.${email},username.eq.${username}`)
         .maybeSingle();
+
+      if (existing.error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: existing.error.message,
+        });
+      }
 
       if (existing.data) {
         throw new TRPCError({
@@ -68,23 +75,39 @@ export const authRouter = router({
         });
       }
 
-      const password_hash = await hashPassword(input.password);
+      const createdUser = await supabase.auth.admin.createUser({
+        email,
+        password: input.password,
+        email_confirm: true,
+        user_metadata: { username },
+      });
+
+      if (createdUser.error || !createdUser.data?.user) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: createdUser.error?.message ?? "Failed to register user",
+        });
+      }
+
+      const userId = createdUser.data.user.id;
 
       const payload: UserInsert = {
+        id: userId,
         email,
         username,
         display_name: username,
         is_admin: false,
-        password_hash,
+        referral_code: null,
       };
 
-      const inserted = await (supabase as unknown as SupabaseClient<any>)
+      const inserted = await supabaseAny
         .from(USERS_TABLE)
         .insert(payload)
         .select(publicColumns)
         .single();
 
       if (inserted.error || !inserted.data) {
+        await supabase.auth.admin.deleteUser(userId);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: inserted.error?.message ?? "Failed to create user",
@@ -92,7 +115,7 @@ export const authRouter = router({
       }
 
       // Initialize wallet balance for new user
-      await (supabase as unknown as SupabaseClient<any>)
+      await supabaseAny
         .from(WALLET_BALANCES_TABLE)
         .insert({
           user_id: inserted.data.id,
@@ -123,30 +146,53 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabase, setCookie } = ctx;
       const emailOrUsername = input.emailOrUsername.trim();
+      const supabaseAny = supabase as unknown as SupabaseClient<any>;
 
-      const { data, error } = await supabase
-        .from("users")
-        .select(authColumns)
-        .or(
-          `email.eq.${emailOrUsername.toLowerCase()},username.eq.${emailOrUsername}`
-        )
+      let loginEmail = emailOrUsername.toLowerCase();
+      if (!emailOrUsername.includes("@")) {
+        const { data: usernameRow, error: usernameError } = await supabaseAny
+          .from(USERS_TABLE)
+          .select("email")
+          .eq("username", emailOrUsername)
+          .maybeSingle();
+
+        if (usernameError || !usernameRow) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid credentials",
+          });
+        }
+        loginEmail = usernameRow.email.toLowerCase();
+      }
+
+      const signIn = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password: input.password,
+      });
+
+      if (signIn.error || !signIn.data?.user) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Invalid credentials",
+        });
+      }
+
+      const authUser = signIn.data.user;
+
+      const { data: userRow, error } = await supabaseAny
+        .from(USERS_TABLE)
+        .select(publicColumns)
+        .eq("id", authUser.id)
         .maybeSingle();
 
-      if (error || !data) {
+      if (error || !userRow) {
         throw new TRPCError({
           code: "UNAUTHORIZED",
           message: "Invalid credentials",
         });
       }
 
-      const authRow = data as DbUserRow;
-      const valid = await verifyPassword(input.password, authRow.password_hash);
-      if (!valid) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Invalid credentials",
-        });
-      }
+      const authRow = userRow as DbUserRow;
 
       // Fetch wallet balance
       const { data: walletRow } = await supabase
