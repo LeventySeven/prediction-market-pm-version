@@ -1,10 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import { hashPassword, verifyPassword } from "../../auth/password";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { authCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
+import { toMajorUnits } from "../helpers/pricing";
+
+const DEFAULT_ASSET = "VCOIN";
+const VCOIN_DECIMALS = 6;
 
 const emailSchema = z.string().email().max(255);
 const usernameSchema = z
@@ -14,28 +18,23 @@ const usernameSchema = z
   .regex(/^[a-zA-Z0-9_.-]+$/, "Username may contain letters, numbers, _, ., -");
 const passwordSchema = z.string().min(8).max(128);
 
-const publicColumns =
-  "id, email, username, display_name, balance, created_at, is_admin";
-const authColumns = `${publicColumns}, password_hash`;
+const publicColumns = "id, email, username, display_name, created_at, is_admin";
 
-type DbUserRow = {
-  id: number | string;
-  email: string;
-  username: string;
-  display_name: string | null;
-  balance: number;
-  created_at: string;
-  is_admin: boolean;
-};
+const USERS_TABLE = "users" as const;
+const WALLET_BALANCES_TABLE = "wallet_balances" as const;
+
+type DbUserRow = Database["public"]["Tables"]["users"]["Row"];
 
 type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
+type WalletBalanceInsert = Database["public"]["Tables"]["wallet_balances"]["Insert"];
+type WalletBalanceRow = Pick<Database["public"]["Tables"]["wallet_balances"]["Row"], "balance_minor">;
 
-const toPublicUser = (row: DbUserRow): PublicUser => ({
+const toPublicUser = (row: DbUserRow, balanceMinor: number = 0): PublicUser => ({
   id: String(row.id),
   email: row.email,
   username: row.username,
   displayName: row.display_name,
-  balance: Number(row.balance),
+  balance: toMajorUnits(balanceMinor, VCOIN_DECIMALS),
   createdAt: new Date(row.created_at).toISOString(),
   isAdmin: Boolean(row.is_admin),
 });
@@ -54,11 +53,20 @@ export const authRouter = router({
       const email = input.email.toLowerCase().trim();
       const username = input.username.trim();
 
-      const existing = await supabase
-        .from("users")
+      const supabaseAny = supabase as unknown as SupabaseClient<any>;
+
+      const existing = await supabaseAny
+        .from(USERS_TABLE)
         .select("id")
         .or(`email.eq.${email},username.eq.${username}`)
         .maybeSingle();
+
+      if (existing.error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: existing.error.message,
+        });
+      }
 
       if (existing.data) {
         throw new TRPCError({
@@ -67,28 +75,55 @@ export const authRouter = router({
         });
       }
 
-      const password_hash = await hashPassword(input.password);
+      const createdUser = await supabase.auth.admin.createUser({
+        email,
+        password: input.password,
+        email_confirm: true,
+        user_metadata: { username },
+      });
+
+      if (createdUser.error || !createdUser.data?.user) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: createdUser.error?.message ?? "Failed to register user",
+        });
+      }
+
+      const userId = createdUser.data.user.id;
 
       const payload: UserInsert = {
+        id: userId,
         email,
         username,
         display_name: username,
         is_admin: false,
-        password_hash,
+        referral_code: null,
       };
 
-      const inserted = await supabase
-        .from("users")
-        .insert(payload)
+      const inserted = await supabaseAny
+        .from(USERS_TABLE)
+        .upsert(payload, { onConflict: "id" })
         .select(publicColumns)
         .single();
 
       if (inserted.error || !inserted.data) {
+        await supabase.auth.admin.deleteUser(userId);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: inserted.error?.message ?? "Failed to create user",
         });
       }
+
+      // Initialize wallet balance for new user
+      await supabaseAny
+        .from(WALLET_BALANCES_TABLE)
+        .insert({
+          user_id: inserted.data.id,
+          asset_code: DEFAULT_ASSET,
+          balance_minor: 0,
+        } as WalletBalanceInsert)
+        .select()
+        .maybeSingle();
 
       const token = await signAuthToken({
         sub: String(inserted.data.id),
@@ -98,7 +133,7 @@ export const authRouter = router({
       });
       setCookie(authCookie(token));
 
-      return { user: toPublicUser(inserted.data) };
+      return { user: toPublicUser(inserted.data as DbUserRow, 0) };
     }),
 
   login: publicProcedure
@@ -111,39 +146,74 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabase, setCookie } = ctx;
       const emailOrUsername = input.emailOrUsername.trim();
+      const supabaseAny = supabase as unknown as SupabaseClient<any>;
 
-      const { data, error } = await supabase
-        .from("users")
-        .select(authColumns)
-        .or(
-          `email.eq.${emailOrUsername.toLowerCase()},username.eq.${emailOrUsername}`
-        )
+      let loginEmail = emailOrUsername.toLowerCase();
+      if (!emailOrUsername.includes("@")) {
+        const { data: usernameRow, error: usernameError } = await supabaseAny
+          .from(USERS_TABLE)
+          .select("email")
+          .eq("username", emailOrUsername)
+          .maybeSingle();
+
+        if (usernameError || !usernameRow) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid credentials",
+          });
+        }
+        loginEmail = usernameRow.email.toLowerCase();
+      }
+
+      const signIn = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password: input.password,
+      });
+
+      if (signIn.error || !signIn.data?.user) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Invalid credentials",
+        });
+      }
+
+      const authUser = signIn.data.user;
+
+      const { data: userRow, error } = await supabaseAny
+        .from(USERS_TABLE)
+        .select(publicColumns)
+        .eq("id", authUser.id)
         .maybeSingle();
 
-      if (error || !data) {
+      if (error || !userRow) {
         throw new TRPCError({
           code: "UNAUTHORIZED",
           message: "Invalid credentials",
         });
       }
 
-      const valid = await verifyPassword(input.password, data.password_hash);
-      if (!valid) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Invalid credentials",
-        });
-      }
+      const authRow = userRow as DbUserRow;
+
+      // Fetch wallet balance
+      const { data: walletRow } = await supabase
+        .from("wallet_balances")
+        .select("balance_minor")
+        .eq("user_id", authRow.id)
+        .eq("asset_code", DEFAULT_ASSET)
+        .maybeSingle();
+
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
 
       const token = await signAuthToken({
-        sub: String(data.id),
-        email: data.email,
-        username: data.username,
-        isAdmin: Boolean(data.is_admin),
+        sub: String(authRow.id),
+        email: authRow.email,
+        username: authRow.username,
+        isAdmin: Boolean(authRow.is_admin),
       });
       setCookie(authCookie(token));
 
-      return { user: toPublicUser(data) };
+      return { user: toPublicUser(authRow, Number(balanceMinor)) };
     }),
 
   me: publicProcedure.query(async ({ ctx }) => {
@@ -159,7 +229,20 @@ export const authRouter = router({
         .eq("id", payload.sub)
         .maybeSingle();
       if (error || !data) return null;
-      return toPublicUser(data);
+      const currentUser = data as DbUserRow;
+
+      // Fetch wallet balance
+      const { data: walletRow } = await supabase
+        .from("wallet_balances")
+        .select("balance_minor")
+        .eq("user_id", currentUser.id)
+        .eq("asset_code", DEFAULT_ASSET)
+        .maybeSingle();
+
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+
+      return toPublicUser(currentUser, Number(balanceMinor));
     } catch {
       return null;
     }
@@ -170,4 +253,3 @@ export const authRouter = router({
     return { success: true };
   }),
 });
-

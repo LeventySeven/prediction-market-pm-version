@@ -59,26 +59,28 @@ async function main() {
     return;
   }
 
-  const bets: PlaceBetArgs[] = [];
+const bets: { args: PlaceBetArgs; userId: string }[] = [];
   let userIdx = 0;
   for (const market of markets) {
     const user = users[userIdx % users.length];
     userIdx++;
-    bets.push({
-      p_user_id: user.id,
+  bets.push({
+    userId: user.id,
+    args: {
       p_market_id: market.id,
       p_side: Math.random() > 0.5 ? "YES" : "NO",
       p_amount: Math.max(5, Math.round(Math.random() * 50)),
-    });
+    },
+  });
   }
 
-  for (const b of bets) {
-    const rpc = await callPlaceBetTx(b);
+for (const bet of bets) {
+  const rpc = await callPlaceBetTx(bet.args);
     if (rpc.error) {
-      console.error("Failed to place bet", b, rpc.error);
+    console.error("Failed to place bet", bet, rpc.error);
     } else {
       console.log(
-        `Bet OK: user ${b.p_user_id} market ${b.p_market_id} side ${b.p_side} amount ${b.p_amount}`
+      `Bet OK: user ${bet.userId} market ${bet.args.p_market_id} side ${bet.args.p_side} amount ${bet.args.p_amount}`
       );
     }
   }

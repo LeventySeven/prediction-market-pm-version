@@ -24,18 +24,21 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
   const investedLabel = lang === 'RU' ? 'Инвестировано' : 'Invested';
   const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
 
+  // Use closesAt for trading deadline, fall back to expiresAt
+  const deadline = market.closesAt || market.expiresAt;
+
   useEffect(() => {
     const update = () => {
       if (isResolved) {
         setTimeLeft(lang === 'RU' ? 'Завершено' : 'Resolved');
         return;
       }
-      setTimeLeft(formatTimeRemaining(market.endDate, 'hours', lang));
+      setTimeLeft(formatTimeRemaining(deadline, 'hours', lang));
     };
     update();
     const timer = setInterval(update, 60000);
     return () => clearInterval(timer);
-  }, [market.endDate, lang, isResolved]);
+  }, [deadline, lang, isResolved]);
 
   return (
     <div 

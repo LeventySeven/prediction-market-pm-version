@@ -9,21 +9,13 @@ import OnboardingModal from "@/components/OnboardingModal";
 import UserProfileModal from "@/components/UserProfileModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
-import { CATEGORIES, MOCK_MARKETS, generateHistory } from "@/constants";
-import type { Category, Market, User, Bet } from "@/types";
+import type { Category, Market, User, Bet, Position, Trade } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search } from "lucide-react";
 
-const buildHistoryFromPools = (poolYes: number, poolNo: number) => {
-  const total = poolYes + poolNo;
-  const priceYes = total === 0 ? 0.5 : poolYes / total;
-  const chance = Math.round(priceYes * 100);
-  // Simple two-point history to reflect current price; can be extended when real history is available.
-  return [
-    { date: "T-1", value: chance },
-    { date: "Now", value: chance },
-  ];
-};
+// VCOIN decimals for display
+const VCOIN_DECIMALS = 6;
+const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 export default function HomePage() {
   const [activeCategory, setActiveCategory] = useState<Category>("ALL");
@@ -33,17 +25,14 @@ export default function HomePage() {
   const [lang, setLang] = useState<"RU" | "EN">("RU");
   const [user, setUser] = useState<User | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
-  const [markets, setMarkets] = useState<Market[]>(MOCK_MARKETS);
+  const [markets, setMarkets] = useState<Market[]>([]);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
-  const [myBets, setMyBets] = useState<Bet[]>([]);
-  const [loadingBets, setLoadingBets] = useState(false);
-  const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<
-    string | null
-  >(null);
-  const [betMessage, setBetMessage] = useState<string | null>(null);
+  const [myPositions, setMyPositions] = useState<Position[]>([]);
+  const [myTrades, setMyTrades] = useState<Trade[]>([]);
+  const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<string | null>(null);
   const [betConfirm, setBetConfirm] = useState<{
     open: boolean;
     marketTitle: string;
@@ -54,34 +43,34 @@ export default function HomePage() {
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   const [showAdminModal, setShowAdminModal] = useState(false);
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null;
 
-const getUnknownErrorMessage = (error: unknown): string | undefined => {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (isRecord(error)) {
-    if (typeof error.message === "string") {
-      return error.message;
+  const getUnknownErrorMessage = (error: unknown): string | undefined => {
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    if (isRecord(error)) {
+      if (typeof error.message === "string") {
+        return error.message;
+      }
+      const data = error.data;
+      if (isRecord(data) && typeof data.message === "string") {
+        return data.message;
+      }
     }
-    const data = error.data;
-    if (isRecord(data) && typeof data.message === "string") {
-      return data.message;
-    }
-  }
-  return undefined;
-};
+    return undefined;
+  };
 
-const formatBetError = (msg?: string) => {
-    if (!msg) return "Не удалось поставить ставку";
-    if (msg.includes("MARKET_EXPIRED") || msg.toLowerCase().includes("expired")) {
-      return "Событие завершено, ставки закрыты.";
+  const formatBetError = (msg?: string) => {
+    if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
+    if (msg.includes("MARKET_EXPIRED") || msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+      return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
     }
     if (msg.includes("INSUFFICIENT_BALANCE")) {
-      return "Недостаточно средств на балансе.";
+      return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
     }
     if (msg.includes("MARKET_RESOLVED")) {
-      return "Событие уже разрешено.";
+      return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
     }
     return msg;
   };
@@ -102,10 +91,6 @@ const formatBetError = (msg?: string) => {
 
   const handleToggleLang = () => {
     setLang((prev) => (prev === "RU" ? "EN" : "RU"));
-  };
-
-  const handleLogin = () => {
-    setShowAuth(true);
   };
 
   const handleSignUp = async (payload: {
@@ -162,49 +147,62 @@ const formatBetError = (msg?: string) => {
     }
   }, []);
 
+  const deriveLegacyBets = useCallback(
+    (positions: Position[]): Bet[] =>
+      positions.map((p, idx) => {
+        const market = markets.find((m) => m.id === p.marketId);
+        const priceYes = market?.yesPrice ?? 0.5;
+        const priceNo = market?.noPrice ?? 0.5;
+        const currentPrice = p.outcome === "YES" ? priceYes : priceNo;
+
+        let status: Bet["status"] = "open";
+        if (p.marketState === "resolved") {
+          status = p.marketOutcome === p.outcome ? "won" : "lost";
+        }
+
+        const avgPrice = p.avgEntryPrice ?? currentPrice;
+        const amount = p.shares * avgPrice;
+        const payout = status === "won" ? p.shares : status === "lost" ? 0 : null;
+
+        return {
+          id: `${p.marketId}-${p.outcome}-${idx}`,
+          marketId: p.marketId,
+          marketTitle: lang === "RU" ? p.marketTitleRu : p.marketTitleEn,
+          marketTitleRu: p.marketTitleRu,
+          marketTitleEn: p.marketTitleEn,
+          side: p.outcome,
+          amount,
+          status,
+          payout,
+          createdAt: new Date().toISOString(),
+          marketOutcome: p.marketOutcome,
+          expiresAt: p.expiresAt,
+          priceYes,
+          priceNo,
+          priceAtBet: avgPrice,
+          shares: p.shares,
+        };
+      }),
+    [markets, lang]
+  );
+
+  /**
+   * Load user positions and trades
+   */
   const loadMyBets = useCallback(async () => {
     if (!user) return;
-    setLoadingBets(true);
     try {
-      const bets = await trpcClient.market.myBets.query();
-      const normalized: Bet[] = (bets || [])
-        .filter((b): b is NonNullable<typeof b> => !!b && b.id !== undefined)
-        .map((b) => {
-          const titleRu = b.marketTitleRu ?? "—";
-          const titleEn = b.marketTitleEn ?? titleRu;
-          const normalizedStatus = (b.status ?? "open") as Bet["status"];
-          return {
-            id: String(b.id),
-            marketId: String(b.marketId),
-            marketTitle: lang === "RU" ? titleRu : titleEn,
-            marketTitleRu: titleRu,
-            marketTitleEn: titleEn,
-            side: b.side,
-            amount: Number(b.amount ?? 0),
-            status: normalizedStatus,
-            payout: b.payout !== null && b.payout !== undefined ? Number(b.payout) : null,
-            createdAt: b.createdAt ?? new Date().toISOString(),
-            marketOutcome: b.marketOutcome ?? null,
-            expiresAt: b.expiresAt ?? null,
-            priceYes: b.priceYes ?? null,
-            priceNo: b.priceNo ?? null,
-            priceAtBet:
-              b.priceAtBet !== null && b.priceAtBet !== undefined
-                ? Number(b.priceAtBet)
-                : null,
-            shares:
-              b.shares !== null && b.shares !== undefined
-                ? Number(b.shares)
-                : null,
-          };
-        });
-      setMyBets(normalized);
+      const [positions, trades] = await Promise.all([
+        trpcClient.market.myPositions.query(),
+        trpcClient.market.myTrades.query(),
+      ]);
+
+      setMyPositions(positions as Position[]);
+      setMyTrades(trades as Trade[]);
     } catch (err: unknown) {
-      console.error("Failed to load bets", err);
-    } finally {
-      setLoadingBets(false);
+      console.error("Failed to load positions/trades", err);
     }
-  }, [user, lang]);
+  }, [user]);
 
   // Fetch session user via auth.me
   useEffect(() => {
@@ -219,50 +217,72 @@ const formatBetError = (msg?: string) => {
 
   const loadMarkets = useCallback(async () => {
     setLoadingMarkets(true);
-    setMarketsLoadingMessage("Загрузка рынков...");
+    setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
     try {
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
       });
-      const mapped: Market[] =
-        response?.map((m) => ({
+
+      const mapped: Market[] = response?.map((m) => {
+        const title = lang === "RU" ? m.titleRu : m.titleEn;
+        const chance = Math.round(m.priceYes * 100);
+
+        // Build simple history from current price
+        const history = [
+          { date: "T-1", value: 50 },
+          { date: "Now", value: chance },
+        ];
+
+        return {
           id: String(m.id),
-          title: lang === "RU" ? m.titleRu : m.titleEn,
+          title,
           titleRu: m.titleRu,
           titleEn: m.titleEn,
-          outcome: m.outcome ?? null,
-          category: "ALL",
-          imageUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-            lang === "RU" ? m.titleRu : m.titleEn
-          )}&background=random&color=fff&size=128`,
-          volume: `$${(Number(m.poolYes) + Number(m.poolNo)).toFixed(2)}`,
-          endDate: new Date(m.expiresAt).toISOString(),
-          yesPrice: Number(m.priceYes.toFixed(2)),
-          noPrice: Number(m.priceNo.toFixed(2)),
-          chance: Math.round(m.priceYes * 100),
-          description: m.description ?? "Описание будет добавлено.",
-          poolYes: Number(m.poolYes),
-          poolNo: Number(m.poolNo),
-          history: buildHistoryFromPools(Number(m.poolYes), Number(m.poolNo)),
+          state: m.state as Market["state"],
+          outcome: m.outcome,
+          category: "ALL" as Category,
+          imageUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(title)}&background=random&color=fff&size=128`,
+          volume: `$${m.volume.toFixed(2)}`,
+          closesAt: m.closesAt,
+          expiresAt: m.expiresAt,
+          yesPrice: Number(m.priceYes.toFixed(4)),
+          noPrice: Number(m.priceNo.toFixed(4)),
+          chance,
+          description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
+          history,
           comments: [],
-        })) ?? [];
+          liquidityB: m.liquidityB,
+          feeBps: m.feeBps,
+          settlementAsset: m.settlementAsset,
+        };
+      }) ?? [];
       setMarkets(mapped);
-      if (user) {
-        await loadMyBets();
-      }
     } catch (err: unknown) {
       console.error("Failed to load markets", err);
-      setMarketsLoadingMessage("Не удалось загрузить рынки, попробуйте позже.");
+      setMarketsLoadingMessage(lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets.");
       setMarkets([]);
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [user, loadMyBets, lang]);
+  }, [lang]);
+  useEffect(() => {
+    if (!user) {
+      setMyPositions([]);
+      setMyTrades([]);
+      return;
+    }
+    void loadMyBets();
+  }, [user, loadMyBets]);
 
   useEffect(() => {
     void loadMarkets();
   }, [loadMarkets]);
+
+  const legacyBets = useMemo(
+    () => deriveLegacyBets(myPositions),
+    [deriveLegacyBets, myPositions]
+  );
 
   const resolveMarketOutcome = useCallback(
     async ({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) => {
@@ -277,7 +297,7 @@ const formatBetError = (msg?: string) => {
     [user, loadMarkets, loadMyBets, refreshUser]
   );
 
-  // Refresh bets periodically while profile is open
+  // Refresh positions periodically while profile is open
   useEffect(() => {
     if (!showProfile || !user) return;
     void loadMyBets();
@@ -292,8 +312,7 @@ const formatBetError = (msg?: string) => {
       markets.filter((market) => {
         const matchesCategory =
           activeCategory === "ALL" || market.category === activeCategory;
-        const targetTitle =
-          lang === "RU" ? market.titleRu : market.titleEn;
+        const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
         const matchesSearch = targetTitle
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
@@ -306,6 +325,113 @@ const formatBetError = (msg?: string) => {
     () => markets.find((market) => market.id === selectedMarketId),
     [selectedMarketId, markets]
   );
+
+  /**
+   * Handle placing a bet (buying shares)
+   */
+  const handlePlaceBet = async ({
+    amount,
+    marketId,
+    side,
+    marketTitle,
+  }: {
+    amount: number;
+    marketId: string;
+    side: "YES" | "NO";
+    marketTitle: string;
+  }) => {
+    try {
+      if (!user) {
+        setShowAuth(true);
+        setBetConfirm({
+          open: true,
+          marketTitle,
+          side,
+          amount,
+          newBalance: undefined,
+          errorMessage: lang === "RU" ? "Войдите, чтобы сделать ставку." : "Please log in to place a bet.",
+        });
+        return;
+      }
+
+      const res = await trpcClient.market.placeBet.mutate({
+        amount,
+        marketId,
+        side,
+      });
+
+      // Update user balance from response (minor units -> major)
+      const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
+      setUser((prev) =>
+        prev ? { ...prev, balance: newBalanceMajor } : prev
+      );
+
+      await loadMarkets();
+      await refreshUser();
+      await loadMyBets();
+
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side,
+        amount,
+        newBalance: newBalanceMajor,
+        errorMessage: null,
+      });
+    } catch (err: unknown) {
+      console.error("placeBet failed", err);
+      const friendly = formatBetError(getUnknownErrorMessage(err));
+      await loadMarkets();
+      await refreshUser();
+      await loadMyBets();
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side,
+        amount,
+        newBalance: user?.balance,
+        errorMessage: friendly,
+      });
+    }
+  };
+
+  /**
+   * Handle selling a position (cash out)
+   */
+  const handleSellPosition = async ({
+    marketId,
+    side,
+    shares,
+  }: {
+    marketId: string;
+    side: "YES" | "NO";
+    shares: number;
+  }) => {
+    if (!user) return;
+
+    try {
+      const res = await trpcClient.market.sellPosition.mutate({
+        marketId,
+        side,
+        shares,
+      });
+
+      const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
+      setUser((prev) =>
+        prev ? { ...prev, balance: newBalanceMajor } : prev
+      );
+
+      await loadMarkets();
+      await refreshUser();
+      await loadMyBets();
+    } catch (err: unknown) {
+      console.error("sellPosition failed", err);
+      await loadMarkets();
+      await refreshUser();
+      await loadMyBets();
+      throw err;
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white font-sans">
@@ -333,61 +459,9 @@ const formatBetError = (msg?: string) => {
             onLogin={() => setShowAuth(true)}
             lang={lang}
             onResolveOutcome={user?.isAdmin ? resolveMarketOutcome : undefined}
-            onPlaceBet={async ({ amount, marketId, side, marketTitle }) => {
-              try {
-                if (!user) {
-                  setShowAuth(true);
-                  setBetConfirm({
-                    open: true,
-                    marketTitle,
-                    side,
-                    amount,
-                    newBalance: user?.balance,
-                    errorMessage: "Войдите, чтобы сделать ставку.",
-                  });
-                  return;
-                }
-
-                const res = await trpcClient.market.placeBet.mutate({
-                  amount,
-                  marketId,
-                  side,
-                });
-
-                setUser((prev) =>
-                  prev
-                    ? { ...prev, balance: res.newBalance }
-                    : { id: String(res.userId), balance: res.newBalance }
-                );
-
-                await loadMarkets();
-                await refreshUser();
-                await loadMyBets();
-
-                setBetConfirm({
-                  open: true,
-                  marketTitle,
-                  side,
-                  amount,
-                  newBalance: res.newBalance,
-                  errorMessage: null,
-                });
-              } catch (err: unknown) {
-                console.error("placeBet failed", err);
-                const friendly = formatBetError(getUnknownErrorMessage(err));
-                await loadMarkets();
-                await refreshUser();
-                await loadMyBets();
-                setBetConfirm({
-                  open: true,
-                  marketTitle,
-                  side,
-                  amount,
-                  newBalance: user?.balance,
-                  errorMessage: friendly || "Не удалось поставить ставку",
-                });
-              }
-            }}
+            onPlaceBet={handlePlaceBet}
+            onSellPosition={handleSellPosition}
+            userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">
@@ -397,7 +471,7 @@ const formatBetError = (msg?: string) => {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Поиск..."
+                  placeholder={lang === "RU" ? "Поиск..." : "Search..."}
                   className="w-full bg-neutral-900 border border-neutral-800 rounded-lg py-2 pl-10 pr-4 text-sm text-white focus:border-[#BEFF1D] focus:outline-none"
                 />
                 <Search
@@ -410,7 +484,7 @@ const formatBetError = (msg?: string) => {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {loadingMarkets ? (
                 <div className="col-span-full text-center py-10 text-neutral-500">
-                  {marketsLoadingMessage || "Загрузка рынков..."}
+                  {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
                 </div>
               ) : filteredMarkets.length > 0 ? (
                 filteredMarkets.map((market) => (
@@ -423,8 +497,8 @@ const formatBetError = (msg?: string) => {
                 ))
               ) : (
                 <div className="col-span-full text-center py-20 text-neutral-500">
-                  <p className="text-lg mb-2">Ничего не найдено</p>
-                  <p className="text-sm">Попробуйте другой запрос</p>
+                  <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
+                  <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
                 </div>
               )}
             </div>
@@ -449,7 +523,7 @@ const formatBetError = (msg?: string) => {
         isOpen={showProfile}
         onClose={() => setShowProfile(false)}
         user={user}
-        bets={myBets}
+        bets={legacyBets}
         lang={lang}
         onMarketClick={(id) => {
           setSelectedMarketId(id);
@@ -462,7 +536,8 @@ const formatBetError = (msg?: string) => {
             console.error("logout failed", err);
           } finally {
             setUser(null);
-            setMyBets([]);
+            setMyPositions([]);
+            setMyTrades([]);
             setShowProfile(false);
           }
         }}
@@ -493,4 +568,3 @@ const formatBetError = (msg?: string) => {
     </div>
   );
 }
-
