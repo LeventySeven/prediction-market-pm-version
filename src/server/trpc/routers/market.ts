@@ -221,7 +221,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabase, authUser } = ctx;
       const { marketId, side, amount } = input;
 
       if (!authUser) {
@@ -356,7 +356,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, supabaseService, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser || !authUser.isAdmin) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
       }
@@ -399,7 +399,7 @@ export const marketRouter = router({
   myPositions: publicProcedure
     .output(z.array(positionSummary))
     .query(async ({ ctx }) => {
-      const { supabase, supabaseService, authUser } = ctx;
+      const { supabase, authUser } = ctx;
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
@@ -644,7 +644,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser || !authUser.isAdmin) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
       }
