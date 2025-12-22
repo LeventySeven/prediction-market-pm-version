@@ -66,14 +66,24 @@ export default function HomePage() {
 
   const formatBetError = (msg?: string) => {
     if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
-    if (msg.includes("MARKET_EXPIRED") || msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+    const upper = msg.toUpperCase();
+    if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
       return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
     }
-    if (msg.includes("INSUFFICIENT_BALANCE")) {
+    if (upper.includes("INSUFFICIENT_BALANCE")) {
       return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
     }
-    if (msg.includes("MARKET_RESOLVED")) {
+    if (upper.includes("MARKET_RESOLVED")) {
       return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
+    }
+    if (upper.includes("AMOUNT_TOO_SMALL") || upper.includes("INVALID_AMOUNT")) {
+      return lang === "RU" ? "Сумма слишком мала." : "Amount is too small.";
+    }
+    if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
+      return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
+    }
+    if (upper.includes("ASSET_DISABLED")) {
+      return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
     }
     return msg;
   };

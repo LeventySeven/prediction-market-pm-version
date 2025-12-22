@@ -237,16 +237,31 @@ export const marketRouter = router({
 
       if (error) {
         // Map common DB errors to user-friendly messages
-        const msg = error.message || "";
+        const msg = (error.message || "").toUpperCase();
         if (msg.includes("INSUFFICIENT_BALANCE")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_BALANCE" });
         }
         if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
         }
+        if (msg.includes("MARKET_RESOLVED")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_RESOLVED" });
+        }
         if (msg.includes("MARKET_NOT_FOUND")) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-      }
+          throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+        }
+        if (msg.includes("AMOUNT_TOO_SMALL") || msg.includes("INVALID_AMOUNT")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+        }
+        if (msg.includes("AMOUNT_TOO_LARGE") || msg.includes("VALUE OUT OF RANGE")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_LARGE" });
+        }
+        if (msg.includes("ASSET_DISABLED")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "ASSET_DISABLED" });
+        }
+        if (msg.includes("AMM_STATE_MISSING")) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AMM_STATE_MISSING" });
+        }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
