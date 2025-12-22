@@ -66,14 +66,30 @@ export default function HomePage() {
 
   const formatBetError = (msg?: string) => {
     if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
-    if (msg.includes("MARKET_EXPIRED") || msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+    const upper = msg.toUpperCase();
+    if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
       return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
     }
-    if (msg.includes("INSUFFICIENT_BALANCE")) {
+    if (upper.includes("INSUFFICIENT_BALANCE")) {
       return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
     }
-    if (msg.includes("MARKET_RESOLVED")) {
+    if (upper.includes("MARKET_RESOLVED")) {
       return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
+    }
+    if (upper.includes("AMOUNT_TOO_SMALL") || upper.includes("INVALID_AMOUNT")) {
+      return lang === "RU" ? "Сумма слишком мала." : "Amount is too small.";
+    }
+    if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
+      return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
+    }
+    if (upper.includes("BET_TOO_LARGE")) {
+      return lang === "RU" ? "Достигнут лимит максимальной ставки." : "Maximum bet limit reached.";
+    }
+    if (upper.includes("INVALID_LIQUIDITY")) {
+      return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
+    }
+    if (upper.includes("ASSET_DISABLED")) {
+      return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
     }
     return msg;
   };
@@ -287,6 +303,16 @@ export default function HomePage() {
     [deriveLegacyBets, myPositions]
   );
 
+  const soldTrades = useMemo(
+    () => myTrades.filter((trade) => trade.action === "sell"),
+    [myTrades]
+  );
+
+  const realizedPnl = useMemo(
+    () => myTrades.reduce((acc, trade) => acc + trade.collateralNet, 0),
+    [myTrades]
+  );
+
   const resolveMarketOutcome = useCallback(
     async ({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) => {
       if (!user || !user.isAdmin) {
@@ -493,6 +519,10 @@ export default function HomePage() {
         }}
         onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
         onHelpClick={() => setShowOnboarding(true)}
+        onLogoClick={() => {
+          setSelectedMarketId(null);
+          setShowProfile(false);
+        }}
         lang={lang}
         onToggleLang={handleToggleLang}
       />
@@ -574,6 +604,8 @@ export default function HomePage() {
         onClose={() => setShowProfile(false)}
         user={user}
         bets={legacyBets}
+        soldTrades={soldTrades}
+        realizedPnl={realizedPnl}
         lang={lang}
         onMarketClick={(id) => {
           setSelectedMarketId(id);

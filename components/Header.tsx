@@ -13,6 +13,7 @@ interface HeaderProps {
   lang?: 'RU' | 'EN';
   onToggleLang?: () => void;
   onHelpClick?: () => void;
+  onLogoClick?: () => void;
 }
 
 // Custom Minimalist Normis Icon (Abstract Geometric)
@@ -49,12 +50,18 @@ const Header: React.FC<HeaderProps> = ({
   lang = 'RU',
   onToggleLang,
   onHelpClick,
+  onLogoClick,
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-zinc-800 bg-[#09090b]/80 backdrop-blur supports-[backdrop-filter]:bg-[#09090b]/60">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
         {/* Logo */}
-        <div className="flex items-center gap-2 cursor-pointer group">
+        <div
+          className={`flex items-center gap-2 group ${onLogoClick ? 'cursor-pointer' : 'cursor-default'}`}
+          onClick={onLogoClick}
+          role={onLogoClick ? 'button' : undefined}
+          aria-label={onLogoClick ? 'Go to home' : undefined}
+        >
           <div className="transition-transform group-hover:rotate-90 duration-500">
             <NormisIcon size={24} />
           </div>

@@ -35,6 +35,17 @@ type PlaceBetResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"]
 type SellPositionResult = Database["public"]["Functions"]["sell_position_tx"]["Returns"];
 type ResolveMarketResult = Database["public"]["Functions"]["resolve_market_service_tx"]["Returns"];
 
+const deriveVolumeMajor = (amm: AmmStateRow | null, feeBps?: number | null) => {
+  if (!amm) return 0;
+  const feeMinor = Number(amm.fee_accumulated_minor ?? 0);
+  const bps = Number(feeBps ?? 0);
+  if (!Number.isFinite(feeMinor) || feeMinor <= 0 || !Number.isFinite(bps) || bps <= 0) {
+    return 0;
+  }
+  const volumeMinor = (feeMinor * 10000) / bps;
+  return toMajorUnits(volumeMinor, VCOIN_DECIMALS);
+};
+
 const mapMarketRow = (row: MarketWithAmm) => {
   const amm = row.market_amm_state;
   const { priceYes, priceNo } = amm
@@ -55,8 +66,7 @@ const mapMarketRow = (row: MarketWithAmm) => {
     liquidityB: Number(row.liquidity_b),
     priceYes,
     priceNo,
-    // Volume can be derived from fee_accumulated or trades
-    volume: amm ? toMajorUnits(Number(amm.fee_accumulated_minor) * 100 / Math.max(row.fee_bps, 1), VCOIN_DECIMALS) : 0,
+    volume: deriveVolumeMajor(amm, row.fee_bps),
   };
 };
 
@@ -237,16 +247,37 @@ export const marketRouter = router({
 
       if (error) {
         // Map common DB errors to user-friendly messages
-        const msg = error.message || "";
+        const msg = (error.message || "").toUpperCase();
         if (msg.includes("INSUFFICIENT_BALANCE")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_BALANCE" });
         }
         if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
         }
+        if (msg.includes("MARKET_RESOLVED")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_RESOLVED" });
+        }
         if (msg.includes("MARKET_NOT_FOUND")) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-      }
+          throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+        }
+        if (msg.includes("AMOUNT_TOO_SMALL") || msg.includes("INVALID_AMOUNT")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+        }
+        if (msg.includes("AMOUNT_TOO_LARGE") || msg.includes("VALUE OUT OF RANGE")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_LARGE" });
+        }
+        if (msg.includes("BET_TOO_LARGE")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "BET_TOO_LARGE" });
+        }
+        if (msg.includes("INVALID_LIQUIDITY")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_LIQUIDITY" });
+        }
+        if (msg.includes("ASSET_DISABLED")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "ASSET_DISABLED" });
+        }
+        if (msg.includes("AMM_STATE_MISSING")) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AMM_STATE_MISSING" });
+        }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
@@ -285,8 +316,9 @@ export const marketRouter = router({
     .output(
       z.object({
         tradeId: z.string(),
-        receivedMinor: z.number(),
+        payoutMinor: z.number(),
         newBalanceMinor: z.number(),
+        sharesSold: z.number(),
         priceBefore: z.number(),
         priceAfter: z.number(),
       })
@@ -307,11 +339,18 @@ export const marketRouter = router({
 
       if (error) {
         const msg = error.message || "";
-        if (msg.includes("INSUFFICIENT_SHARES")) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_SHARES" });
-        }
+        if (msg.includes("NO_POSITION")) throw new TRPCError({ code: "BAD_REQUEST", message: "NO_POSITION" });
+        if (msg.includes("INSUFFICIENT_SHARES")) throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_SHARES" });
+        if (msg.includes("INVALID_SHARES")) throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_SHARES" });
+        if (msg.includes("SHARES_TOO_LARGE")) throw new TRPCError({ code: "BAD_REQUEST", message: "SHARES_TOO_LARGE" });
         if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
+        }
+        if (msg.includes("AMOUNT_TOO_SMALL") || msg.includes("PAYOUT_TOO_SMALL")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+        }
+        if (msg.includes("AMM_STATE_MISSING") || msg.includes("AMM_INCONSISTENT") || msg.includes("INVALID_LIQUIDITY")) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AMM_STATE_INVALID" });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -328,12 +367,41 @@ export const marketRouter = router({
         });
       }
 
+      const normalizeNumber = (value: unknown): number | null => {
+        if (typeof value === "number" && Number.isFinite(value)) return value;
+        if (typeof value === "string" && value.length > 0) {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) ? parsed : null;
+        }
+        if (typeof value === "bigint") {
+          return Number(value);
+        }
+        return null;
+      };
+
+      const payoutRaw =
+        normalizeNumber((result as { payout_net_minor?: unknown }).payout_net_minor) ??
+        normalizeNumber((result as { received_minor?: unknown }).received_minor);
+      const balanceRaw = normalizeNumber(result.new_balance_minor);
+      const sharesRaw =
+        normalizeNumber((result as { shares_sold?: unknown }).shares_sold) ?? normalizeNumber(shares) ?? 0;
+      const priceBeforeRaw = normalizeNumber(result.price_before);
+      const priceAfterRaw = normalizeNumber(result.price_after);
+
+      if (payoutRaw === null || balanceRaw === null || priceBeforeRaw === null || priceAfterRaw === null) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "SELL_OUTPUT_INVALID",
+        });
+      }
+
       return {
         tradeId: String(result.trade_id),
-        receivedMinor: Number(result.received_minor),
-        newBalanceMinor: Number(result.new_balance_minor),
-        priceBefore: Number(result.price_before),
-        priceAfter: Number(result.price_after),
+        payoutMinor: payoutRaw,
+        newBalanceMinor: balanceRaw,
+        sharesSold: Number.isFinite(sharesRaw) ? sharesRaw : shares,
+        priceBefore: priceBeforeRaw,
+        priceAfter: priceAfterRaw,
       };
     }),
 
@@ -356,7 +424,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser || !authUser.isAdmin) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
       }
@@ -364,7 +432,7 @@ export const marketRouter = router({
 
       // This RPC should be called with service_role for production
       // For now we call it as admin user - the DB function should check admin status
-      const { data, error } = await (supabase as SupabaseAnyClient).rpc("resolve_market_service_tx", {
+      const { data, error } = await (supabaseService as SupabaseAnyClient).rpc("resolve_market_service_tx", {
         p_market_id: marketId,
         p_outcome: outcome,
       });
@@ -530,7 +598,7 @@ export const marketRouter = router({
 
       const { data, error } = await supabase
         .from("market_price_candles")
-        .select("market_id, bucket, open_price, high_price, low_price, close_price, volume_minor, trades_count")
+        .select("market_id, bucket, open, high, low, close, volume_minor, trades_count")
         .eq("market_id", input.marketId)
         .order("bucket", { ascending: true })
         .limit(input.limit);
@@ -547,10 +615,10 @@ export const marketRouter = router({
         const candle = c as CandleRow;
         return {
           bucket: candle.bucket,
-          open: Number(candle.open_price),
-          high: Number(candle.high_price),
-          low: Number(candle.low_price),
-          close: Number(candle.close_price),
+          open: Number(candle.open),
+          high: Number(candle.high),
+          low: Number(candle.low),
+          close: Number(candle.close),
           volume: toMajorUnits(Number(candle.volume_minor), VCOIN_DECIMALS),
           tradesCount: candle.trades_count,
         };
@@ -644,7 +712,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser || !authUser.isAdmin) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin only" });
       }
@@ -656,7 +724,7 @@ export const marketRouter = router({
       }
 
       // Insert market
-      const { data: market, error: marketError } = await (supabase as SupabaseAnyClient)
+      const { data: market, error: marketError } = await (supabaseService as SupabaseAnyClient)
         .from("markets")
         .insert({
           title_rus: input.titleRu.trim(),
@@ -681,7 +749,7 @@ export const marketRouter = router({
       }
 
       // Insert AMM state
-      const { error: ammError } = await (supabase as SupabaseAnyClient)
+      const { error: ammError } = await (supabaseService as SupabaseAnyClient)
         .from("market_amm_state")
         .insert({
           market_id: market.id,
@@ -694,7 +762,7 @@ export const marketRouter = router({
 
       if (ammError) {
         // Rollback by deleting market (not ideal, but simple)
-        await supabase.from("markets").delete().eq("id", market.id);
+        await supabaseService.from("markets").delete().eq("id", market.id);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: ammError.message,

@@ -1,11 +1,36 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { authCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
 import { toMajorUnits } from "../helpers/pricing";
+
+const SUPABASE_ACCESS_COOKIE = "sb_access_token";
+const SUPABASE_REFRESH_COOKIE = "sb_refresh_token";
+const SUPABASE_REFRESH_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const secureCookie = process.env.NODE_ENV === "production" ? " Secure;" : "";
+
+const buildCookie = (name: string, value: string, maxAgeSeconds: number) =>
+  `${name}=${value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSeconds};${secureCookie}`;
+
+const clearCookie = (name: string) => buildCookie(name, "", 0);
+
+const supabaseAccessCookie = (token: string, expiresIn?: number | null) =>
+  buildCookie(SUPABASE_ACCESS_COOKIE, token, Math.max(1, expiresIn ?? 3600));
+
+const supabaseRefreshCookie = (token: string) =>
+  buildCookie(SUPABASE_REFRESH_COOKIE, token, SUPABASE_REFRESH_MAX_AGE);
+
+const persistSupabaseSession = (session: Session, setCookie: (value: string) => void) => {
+  if (session?.access_token) {
+    setCookie(supabaseAccessCookie(session.access_token, session.expires_in));
+  }
+  if (session?.refresh_token) {
+    setCookie(supabaseRefreshCookie(session.refresh_token));
+  }
+};
 
 const DEFAULT_ASSET = "VCOIN";
 const VCOIN_DECIMALS = 6;
@@ -49,13 +74,13 @@ export const authRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, setCookie } = ctx;
+      const { supabase, supabaseService, setCookie } = ctx;
       const email = input.email.toLowerCase().trim();
       const username = input.username.trim();
 
-      const supabaseAny = supabase as unknown as SupabaseClient<any>;
+      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
 
-      const existing = await supabaseAny
+      const existing = await supabaseServiceAny
         .from(USERS_TABLE)
         .select("id")
         .or(`email.eq.${email},username.eq.${username}`)
@@ -75,7 +100,7 @@ export const authRouter = router({
         });
       }
 
-      const createdUser = await supabase.auth.admin.createUser({
+      const createdUser = await supabaseService.auth.admin.createUser({
         email,
         password: input.password,
         email_confirm: true,
@@ -100,7 +125,7 @@ export const authRouter = router({
         referral_code: null,
       };
 
-      const inserted = await supabaseAny
+      const inserted = await supabaseServiceAny
         .from(USERS_TABLE)
         .upsert(payload, { onConflict: "id" })
         .select(publicColumns)
@@ -115,7 +140,7 @@ export const authRouter = router({
       }
 
       // Initialize wallet balance for new user
-      await supabaseAny
+      await supabaseServiceAny
         .from(WALLET_BALANCES_TABLE)
         .insert({
           user_id: inserted.data.id,
@@ -124,6 +149,20 @@ export const authRouter = router({
         } as WalletBalanceInsert)
         .select()
         .maybeSingle();
+
+      const autoLogin = await supabase.auth.signInWithPassword({
+        email,
+        password: input.password,
+      });
+
+      if (autoLogin.error || !autoLogin.data?.session) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: autoLogin.error?.message ?? "Failed to start session",
+        });
+      }
+
+      persistSupabaseSession(autoLogin.data.session, setCookie);
 
       const token = await signAuthToken({
         sub: String(inserted.data.id),
@@ -144,13 +183,13 @@ export const authRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, setCookie } = ctx;
+      const { supabase, supabaseService, setCookie } = ctx;
       const emailOrUsername = input.emailOrUsername.trim();
-      const supabaseAny = supabase as unknown as SupabaseClient<any>;
+      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
 
       let loginEmail = emailOrUsername.toLowerCase();
       if (!emailOrUsername.includes("@")) {
-        const { data: usernameRow, error: usernameError } = await supabaseAny
+        const { data: usernameRow, error: usernameError } = await supabaseServiceAny
           .from(USERS_TABLE)
           .select("email")
           .eq("username", emailOrUsername)
@@ -170,7 +209,7 @@ export const authRouter = router({
         password: input.password,
       });
 
-      if (signIn.error || !signIn.data?.user) {
+      if (signIn.error || !signIn.data?.user || !signIn.data.session) {
         throw new TRPCError({
           code: "UNAUTHORIZED",
           message: "Invalid credentials",
@@ -179,7 +218,7 @@ export const authRouter = router({
 
       const authUser = signIn.data.user;
 
-      const { data: userRow, error } = await supabaseAny
+      const { data: userRow, error } = await supabaseServiceAny
         .from(USERS_TABLE)
         .select(publicColumns)
         .eq("id", authUser.id)
@@ -195,7 +234,7 @@ export const authRouter = router({
       const authRow = userRow as DbUserRow;
 
       // Fetch wallet balance
-      const { data: walletRow } = await supabase
+      const { data: walletRow } = await supabaseService
         .from("wallet_balances")
         .select("balance_minor")
         .eq("user_id", authRow.id)
@@ -204,6 +243,8 @@ export const authRouter = router({
 
       const wallet = walletRow as WalletBalanceRow | null;
       const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+
+      persistSupabaseSession(signIn.data.session, setCookie);
 
       const token = await signAuthToken({
         sub: String(authRow.id),
@@ -250,6 +291,8 @@ export const authRouter = router({
 
   logout: publicProcedure.mutation(async ({ ctx }) => {
     ctx.setCookie("auth_token=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax");
+    ctx.setCookie(clearCookie(SUPABASE_ACCESS_COOKIE));
+    ctx.setCookie(clearCookie(SUPABASE_REFRESH_COOKIE));
     return { success: true };
   }),
 });

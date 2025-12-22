@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { User, Bet } from '../types';
-import { X, TrendingUp, TrendingDown, Clock, Wallet } from 'lucide-react';
+import { User, Bet, Trade } from '../types';
+import { X, TrendingUp, TrendingDown, Clock, Wallet, DollarSign } from 'lucide-react';
 import Button from './Button';
 
 interface UserProfileModalProps {
@@ -8,6 +8,8 @@ interface UserProfileModalProps {
   onClose: () => void;
   user: User | null;
   bets: Bet[];
+  soldTrades: Trade[];
+  realizedPnl: number;
   lang: 'RU' | 'EN';
   onMarketClick: (marketId: string) => void;
   onLogout?: () => void;
@@ -125,18 +127,65 @@ const PortfolioItem: React.FC<PortfolioItemProps> = ({ item, lang, onClick }) =>
     );
 };
 
-const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, user, bets, lang, onMarketClick, onLogout }) => {
+interface SellHistoryItemProps {
+  trade: Trade;
+  lang: 'RU' | 'EN';
+  onClick: () => void;
+}
+
+const SellHistoryItem: React.FC<SellHistoryItemProps> = ({ trade, lang, onClick }) => {
+  const sharesSold = Math.abs(trade.sharesDelta);
+  const payout = trade.collateralNet;
+  const fee = trade.fee;
+  const created = new Date(trade.createdAt);
+  const formattedDate = created.toLocaleString(lang === 'RU' ? 'ru-RU' : 'en-US', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return (
+    <div
+      onClick={onClick}
+      className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-4 flex items-center justify-between hover:border-zinc-700 transition-colors cursor-pointer"
+    >
+      <div>
+        <div className="text-xs font-semibold text-white mb-1">
+          {trade.marketTitleRu || trade.marketTitleEn || trade.marketId}
+        </div>
+        <div className="text-[11px] uppercase tracking-widest text-zinc-500 flex items-center gap-1">
+          <DollarSign size={10} /> {lang === 'RU' ? 'Продажа' : 'Sell'} · {formattedDate}
+        </div>
+      </div>
+      <div className="text-right">
+        <div className="font-mono text-sm text-[#BEFF1D]">
+          +${payout.toFixed(2)}
+        </div>
+        <div className="text-[11px] text-zinc-500">
+          {sharesSold.toFixed(2)} sh · fee ${fee.toFixed(2)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UserProfileModal: React.FC<UserProfileModalProps> = ({
+  isOpen,
+  onClose,
+  user,
+  bets,
+  soldTrades,
+  realizedPnl,
+  lang,
+  onMarketClick,
+  onLogout,
+}) => {
   
   if (!isOpen || !user) return null;
 
   const isOwnProfile = Boolean(onLogout);
-
-  // Calculate Total PnL (Realized only for now)
-  const settledStatuses = new Set<Bet["status"]>(['won', 'lost']);
-  const totalRealizedPnL = bets
-    .filter((b) => settledStatuses.has(b.status))
-    .reduce((acc, b) => acc + ((b.payout || 0) - b.amount), 0);
-    
+  const totalRealizedPnL = realizedPnl;
   const isPositivePnL = totalRealizedPnL >= 0;
 
   return (
@@ -182,27 +231,51 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, us
             </div>
         </div>
 
-        {/* Active Bets List */}
-        <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar mb-4">
+        {/* Bets Lists */}
+        <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar mb-4 space-y-8">
+          <section>
             <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 sticky top-0 bg-[#09090b] py-2 z-10">
-                {lang === 'RU' ? 'АКТИВНЫЕ СТАВКИ' : 'ACTIVE BETS'}
+              {lang === 'RU' ? 'АКТИВНЫЕ СТАВКИ' : 'ACTIVE BETS'}
             </h3>
             <div className="space-y-3">
-                {bets && bets.length > 0 ? (
-                    bets.map((bet) => (
-                        <PortfolioItem 
-                            key={bet.id} 
-                            item={bet} 
-                            lang={lang} 
-                            onClick={() => onMarketClick(bet.marketId)}
-                        />
-                    ))
-                ) : (
-                    <div className="text-center py-10 text-zinc-600 text-sm">
-                        {lang === 'RU' ? 'Нет активных ставок' : 'No active bets'}
-                    </div>
-                )}
+              {bets && bets.length > 0 ? (
+                bets.map((bet) => (
+                  <PortfolioItem
+                    key={bet.id}
+                    item={bet}
+                    lang={lang}
+                    onClick={() => onMarketClick(bet.marketId)}
+                  />
+                ))
+              ) : (
+                <div className="text-center py-10 text-zinc-600 text-sm">
+                  {lang === 'RU' ? 'Нет активных ставок' : 'No active bets'}
+                </div>
+              )}
             </div>
+          </section>
+
+          <section>
+            <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 sticky top-0 bg-[#09090b] py-2 z-10">
+              {lang === 'RU' ? 'ПРОДАННЫЕ СТАВКИ' : 'SOLD BETS'}
+            </h3>
+            <div className="space-y-3">
+              {soldTrades && soldTrades.length > 0 ? (
+                soldTrades.map((trade) => (
+                  <SellHistoryItem
+                    key={trade.id}
+                    trade={trade}
+                    lang={lang}
+                    onClick={() => onMarketClick(trade.marketId)}
+                  />
+                ))
+              ) : (
+                <div className="text-center py-6 text-zinc-600 text-sm">
+                  {lang === 'RU' ? 'Нет завершённых продаж' : 'No sold bets yet'}
+                </div>
+              )}
+            </div>
+          </section>
         </div>
 
         {isOwnProfile && onLogout && (
