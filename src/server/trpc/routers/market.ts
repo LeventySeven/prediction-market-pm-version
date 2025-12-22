@@ -35,6 +35,17 @@ type PlaceBetResult = Database["public"]["Functions"]["place_bet_tx"]["Returns"]
 type SellPositionResult = Database["public"]["Functions"]["sell_position_tx"]["Returns"];
 type ResolveMarketResult = Database["public"]["Functions"]["resolve_market_service_tx"]["Returns"];
 
+const deriveVolumeMajor = (amm: AmmStateRow | null, feeBps?: number | null) => {
+  if (!amm) return 0;
+  const feeMinor = Number(amm.fee_accumulated_minor ?? 0);
+  const bps = Number(feeBps ?? 0);
+  if (!Number.isFinite(feeMinor) || feeMinor <= 0 || !Number.isFinite(bps) || bps <= 0) {
+    return 0;
+  }
+  const volumeMinor = (feeMinor * 10000) / bps;
+  return toMajorUnits(volumeMinor, VCOIN_DECIMALS);
+};
+
 const mapMarketRow = (row: MarketWithAmm) => {
   const amm = row.market_amm_state;
   const { priceYes, priceNo } = amm
@@ -55,8 +66,7 @@ const mapMarketRow = (row: MarketWithAmm) => {
     liquidityB: Number(row.liquidity_b),
     priceYes,
     priceNo,
-    // Volume can be derived from fee_accumulated or trades
-    volume: amm ? toMajorUnits(Number(amm.fee_accumulated_minor) * 100 / Math.max(row.fee_bps, 1), VCOIN_DECIMALS) : 0,
+    volume: deriveVolumeMajor(amm, row.fee_bps),
   };
 };
 
@@ -357,13 +367,41 @@ export const marketRouter = router({
         });
       }
 
+      const normalizeNumber = (value: unknown): number | null => {
+        if (typeof value === "number" && Number.isFinite(value)) return value;
+        if (typeof value === "string" && value.length > 0) {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) ? parsed : null;
+        }
+        if (typeof value === "bigint") {
+          return Number(value);
+        }
+        return null;
+      };
+
+      const payoutRaw =
+        normalizeNumber((result as { payout_net_minor?: unknown }).payout_net_minor) ??
+        normalizeNumber((result as { received_minor?: unknown }).received_minor);
+      const balanceRaw = normalizeNumber(result.new_balance_minor);
+      const sharesRaw =
+        normalizeNumber((result as { shares_sold?: unknown }).shares_sold) ?? normalizeNumber(shares) ?? 0;
+      const priceBeforeRaw = normalizeNumber(result.price_before);
+      const priceAfterRaw = normalizeNumber(result.price_after);
+
+      if (payoutRaw === null || balanceRaw === null || priceBeforeRaw === null || priceAfterRaw === null) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "SELL_OUTPUT_INVALID",
+        });
+      }
+
       return {
         tradeId: String(result.trade_id),
-        payoutMinor: Number(result.payout_net_minor),
-        newBalanceMinor: Number(result.new_balance_minor),
-        sharesSold: Number(result.shares_sold ?? shares),
-        priceBefore: Number(result.price_before),
-        priceAfter: Number(result.price_after),
+        payoutMinor: payoutRaw,
+        newBalanceMinor: balanceRaw,
+        sharesSold: Number.isFinite(sharesRaw) ? sharesRaw : shares,
+        priceBefore: priceBeforeRaw,
+        priceAfter: priceAfterRaw,
       };
     }),
 
