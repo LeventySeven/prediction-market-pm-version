@@ -423,8 +423,9 @@ export interface Database {
         };
         Returns: {
           trade_id: string;
-          received_minor: number;
+          payout_net_minor: number;
           new_balance_minor: number;
+          shares_sold: number;
           price_before: number;
           price_after: number;
         };

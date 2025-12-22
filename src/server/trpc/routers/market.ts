@@ -306,8 +306,9 @@ export const marketRouter = router({
     .output(
       z.object({
         tradeId: z.string(),
-        receivedMinor: z.number(),
+        payoutMinor: z.number(),
         newBalanceMinor: z.number(),
+        sharesSold: z.number(),
         priceBefore: z.number(),
         priceAfter: z.number(),
       })
@@ -328,11 +329,18 @@ export const marketRouter = router({
 
       if (error) {
         const msg = error.message || "";
-        if (msg.includes("INSUFFICIENT_SHARES")) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_SHARES" });
-        }
+        if (msg.includes("NO_POSITION")) throw new TRPCError({ code: "BAD_REQUEST", message: "NO_POSITION" });
+        if (msg.includes("INSUFFICIENT_SHARES")) throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_SHARES" });
+        if (msg.includes("INVALID_SHARES")) throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_SHARES" });
+        if (msg.includes("SHARES_TOO_LARGE")) throw new TRPCError({ code: "BAD_REQUEST", message: "SHARES_TOO_LARGE" });
         if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_CLOSED" });
+        }
+        if (msg.includes("AMOUNT_TOO_SMALL") || msg.includes("PAYOUT_TOO_SMALL")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+        }
+        if (msg.includes("AMM_STATE_MISSING") || msg.includes("AMM_INCONSISTENT") || msg.includes("INVALID_LIQUIDITY")) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AMM_STATE_INVALID" });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -351,8 +359,9 @@ export const marketRouter = router({
 
       return {
         tradeId: String(result.trade_id),
-        receivedMinor: Number(result.received_minor),
+        payoutMinor: Number(result.payout_net_minor),
         newBalanceMinor: Number(result.new_balance_minor),
+        sharesSold: Number(result.shares_sold ?? shares),
         priceBefore: Number(result.price_before),
         priceAfter: Number(result.price_after),
       };

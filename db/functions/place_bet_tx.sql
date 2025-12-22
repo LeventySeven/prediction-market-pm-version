@@ -343,3 +343,261 @@ begin
 end;
 $$;
 
+create or replace function sell_position_tx(
+  p_market_id uuid,
+  p_side text,
+  p_shares numeric
+) returns table (
+  trade_id uuid,
+  payout_net_minor bigint,
+  new_balance_minor bigint,
+  shares_sold numeric,
+  price_before numeric,
+  price_after numeric
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  MAX_SHARE_AMOUNT constant numeric := 1e9;
+  MIN_SHARE_STEP constant numeric := 1e-9;
+  v_user_id uuid := auth.uid();
+  v_market markets%rowtype;
+  v_asset assets%rowtype;
+  v_state market_amm_state%rowtype;
+  v_position positions%rowtype;
+  v_side_text text := upper(coalesce(p_side, ''));
+  v_side outcome_side;
+  v_shares numeric := coalesce(p_shares, 0);
+  v_decimals integer;
+  v_scale numeric;
+  v_fee_bps numeric;
+  v_now timestamptz := now();
+  v_price_before numeric;
+  v_price_after numeric;
+  v_cost_before numeric;
+  v_cost_after numeric;
+  v_q_yes_before numeric;
+  v_q_no_before numeric;
+  v_q_yes_after numeric;
+  v_q_no_after numeric;
+  v_gross_minor numeric;
+  v_fee_minor numeric;
+  v_net_minor numeric;
+  v_trade_id uuid := gen_random_uuid();
+  v_new_balance_minor bigint;
+  v_gross_minor_big bigint;
+  v_fee_minor_big bigint;
+  v_net_minor_big bigint;
+begin
+  if v_user_id is null then
+    raise exception 'NOT_AUTHENTICATED';
+  end if;
+
+  if v_side_text not in ('YES', 'NO') then
+    raise exception 'INVALID_SIDE';
+  end if;
+
+  v_side := v_side_text::outcome_side;
+
+  if v_shares <= 0 or v_shares < MIN_SHARE_STEP then
+    raise exception 'AMOUNT_TOO_SMALL';
+  end if;
+
+  if v_shares > MAX_SHARE_AMOUNT then
+    raise exception 'SHARES_TOO_LARGE';
+  end if;
+
+  select *
+  into v_market
+  from markets
+  where id = p_market_id
+  for update;
+
+  if not found then
+    raise exception 'MARKET_NOT_FOUND';
+  end if;
+
+  if v_market.state <> 'open' then
+    raise exception 'MARKET_NOT_OPEN';
+  end if;
+
+  if v_market.closes_at <= v_now then
+    raise exception 'MARKET_CLOSED';
+  end if;
+
+  if v_market.resolve_outcome is not null then
+    raise exception 'MARKET_RESOLVED';
+  end if;
+
+  select *
+  into v_asset
+  from assets
+  where code = coalesce(v_market.settlement_asset_code, 'VCOIN')
+  for update;
+
+  if not found or not v_asset.is_enabled then
+    raise exception 'ASSET_DISABLED';
+  end if;
+
+  v_decimals := greatest(0, least(coalesce(v_asset.decimals, 6), 18));
+  v_scale := power(10::numeric, v_decimals::numeric);
+
+  v_fee_bps := coalesce(v_market.fee_bps, 0);
+
+  select *
+  into v_position
+  from positions
+  where user_id = v_user_id
+    and market_id = p_market_id
+    and outcome = v_side
+  for update;
+
+  if not found or coalesce(v_position.shares, 0) <= 0 then
+    raise exception 'NO_POSITION';
+  end if;
+
+  if v_position.shares < v_shares then
+    raise exception 'INSUFFICIENT_SHARES';
+  end if;
+
+  select *
+  into v_state
+  from market_amm_state
+  where market_id = p_market_id
+  for update;
+
+  if not found then
+    raise exception 'AMM_STATE_MISSING';
+  end if;
+
+  v_state.q_yes := coalesce(v_state.q_yes, 0);
+  v_state.q_no := coalesce(v_state.q_no, 0);
+  v_state.b := coalesce(v_state.b, v_market.liquidity_b);
+
+  if v_state.b is null or v_state.b <= 0 then
+    raise exception 'INVALID_LIQUIDITY';
+  end if;
+
+  v_q_yes_before := v_state.q_yes;
+  v_q_no_before := v_state.q_no;
+
+  v_price_before := lmsr_price_yes_safe(v_q_yes_before, v_q_no_before, v_state.b);
+  v_cost_before := lmsr_cost_safe(v_q_yes_before, v_q_no_before, v_state.b);
+
+  if v_side = 'YES'::outcome_side then
+    if v_q_yes_before < v_shares then
+      raise exception 'AMM_INCONSISTENT';
+    end if;
+    v_q_yes_after := v_q_yes_before - v_shares;
+    v_q_no_after := v_q_no_before;
+  else
+    if v_q_no_before < v_shares then
+      raise exception 'AMM_INCONSISTENT';
+    end if;
+    v_q_yes_after := v_q_yes_before;
+    v_q_no_after := v_q_no_before - v_shares;
+  end if;
+
+  if v_q_yes_after < 0 or v_q_no_after < 0 then
+    raise exception 'AMM_INCONSISTENT';
+  end if;
+
+  v_cost_after := lmsr_cost_safe(v_q_yes_after, v_q_no_after, v_state.b);
+
+  if v_cost_before <= v_cost_after then
+    raise exception 'AMOUNT_TOO_SMALL';
+  end if;
+
+  v_price_after := lmsr_price_yes_safe(v_q_yes_after, v_q_no_after, v_state.b);
+
+  v_gross_minor := floor((v_cost_before - v_cost_after) * v_scale);
+
+  if v_gross_minor <= 0 then
+    raise exception 'AMOUNT_TOO_SMALL';
+  end if;
+
+  v_fee_minor := floor(v_gross_minor * v_fee_bps / 10000);
+  v_net_minor := v_gross_minor - v_fee_minor;
+
+  if v_net_minor <= 0 then
+    raise exception 'AMOUNT_TOO_SMALL';
+  end if;
+
+  v_gross_minor_big := v_gross_minor::bigint;
+  v_fee_minor_big := v_fee_minor::bigint;
+  v_net_minor_big := v_net_minor::bigint;
+
+  update market_amm_state
+     set q_yes = v_q_yes_after,
+         q_no = v_q_no_after,
+         last_price_yes = v_price_after,
+         fee_accumulated_minor = fee_accumulated_minor + v_fee_minor_big,
+         updated_at = v_now
+   where market_id = p_market_id;
+
+  update positions
+     set shares = greatest(v_position.shares - v_shares, 0),
+         updated_at = v_now
+   where user_id = v_user_id
+     and market_id = p_market_id
+     and outcome = v_side;
+
+  update wallet_balances
+     set balance_minor = balance_minor + v_net_minor_big,
+         updated_at = v_now
+   where user_id = v_user_id
+     and asset_code = v_asset.code
+   returning balance_minor into v_new_balance_minor;
+
+  insert into wallet_transactions (id, user_id, asset_code, amount_minor, kind, market_id, trade_id, created_at)
+  values (gen_random_uuid(), v_user_id, v_asset.code, v_net_minor_big, 'trade', p_market_id, v_trade_id, v_now);
+
+  if v_fee_minor_big > 0 then
+    insert into wallet_transactions (id, user_id, asset_code, amount_minor, kind, market_id, trade_id, created_at)
+    values (gen_random_uuid(), v_user_id, v_asset.code, -v_fee_minor_big, 'fee', p_market_id, v_trade_id, v_now);
+  end if;
+
+  insert into trades (
+    id,
+    market_id,
+    user_id,
+    action,
+    outcome,
+    asset_code,
+    collateral_gross_minor,
+    fee_minor,
+    collateral_net_minor,
+    shares_delta,
+    price_before,
+    price_after,
+    created_at
+  )
+  values (
+    v_trade_id,
+    p_market_id,
+    v_user_id,
+    'sell',
+    v_side,
+    v_asset.code,
+    v_gross_minor_big,
+    v_fee_minor_big,
+    v_net_minor_big,
+    -v_shares,
+    v_price_before,
+    v_price_after,
+    v_now
+  );
+
+  return query
+    select
+      v_trade_id,
+      v_net_minor_big,
+      v_new_balance_minor,
+      v_shares,
+      v_price_before,
+      v_price_after;
+end;
+$$;
+
