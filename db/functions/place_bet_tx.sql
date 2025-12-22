@@ -362,6 +362,7 @@ as $$
 declare
   MAX_SHARE_AMOUNT constant numeric := 1e9;
   MIN_SHARE_STEP constant numeric := 1e-9;
+  SHARE_EPS constant numeric := 1e-9;
   v_user_id uuid := auth.uid();
   v_market markets%rowtype;
   v_asset assets%rowtype;
@@ -390,6 +391,7 @@ declare
   v_gross_minor_big bigint;
   v_fee_minor_big bigint;
   v_net_minor_big bigint;
+  v_remaining_shares numeric;
 begin
   if v_user_id is null then
     raise exception 'NOT_AUTHENTICATED';
@@ -458,8 +460,12 @@ begin
     raise exception 'NO_POSITION';
   end if;
 
-  if v_position.shares < v_shares then
+  if v_position.shares + SHARE_EPS < v_shares then
     raise exception 'INSUFFICIENT_SHARES';
+  end if;
+
+  if v_shares > v_position.shares then
+    v_shares := v_position.shares;
   end if;
 
   select *
@@ -487,13 +493,13 @@ begin
   v_cost_before := lmsr_cost_safe(v_q_yes_before, v_q_no_before, v_state.b);
 
   if v_side = 'YES'::outcome_side then
-    if v_q_yes_before < v_shares then
+    if v_q_yes_before + SHARE_EPS < v_shares then
       raise exception 'AMM_INCONSISTENT';
     end if;
     v_q_yes_after := v_q_yes_before - v_shares;
     v_q_no_after := v_q_no_before;
   else
-    if v_q_no_before < v_shares then
+    if v_q_no_before + SHARE_EPS < v_shares then
       raise exception 'AMM_INCONSISTENT';
     end if;
     v_q_yes_after := v_q_yes_before;
@@ -537,8 +543,13 @@ begin
          updated_at = v_now
    where market_id = p_market_id;
 
+  v_remaining_shares := v_position.shares - v_shares;
+  if v_remaining_shares < SHARE_EPS then
+    v_remaining_shares := 0;
+  end if;
+
   update positions
-     set shares = greatest(v_position.shares - v_shares, 0),
+     set shares = v_remaining_shares,
          updated_at = v_now
    where user_id = v_user_id
      and market_id = p_market_id
