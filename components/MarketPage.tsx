@@ -96,6 +96,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const userYesPosition = userPositions.find(p => p.outcome === 'YES');
   const userNoPosition = userPositions.find(p => p.outcome === 'NO');
   const userShares = tradeType === 'YES' ? (userYesPosition?.shares ?? 0) : (userNoPosition?.shares ?? 0);
+  const sellablePositions = userPositions.filter((p) => (p.shares ?? 0) > 0);
 
   const chartSeries = useMemo(() => {
     if (priceCandles.length > 0) {
@@ -618,6 +619,66 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       {lang === 'RU' ? `Продать все ${tradeType}` : `Sell All ${tradeType}`}
                     </Button>
                     {sellError && <p className="text-sm text-red-400">{sellError}</p>}
+                  </div>
+                )}
+
+                {user && onSellPosition && sellablePositions.length > 0 && (
+                  <div className="mt-6 space-y-3">
+                    <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                      {lang === 'RU' ? 'Активные ставки' : 'Your Active Bets'}
+                    </p>
+                    <div className="space-y-3">
+                      {sellablePositions.map((position) => (
+                        <div
+                          key={`${position.marketId}-${position.outcome}`}
+                          className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-3"
+                        >
+                          <div className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2 text-white">
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${
+                                  position.outcome === 'YES'
+                                    ? 'bg-[#BEFF1D] text-black'
+                                    : 'bg-[rgba(250,73,159,1)] text-black'
+                                }`}
+                              >
+                                {position.outcome}
+                              </span>
+                              <span className="font-medium">
+                                {lang === 'RU' ? 'Ставка' : 'Position'}
+                              </span>
+                            </div>
+                            <span className="font-mono text-white">
+                              {(position.shares ?? 0).toFixed(2)} sh
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-xs text-zinc-500 mt-1">
+                            <span>{lang === 'RU' ? 'Средняя цена' : 'Avg. entry'}</span>
+                            <span className="font-mono">
+                              $
+                              {position.avgEntryPrice !== null
+                                ? Number(position.avgEntryPrice).toFixed(3)
+                                : '0.00'}
+                            </span>
+                          </div>
+                          <Button
+                            fullWidth
+                            className="mt-3 !bg-zinc-800 !text-white hover:!bg-zinc-700"
+                            onClick={() =>
+                              onSellPosition({
+                                marketId: market.id,
+                                side: position.outcome,
+                                shares: position.shares ?? 0,
+                              })
+                            }
+                          >
+                            {lang === 'RU'
+                              ? `Продать ${position.outcome === 'YES' ? 'ДА' : 'НЕТ'}`
+                              : `Sell ${position.outcome}`}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </>

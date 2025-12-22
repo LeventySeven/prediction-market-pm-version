@@ -308,6 +308,11 @@ export default function HomePage() {
     [myTrades]
   );
 
+  const realizedPnl = useMemo(
+    () => myTrades.reduce((acc, trade) => acc + trade.collateralNet, 0),
+    [myTrades]
+  );
+
   const resolveMarketOutcome = useCallback(
     async ({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) => {
       if (!user || !user.isAdmin) {
@@ -600,6 +605,7 @@ export default function HomePage() {
         user={user}
         bets={legacyBets}
         soldTrades={soldTrades}
+        realizedPnl={realizedPnl}
         lang={lang}
         onMarketClick={(id) => {
           setSelectedMarketId(id);

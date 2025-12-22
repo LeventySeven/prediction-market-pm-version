@@ -9,6 +9,7 @@ interface UserProfileModalProps {
   user: User | null;
   bets: Bet[];
   soldTrades: Trade[];
+  realizedPnl: number;
   lang: 'RU' | 'EN';
   onMarketClick: (marketId: string) => void;
   onLogout?: () => void;
@@ -175,6 +176,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
   user,
   bets,
   soldTrades,
+  realizedPnl,
   lang,
   onMarketClick,
   onLogout,
@@ -183,13 +185,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
   if (!isOpen || !user) return null;
 
   const isOwnProfile = Boolean(onLogout);
-
-  // Calculate Total PnL (Realized only for now)
-  const settledStatuses = new Set<Bet["status"]>(['won', 'lost']);
-  const totalRealizedPnL = bets
-    .filter((b) => settledStatuses.has(b.status))
-    .reduce((acc, b) => acc + ((b.payout || 0) - b.amount), 0);
-    
+  const totalRealizedPnL = realizedPnl;
   const isPositivePnL = totalRealizedPnL >= 0;
 
   return (
