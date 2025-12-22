@@ -63,7 +63,7 @@ create or replace function place_bet_tx(
 )
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
   v_user_id uuid := auth.uid();
@@ -174,6 +174,13 @@ begin
 
   if not found then
     raise exception 'AMM_STATE_MISSING';
+  end if;
+
+  v_state.q_yes := coalesce(v_state.q_yes, 0);
+  v_state.q_no := coalesce(v_state.q_no, 0);
+  v_state.b := coalesce(v_state.b, v_market.liquidity_b);
+  if v_state.b is null or v_state.b <= 0 then
+    raise exception 'INVALID_LIQUIDITY';
   end if;
 
   v_fee_bps := coalesce(v_market.fee_bps, 0);

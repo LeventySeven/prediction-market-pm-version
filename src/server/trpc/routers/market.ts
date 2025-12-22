@@ -256,6 +256,9 @@ export const marketRouter = router({
         if (msg.includes("AMOUNT_TOO_LARGE") || msg.includes("VALUE OUT OF RANGE")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_LARGE" });
         }
+        if (msg.includes("INVALID_LIQUIDITY")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_LIQUIDITY" });
+        }
         if (msg.includes("ASSET_DISABLED")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "ASSET_DISABLED" });
         }

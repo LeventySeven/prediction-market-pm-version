@@ -82,6 +82,9 @@ export default function HomePage() {
     if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
       return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
     }
+    if (upper.includes("INVALID_LIQUIDITY")) {
+      return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
+    }
     if (upper.includes("ASSET_DISABLED")) {
       return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
     }
