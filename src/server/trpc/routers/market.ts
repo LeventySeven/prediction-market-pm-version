@@ -221,7 +221,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       const { marketId, side, amount } = input;
 
       if (!authUser) {
