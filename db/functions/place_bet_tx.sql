@@ -76,6 +76,7 @@ declare
   v_net_minor numeric;
   v_scale numeric;
   v_state market_amm_state%rowtype;
+  v_decimals integer;
   v_price_before numeric;
   v_price_after numeric;
   v_cost_before numeric;
@@ -144,7 +145,8 @@ begin
     raise exception 'ASSET_DISABLED';
   end if;
 
-  v_scale := power(10, greatest(v_asset.decimals, 0));
+  v_decimals := greatest(0, least(coalesce(v_asset.decimals, 6), 6));
+  v_scale := power(10::numeric, v_decimals::numeric);
   v_amount_minor := floor(p_amount * v_scale);
 
   if v_amount_minor <= 0 then
