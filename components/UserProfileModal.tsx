@@ -145,6 +145,19 @@ const SellHistoryItem: React.FC<SellHistoryItemProps> = ({ trade, lang, onClick 
     minute: '2-digit',
   });
 
+  const avgExitPrice =
+    trade.avgExitPrice ?? (sharesSold > 0 ? trade.collateralGross / sharesSold : null);
+  const avgEntryPrice = trade.avgEntryPrice ?? null;
+  const realizedPnlValue =
+    typeof trade.realizedPnl === 'number'
+      ? trade.realizedPnl
+      : avgEntryPrice !== null && avgExitPrice !== null
+      ? (avgExitPrice - avgEntryPrice) * sharesSold
+      : null;
+  const pnlIsPositive = (realizedPnlValue ?? 0) >= 0;
+  const formatPrice = (value: number | null) =>
+    value !== null && Number.isFinite(value) ? `$${value.toFixed(3)}` : lang === 'RU' ? '—' : '—';
+
   return (
     <div
       onClick={onClick}
@@ -165,6 +178,20 @@ const SellHistoryItem: React.FC<SellHistoryItemProps> = ({ trade, lang, onClick 
         <div className="text-[11px] text-zinc-500">
           {sharesSold.toFixed(2)} sh · fee ${fee.toFixed(2)}
         </div>
+        <div className="text-[11px] text-zinc-500">
+          {lang === 'RU' ? 'Куплено' : 'Bought'} {formatPrice(avgEntryPrice)} ·{' '}
+          {lang === 'RU' ? 'Продано' : 'Sold'} {formatPrice(avgExitPrice)}
+        </div>
+        {realizedPnlValue !== null && (
+          <div
+            className={`text-[11px] font-mono ${
+              pnlIsPositive ? 'text-[#BEFF1D]' : 'text-[#f544a6]'
+            }`}
+          >
+            {lang === 'RU' ? 'Профит' : 'P&L'} {pnlIsPositive ? '+' : '-'}$
+            {Math.abs(realizedPnlValue).toFixed(2)}
+          </div>
+        )}
       </div>
     </div>
   );

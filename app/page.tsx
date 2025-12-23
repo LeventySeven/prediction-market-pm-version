@@ -303,10 +303,79 @@ export default function HomePage() {
     [deriveLegacyBets, myPositions]
   );
 
-  const soldTrades = useMemo(
-    () => myTrades.filter((trade) => trade.action === "sell"),
-    [myTrades]
-  );
+  const soldTrades = useMemo(() => {
+    if (myTrades.length === 0) return [];
+
+    type Lot = { shares: number; price: number };
+    const lotsByKey = new Map<string, Lot[]>();
+
+    const sorted = [...myTrades].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    const sells: typeof myTrades = [];
+    const PRICE_EPS = 1e-9;
+
+    sorted.forEach((trade) => {
+      const key = `${trade.marketId}:${trade.outcome}`;
+      if (!lotsByKey.has(key)) {
+        lotsByKey.set(key, []);
+      }
+      const lots = lotsByKey.get(key)!;
+      const shares = Math.abs(trade.sharesDelta);
+
+      if (shares < PRICE_EPS) {
+        if (trade.action === "sell") {
+          sells.push({ ...trade, avgEntryPrice: null, avgExitPrice: null, realizedPnl: null });
+        }
+        return;
+      }
+
+      const gross = Math.abs(trade.collateralGross);
+      const unitPrice = shares > 0 ? gross / shares : null;
+
+      if (trade.action === "buy") {
+        if (unitPrice !== null && Number.isFinite(unitPrice)) {
+          lots.push({ shares, price: unitPrice });
+        }
+        return;
+      }
+
+      let remaining = shares;
+      let matchedShares = 0;
+      let matchedCost = 0;
+
+      while (remaining > PRICE_EPS && lots.length > 0) {
+        const lot = lots[0];
+        const take = Math.min(lot.shares, remaining);
+        matchedCost += take * lot.price;
+        matchedShares += take;
+        lot.shares -= take;
+        remaining -= take;
+        if (lot.shares <= PRICE_EPS) {
+          lots.shift();
+        }
+      }
+
+      const avgEntryPrice = matchedShares > 0 ? matchedCost / matchedShares : null;
+      const avgExitPrice = unitPrice;
+      const realizedPnl =
+        avgEntryPrice !== null && avgExitPrice !== null
+          ? (avgExitPrice - avgEntryPrice) * matchedShares
+          : null;
+
+      sells.push({
+        ...trade,
+        avgEntryPrice,
+        avgExitPrice,
+        realizedPnl,
+      });
+    });
+
+    return sells
+      .filter((trade) => trade.action === "sell")
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [myTrades]);
 
   const realizedPnl = useMemo(
     () => myTrades.reduce((acc, trade) => acc + trade.collateralNet, 0),

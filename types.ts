@@ -77,6 +77,9 @@ export interface Trade {
   marketTitleEn: string;
   marketState: MarketState;
   marketOutcome: "YES" | "NO" | null;
+  avgEntryPrice?: number | null;
+  avgExitPrice?: number | null;
+  realizedPnl?: number | null;
 }
 
 /**
