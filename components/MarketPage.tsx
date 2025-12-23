@@ -485,10 +485,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
         </div>
 
         {/* Right Column: Trading & Rules */}
-        <div className="lg:col-span-4 space-y-6">
-          
-          {/* Trading Card */}
-          <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 sticky top-24 shadow-sm">
+        <div className="lg:col-span-4">
+          <div className="space-y-6 lg:sticky lg:top-24 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto lg:pr-1 custom-scrollbar">
+            {/* Trading Card */}
+            <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 shadow-sm">
             {isExpired ? (
               <div className="space-y-3">
                 <p className="text-sm text-neutral-300">
@@ -734,22 +734,22 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   : `If your prediction is correct, each share is redeemed for $1.00. If incorrect — shares expire worthless. Prediction markets involve a high risk of total loss.`}
               </p>
             </div>
-          </div>
+            </div>
 
-          {/* Rules Card */}
-          <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 shadow-sm">
-            <h3 className="font-semibold text-zinc-300 mb-4 flex items-center gap-2 text-xs uppercase tracking-wider">
-              <ShieldCheck size={14} />
-              {lang === 'RU' ? 'Правила исхода' : 'Rules'}
-            </h3>
-            <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
-              <p>{market.description}</p>
-              <p className="pt-4 border-t border-zinc-800">
-                Resolution based on consensus.
-              </p>
+            {/* Rules Card */}
+            <div className="rounded-xl border border-zinc-800 bg-[#09090b] p-6 shadow-sm">
+              <h3 className="font-semibold text-zinc-300 mb-4 flex items-center gap-2 text-xs uppercase tracking-wider">
+                <ShieldCheck size={14} />
+                {lang === 'RU' ? 'Правила исхода' : 'Rules'}
+              </h3>
+              <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
+                <p>{market.description}</p>
+                <p className="pt-4 border-t border-zinc-800">
+                  Resolution based on consensus.
+                </p>
+              </div>
             </div>
           </div>
-
         </div>
       </div>
     </div>

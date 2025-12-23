@@ -10,6 +10,37 @@ interface OnboardingModalProps {
   onToggleLang: () => void;
 }
 
+const contentByLang = {
+  RU: [
+    {
+      title: "Выбери сторону",
+      desc: "Выбери исход, который считаешь вероятным. Цены отражают вероятность события.",
+    },
+    {
+      title: "Выбери исход",
+      desc: "Купи акции «Да» или «Нет».",
+    },
+    {
+      title: "Отслеживай итоги",
+      desc: "Получай вознаграждение за верное предсказание. Продавай позиции в любой момент или жди окончания события.",
+    },
+  ],
+  EN: [
+    {
+      title: "Pick a side",
+      desc: "Choose the outcome you consider likely. Prices reflect the probability of the event.",
+    },
+    {
+      title: "Choose the outcome",
+      desc: "Buy “Yes” or “No” shares.",
+    },
+    {
+      title: "Track the result",
+      desc: "Earn if the prediction is correct. Sell at any moment or wait until the event ends.",
+    },
+  ],
+} as const;
+
 const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang, onToggleLang }) => {
   const [step, setStep] = useState(1);
   const [animateButton, setAnimateButton] = useState<'YES' | 'NO'>('YES');
@@ -26,35 +57,7 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
 
   if (!isOpen) return null;
 
-  const content = lang === 'RU' ? [
-    {
-      title: "Выбери сторону",
-      desc: "Выбери исход, который считаешь вероятным. Цены отражают вероятность события.",
-    },
-    {
-      title: "Выбери исход",
-      desc: "Купите «Да» или «Нет».",
-    },
-    {
-      title: "Отслеживайте итоги",
-      desc: "Получайте вознаграждение за верное предсказание. Продавайте позиции в любой момент или ждите окончания события.",
-    }
-  ] : [
-    {
-      title: "Pick a Side",
-      desc: "Select Yes or No on an event. Prices reflect the likelihood of each outcome.",
-    },
-    {
-      title: "Place Your Bet",
-      desc: "Deposit funds with a card or crypto and buy shares in your chosen outcome. Purchase 'Yes' or 'No' shares.",
-    },
-    {
-      title: "Profit 🤑",
-      desc: "Collect Your Profit. Sell your shares at any time or wait until the event is resolved. Winning shares pay $1 each.",
-    }
-  ];
-
-  const current = content[step - 1];
+  const current = contentByLang[lang][step - 1];
 
   const handleNext = () => {
     if (step < 3) {

@@ -24,14 +24,16 @@ const friendlyMessages = {
     email: 'Email',
     username: 'Username',
     password: 'Пароль',
-    placeholderEmail: 'name@example.com',
+    placeholderEmail: 'имя@пример.com',
     placeholderUsername: 'normis_trader',
     placeholderPassword: '********',
+    placeholderEmailOrUsername: 'имя@пример.com / normis_trader',
     loginButton: 'Войти',
     signupButton: 'Создать аккаунт',
     loginRequired: 'Введите email/username и пароль.',
     signupRequired: 'Заполните email, username и пароль.',
     genericError: 'Не удалось выполнить запрос',
+    loadingText: 'Пожалуйста, подождите...',
   },
   EN: {
     loginTitle: 'Log in to Normis',
@@ -52,6 +54,8 @@ const friendlyMessages = {
     loginRequired: 'Enter email/username and password.',
     signupRequired: 'Fill in email, username, and password.',
     genericError: 'Request failed',
+    placeholderEmailOrUsername: 'you@example.com / normis_trader',
+    loadingText: 'Please wait...',
   },
 };
 
@@ -255,7 +259,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
-            Log in
+            {t.loginTab}
           </button>
           <button
             onClick={() => resetAndSwitch('SIGN_UP')}
@@ -265,7 +269,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
-            Sign up
+            {t.signupTab}
           </button>
         </div>
 
@@ -274,24 +278,24 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
             <>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                  <Mail size={14} /> Email or Username
+                  <Mail size={14} /> {t.emailOrUsername}
                 </label>
                 <input
                   value={emailOrUsername}
                   onChange={(e) => setEmailOrUsername(e.target.value)}
-                  placeholder="you@example.com / normis_trader"
+                  placeholder={t.placeholderEmailOrUsername}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                  <Lock size={14} /> Password
+                  <Lock size={14} /> {t.password}
                 </label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="********"
+                  placeholder={t.placeholderPassword}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
                 />
               </div>
@@ -300,36 +304,36 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
             <>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                  <Mail size={14} /> Email
+                  <Mail size={14} /> {t.email}
                 </label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@example.com"
+                  placeholder={t.placeholderEmail}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                  <User size={14} /> Username
+                  <User size={14} /> {t.username}
                 </label>
                 <input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="normis_trader"
+                  placeholder={t.placeholderUsername}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                  <Lock size={14} /> Password
+                  <Lock size={14} /> {t.password}
                 </label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="********"
+                  placeholder={t.placeholderPassword}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D]"
                 />
               </div>
@@ -344,7 +348,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
             variant="primary"
             disabled={loading}
           >
-            {loading ? 'Please wait...' : mode === 'SIGN_IN' ? 'Log in' : 'Create account'}
+            {loading ? t.loadingText : mode === 'SIGN_IN' ? t.loginButton : t.signupButton}
           </Button>
         </div>
       </div>
