@@ -6,10 +6,10 @@ import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
-import UserProfileModal from "@/components/UserProfileModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
-import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade } from "@/types";
+import ProfilePage from "@/components/ProfilePage";
+import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, WalletTransaction } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search, Plus } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
@@ -34,7 +34,6 @@ export default function HomePage() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>("EVENTS");
 
   const [myPositions, setMyPositions] = useState<Position[]>([]);
@@ -52,6 +51,8 @@ export default function HomePage() {
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
+  const [walletTransactionsLoading, setWalletTransactionsLoading] = useState(false);
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null;
@@ -139,6 +140,8 @@ export default function HomePage() {
       id: String(me.user.id),
       email: me.user.email,
       username: me.user.username,
+      name: me.user.displayName ?? me.user.username,
+      createdAt: me.user.createdAt,
       balance: me.user.balance,
       isAdmin: me.user.isAdmin,
     });
@@ -156,6 +159,8 @@ export default function HomePage() {
       id: String(me.user.id),
       email: me.user.email,
       username: me.user.username,
+      name: me.user.displayName ?? me.user.username,
+      createdAt: me.user.createdAt,
       balance: me.user.balance,
       isAdmin: me.user.isAdmin,
     });
@@ -169,12 +174,29 @@ export default function HomePage() {
           id: String(me.id),
           email: me.email,
           username: me.username,
+          name: me.displayName ?? me.username,
+          createdAt: me.createdAt,
           balance: me.balance,
           isAdmin: me.isAdmin,
         });
       }
     } catch (err: unknown) {
       console.error("Failed to refresh session user", err);
+    }
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await trpcClient.auth.logout.mutate();
+    } catch (err: unknown) {
+      console.error("logout failed", err);
+    } finally {
+      setUser(null);
+      setMyPositions([]);
+      setMyTrades([]);
+      setWalletTransactions([]);
+      setCurrentView("EVENTS");
+      setSelectedMarketId(null);
     }
   }, []);
 
@@ -232,6 +254,23 @@ export default function HomePage() {
       setMyTrades(trades as Trade[]);
     } catch (err: unknown) {
       console.error("Failed to load positions/trades", err);
+    }
+  }, [user]);
+
+  const loadWalletTxs = useCallback(async () => {
+    if (!user) {
+      setWalletTransactions([]);
+      return;
+    }
+    setWalletTransactionsLoading(true);
+    try {
+      const txs = await trpcClient.user.myWalletTransactions.query();
+      setWalletTransactions(txs as WalletTransaction[]);
+    } catch (err: unknown) {
+      console.error("Failed to load wallet transactions", err);
+      setWalletTransactions([]);
+    } finally {
+      setWalletTransactionsLoading(false);
     }
   }, [user]);
 
@@ -301,10 +340,17 @@ export default function HomePage() {
     if (!user) {
       setMyPositions([]);
       setMyTrades([]);
+      setWalletTransactions([]);
       return;
     }
     void loadMyBets();
   }, [user, loadMyBets]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (currentView !== "WALLET") return;
+    void loadWalletTxs();
+  }, [currentView, user, loadWalletTxs]);
 
   useEffect(() => {
     void loadMarkets();
@@ -390,8 +436,8 @@ export default function HomePage() {
   }, [myTrades]);
 
   const realizedPnl = useMemo(
-    () => myTrades.reduce((acc, trade) => acc + trade.collateralNet, 0),
-    [myTrades]
+    () => soldTrades.reduce((acc, trade) => acc + Number(trade.realizedPnl ?? 0), 0),
+    [soldTrades]
   );
 
   const resolveMarketOutcome = useCallback(
@@ -407,15 +453,15 @@ export default function HomePage() {
     [user, loadMarkets, loadMyBets, refreshUser]
   );
 
-  // Refresh positions periodically while profile is open
+  // Refresh positions periodically while Profile screen is open
   useEffect(() => {
-    if (!showProfile || !user) return;
+    if (currentView !== "PROFILE" || !user) return;
     void loadMyBets();
     const id = setInterval(() => {
       void loadMyBets();
     }, 15000);
     return () => clearInterval(id);
-  }, [showProfile, user, loadMyBets]);
+  }, [currentView, user, loadMyBets]);
 
   const filteredMarkets = useMemo(
     () =>
@@ -523,6 +569,7 @@ export default function HomePage() {
       await loadMarkets();
       await refreshUser();
       await loadMyBets();
+      await loadWalletTxs();
 
       setBetConfirm({
         open: true,
@@ -538,6 +585,7 @@ export default function HomePage() {
       await loadMarkets();
       await refreshUser();
       await loadMyBets();
+      await loadWalletTxs();
       setBetConfirm({
         open: true,
         marketTitle,
@@ -578,11 +626,13 @@ export default function HomePage() {
       await loadMarkets();
       await refreshUser();
       await loadMyBets();
+      await loadWalletTxs();
     } catch (err: unknown) {
       console.error("sellPosition failed", err);
       await loadMarkets();
       await refreshUser();
       await loadMyBets();
+      await loadWalletTxs();
       throw err;
     }
   };
@@ -599,7 +649,7 @@ export default function HomePage() {
             onHelpClick={() => setShowOnboarding(true)}
             onLogoClick={() => {
               setSelectedMarketId(null);
-              setShowProfile(false);
+              setCurrentView("EVENTS");
             }}
             lang={lang}
             onToggleLang={handleToggleLang}
@@ -629,15 +679,10 @@ export default function HomePage() {
               // Bottom nav always navigates back to the main shell
               setSelectedMarketId(null);
 
-              if (view === "PROFILE") {
-                setShowProfile(true);
-                setCurrentView("PROFILE");
-                void loadMyBets();
-                return;
-              }
-
-              setShowProfile(false);
               setCurrentView(view);
+              if (view === "PROFILE") {
+                void loadMyBets();
+              }
             }}
           />
         </>
@@ -651,7 +696,6 @@ export default function HomePage() {
             onHelpClick={() => setShowOnboarding(true)}
             onLogoClick={() => {
               setSelectedMarketId(null);
-              setShowProfile(false);
               setCurrentView("EVENTS");
             }}
             lang={lang}
@@ -713,7 +757,31 @@ export default function HomePage() {
 
             {currentView === "REFERRALS" && <Referrals user={user} onLogin={() => openAuth("SIGN_IN")} lang={lang} />}
 
-            {currentView === "WALLET" && <WalletPage user={user} onLogin={() => openAuth("SIGN_IN")} lang={lang} />}
+            {currentView === "WALLET" && (
+              <WalletPage
+                user={user}
+                onLogin={() => openAuth("SIGN_IN")}
+                lang={lang}
+                transactions={walletTransactions}
+                loadingTransactions={walletTransactionsLoading}
+                pnlMajor={realizedPnl}
+                onMarketClick={(marketId) => setSelectedMarketId(marketId)}
+              />
+            )}
+
+            {currentView === "PROFILE" && (
+              <ProfilePage
+                user={user}
+                lang={lang}
+                onLogin={() => openAuth("SIGN_IN")}
+                onLogout={handleLogout}
+                bets={legacyBets}
+                onMarketClick={(marketId) => {
+                  setSelectedMarketId(marketId);
+                  setCurrentView("EVENTS");
+                }}
+              />
+            )}
           </main>
 
           <BottomMenu
@@ -722,15 +790,10 @@ export default function HomePage() {
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
             onChange={(view) => {
-              if (view === "PROFILE") {
-                setShowProfile(true);
-                setCurrentView("PROFILE");
-                void loadMyBets();
-                return;
-              }
-
-              setShowProfile(false);
               setCurrentView(view);
+              if (view === "PROFILE") {
+                void loadMyBets();
+              }
             }}
           />
 
@@ -761,31 +824,6 @@ export default function HomePage() {
         onLogin={handleLoginSubmit}
         lang={lang}
         initialMode={authInitialMode}
-      />
-      <UserProfileModal
-        isOpen={showProfile}
-        onClose={() => setShowProfile(false)}
-        user={user}
-        bets={legacyBets}
-        soldTrades={soldTrades}
-        realizedPnl={realizedPnl}
-        lang={lang}
-        onMarketClick={(id) => {
-          setSelectedMarketId(id);
-          setShowProfile(false);
-        }}
-        onLogout={async () => {
-          try {
-            await trpcClient.auth.logout.mutate();
-          } catch (err: unknown) {
-            console.error("logout failed", err);
-          } finally {
-            setUser(null);
-            setMyPositions([]);
-            setMyTrades([]);
-            setShowProfile(false);
-          }
-        }}
       />
       <BetConfirmModal
         isOpen={betConfirm.open}

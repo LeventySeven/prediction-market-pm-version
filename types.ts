@@ -113,8 +113,20 @@ export interface User {
   isAdmin?: boolean;
   pnl?: number; // Total Profit/Loss
   name?: string; // Display name
+  createdAt?: string;
   referrals?: number;
   avatar?: string;
+}
+
+export interface WalletTransaction {
+  id: string;
+  assetCode: string;
+  amountMinor: number;
+  amountMajor: number;
+  kind: string;
+  marketId: string | null;
+  tradeId: string | null;
+  createdAt: string;
 }
 
 export interface LeaderboardUser extends User {
