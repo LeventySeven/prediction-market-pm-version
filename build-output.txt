@@ -1,0 +1,2 @@
+$ next build
+error: script "build" exited with code 1

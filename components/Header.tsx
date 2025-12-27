@@ -52,6 +52,15 @@ const Header: React.FC<HeaderProps> = ({
   onHelpClick,
   onLogoClick,
 }) => {
+  const t = {
+    home: lang === 'RU' ? 'На главную' : 'Go to home',
+    search: lang === 'RU' ? 'Поиск...' : 'Search...',
+    help: lang === 'RU' ? 'Помощь' : 'Help',
+    createMarket: lang === 'RU' ? 'Создать рынок' : 'Create market',
+    login: lang === 'RU' ? 'Вход' : 'Log in',
+    registration: lang === 'RU' ? 'Регистрация' : 'Registration',
+  };
+
   return (
     <header className="sticky top-0 z-40 w-full border-b border-zinc-800 bg-[#09090b]/80 backdrop-blur supports-[backdrop-filter]:bg-[#09090b]/60">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
@@ -60,7 +69,7 @@ const Header: React.FC<HeaderProps> = ({
           className={`flex items-center gap-2 group ${onLogoClick ? 'cursor-pointer' : 'cursor-default'}`}
           onClick={onLogoClick}
           role={onLogoClick ? 'button' : undefined}
-          aria-label={onLogoClick ? 'Go to home' : undefined}
+          aria-label={onLogoClick ? t.home : undefined}
         >
           <div className="transition-transform group-hover:rotate-90 duration-500">
             <NormisIcon size={24} />
@@ -78,7 +87,7 @@ const Header: React.FC<HeaderProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={lang === 'RU' ? 'Поиск...' : 'Search...'}
+            placeholder={t.search}
             className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 pl-9 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#BEFF1D] disabled:cursor-not-allowed disabled:opacity-50"
           />
           <Search size={14} className="absolute left-3 top-2.5 text-zinc-500" />
@@ -90,7 +99,7 @@ const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onHelpClick}
               className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#BEFF1D] hover:bg-zinc-800 hover:text-zinc-50 h-9 w-9"
-              title={lang === 'RU' ? 'Помощь' : 'Help'}
+              title={t.help}
             >
               <HelpCircle size={16} />
             </button>
@@ -109,12 +118,12 @@ const Header: React.FC<HeaderProps> = ({
           {user?.isAdmin && onAdminClick && (
             <>
               <Button variant="secondary" onClick={onAdminClick} className="hidden sm:inline-flex text-sm">
-                Создать рынок
+                {t.createMarket}
               </Button>
               <button
                 onClick={onAdminClick}
                 className="sm:hidden inline-flex items-center justify-center rounded-md border border-zinc-800 bg-neutral-900 text-white hover:border-[#BEFF1D] h-9 w-9"
-                aria-label="Создать рынок"
+                aria-label={t.createMarket}
               >
                 <Plus size={16} />
               </button>
@@ -140,11 +149,11 @@ const Header: React.FC<HeaderProps> = ({
                 onClick={onLoginClick}
                 className="hidden sm:inline-flex text-sm font-medium hover:text-[#BEFF1D]"
               >
-                Вход
+                {t.login}
               </Button>
               <Button onClick={onLoginClick} className="flex items-center gap-2 text-sm">
                 <Wallet size={16} />
-                <span>Регистрация</span>
+                <span>{t.registration}</span>
               </Button>
             </>
           )}

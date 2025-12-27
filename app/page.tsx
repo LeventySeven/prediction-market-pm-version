@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AuthModal from "@/components/AuthModal";
 import Header from "@/components/Header";
-import MarketCard from "@/components/MarketCard";
+import MarketFeedItem from "@/components/MarketFeedItem";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
 import UserProfileModal from "@/components/UserProfileModal";
@@ -11,7 +11,12 @@ import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
 import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search } from "lucide-react";
+import { Search, Plus } from "lucide-react";
+import BottomMenu, { type ViewType } from "@/components/BottomMenu";
+import Leaderboard from "@/components/Leaderboard";
+import Referrals from "@/components/Referrals";
+import WalletPage from "@/components/WalletPage";
+import { MOCK_LEADERBOARD } from "@/constants";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -29,6 +34,7 @@ export default function HomePage() {
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [currentView, setCurrentView] = useState<ViewType>("EVENTS");
 
   const [myPositions, setMyPositions] = useState<Position[]>([]);
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
@@ -576,84 +582,153 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans">
-      <Header
-        onLoginClick={() => setShowAuth(true)}
-        user={user}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        onProfileClick={() => {
-          setShowProfile(true);
-          void loadMyBets();
-        }}
-        onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
-        onHelpClick={() => setShowOnboarding(true)}
-        onLogoClick={() => {
-          setSelectedMarketId(null);
-          setShowProfile(false);
-        }}
-        lang={lang}
-        onToggleLang={handleToggleLang}
-      />
-
-      <main>
-        {selectedMarket ? (
-          <MarketPage
-            market={selectedMarket}
+    <div className="min-h-screen bg-black text-zinc-100 font-sans">
+      {selectedMarket ? (
+        <>
+          <Header
+            onLoginClick={() => setShowAuth(true)}
             user={user}
-            onBack={() => setSelectedMarketId(null)}
-            onLogin={() => setShowAuth(true)}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onProfileClick={() => {
+              setShowProfile(true);
+              void loadMyBets();
+            }}
+            onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
+            onHelpClick={() => setShowOnboarding(true)}
+            onLogoClick={() => {
+              setSelectedMarketId(null);
+              setShowProfile(false);
+            }}
             lang={lang}
-            onResolveOutcome={user?.isAdmin ? resolveMarketOutcome : undefined}
-            onPlaceBet={handlePlaceBet}
-            onSellPosition={handleSellPosition}
-            userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
-            priceCandles={marketCandles}
-            publicTrades={marketPublicTrades}
-            insightsLoading={marketInsightsLoading}
+            onToggleLang={handleToggleLang}
           />
-        ) : (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 animate-fade-in">
-            <div className="mb-8">
-              <div className="relative w-full md:hidden">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={lang === "RU" ? "Поиск..." : "Search..."}
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg py-2 pl-10 pr-4 text-sm text-white focus:border-[#BEFF1D] focus:outline-none"
-                />
-                <Search
-                  size={16}
-                  className="absolute left-3.5 top-2.5 text-neutral-500"
-                />
-              </div>
-            </div>
+          <main>
+            <MarketPage
+              market={selectedMarket}
+              user={user}
+              onBack={() => setSelectedMarketId(null)}
+              onLogin={() => setShowAuth(true)}
+              lang={lang}
+              onResolveOutcome={user?.isAdmin ? resolveMarketOutcome : undefined}
+              onPlaceBet={handlePlaceBet}
+              onSellPosition={handleSellPosition}
+              userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
+              priceCandles={marketCandles}
+              publicTrades={marketPublicTrades}
+              insightsLoading={marketInsightsLoading}
+            />
+          </main>
+        </>
+      ) : (
+        <>
+          <Header
+            onLoginClick={() => setShowAuth(true)}
+            user={user}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onProfileClick={() => {
+              setShowProfile(true);
+              setCurrentView("PROFILE");
+              void loadMyBets();
+            }}
+            onAdminClick={user?.isAdmin ? () => setShowAdminModal(true) : undefined}
+            onHelpClick={() => setShowOnboarding(true)}
+            onLogoClick={() => {
+              setSelectedMarketId(null);
+              setShowProfile(false);
+              setCurrentView("EVENTS");
+            }}
+            lang={lang}
+            onToggleLang={handleToggleLang}
+          />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {loadingMarkets ? (
-                <div className="col-span-full text-center py-10 text-neutral-500">
-                  {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
+          <main className="mx-auto w-full max-w-xl pb-24">
+            {currentView === "EVENTS" && (
+              <>
+                <div className="px-4 pt-4 pb-3">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder={lang === "RU" ? "Поиск..." : "Search..."}
+                      className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 pl-10 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                    />
+                    <Search size={16} className="absolute left-3.5 top-3 text-zinc-600" />
+                  </div>
                 </div>
-              ) : filteredMarkets.length > 0 ? (
-                filteredMarkets.map((market) => (
-                  <MarketCard
-                    key={market.id}
-                    market={market}
-                    onClick={() => setSelectedMarketId(market.id)}
-                    lang={lang}
-                  />
-                ))
-              ) : (
-                <div className="col-span-full text-center py-20 text-neutral-500">
-                  <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
-                  <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
+
+                <div className="border-t border-zinc-900">
+                  {loadingMarkets ? (
+                    <div className="text-center py-10 text-zinc-500">
+                      {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
+                    </div>
+                  ) : filteredMarkets.length > 0 ? (
+                    filteredMarkets.map((market) => (
+                      <MarketFeedItem
+                        key={market.id}
+                        market={market}
+                        onClick={() => setSelectedMarketId(market.id)}
+                        lang={lang}
+                      />
+                    ))
+                  ) : (
+                    <div className="text-center py-20 text-zinc-500 px-4">
+                      <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
+                      <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-      </main>
+              </>
+            )}
+
+            {currentView === "LEADERBOARD" && (
+              <Leaderboard
+                users={MOCK_LEADERBOARD}
+                lang={lang}
+                onUserClick={() => {
+                  // Miniapp: keep as UI only for now
+                }}
+              />
+            )}
+
+            {currentView === "REFERRALS" && <Referrals user={user} onLogin={() => setShowAuth(true)} lang={lang} />}
+
+            {currentView === "WALLET" && <WalletPage user={user} onLogin={() => setShowAuth(true)} lang={lang} />}
+          </main>
+
+          <BottomMenu
+            currentView={currentView}
+            lang={lang}
+            user={user}
+            onLoginRequest={() => setShowAuth(true)}
+            onChange={(view) => {
+              if (view === "PROFILE") {
+                setShowProfile(true);
+                setCurrentView("PROFILE");
+                void loadMyBets();
+                return;
+              }
+
+              setShowProfile(false);
+              setCurrentView(view);
+            }}
+          />
+
+          {user?.isAdmin && currentView === "EVENTS" && (
+            <button
+              type="button"
+              onClick={() => setShowAdminModal(true)}
+              className="fixed bottom-16 right-4 h-12 w-12 rounded-full bg-zinc-100 text-black flex items-center justify-center shadow-lg shadow-black/30"
+              aria-label={lang === "RU" ? "Создать рынок" : "Create market"}
+              title={lang === "RU" ? "Создать рынок" : "Create market"}
+            >
+              <Plus size={20} />
+            </button>
+          )}
+        </>
+      )}
 
       <OnboardingModal
         isOpen={showOnboarding}
