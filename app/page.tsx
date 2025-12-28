@@ -13,9 +13,7 @@ import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicT
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search, Plus } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
-import Leaderboard from "@/components/Leaderboard";
-import Referrals from "@/components/Referrals";
-import WalletPage from "@/components/WalletPage";
+import FriendsPage from "@/components/FriendsPage";
 import { MOCK_LEADERBOARD } from "@/constants";
 
 // VCOIN decimals for display
@@ -192,7 +190,6 @@ export default function HomePage() {
       setUser(null);
       setMyPositions([]);
       setMyTrades([]);
-      setWalletTransactions([]);
       setCurrentView("EVENTS");
       setSelectedMarketId(null);
     }
@@ -429,9 +426,9 @@ export default function HomePage() {
     [user, loadMarkets, loadMyBets, refreshUser]
   );
 
-  // Refresh positions/trades periodically while Wallet screen is open
+  // Refresh positions/trades periodically while Profile screen is open (it contains bet history now)
   useEffect(() => {
-    if (currentView !== "WALLET" || !user) return;
+    if (currentView !== "PROFILE" || !user) return;
     void loadMyBets();
     const id = setInterval(() => {
       void loadMyBets();
@@ -717,27 +714,12 @@ export default function HomePage() {
               </>
             )}
 
-            {currentView === "LEADERBOARD" && (
-              <Leaderboard
-                users={MOCK_LEADERBOARD}
+            {currentView === "FRIENDS" && (
+              <FriendsPage
                 lang={lang}
-                onUserClick={() => {
-                  // Miniapp: keep as UI only for now
-                }}
-              />
-            )}
-
-            {currentView === "REFERRALS" && <Referrals user={user} onLogin={() => openAuth("SIGN_IN")} lang={lang} />}
-
-            {currentView === "WALLET" && (
-              <WalletPage
                 user={user}
+                leaderboardUsers={MOCK_LEADERBOARD}
                 onLogin={() => openAuth("SIGN_IN")}
-                lang={lang}
-                bets={legacyBets}
-                soldTrades={soldTrades}
-                pnlMajor={realizedPnl}
-                onMarketClick={(marketId) => setSelectedMarketId(marketId)}
               />
             )}
 
@@ -747,6 +729,11 @@ export default function HomePage() {
                 lang={lang}
                 onLogin={() => openAuth("SIGN_IN")}
                 onLogout={handleLogout}
+                balanceMajor={user?.balance ?? 0}
+                pnlMajor={realizedPnl}
+                bets={legacyBets}
+                soldTrades={soldTrades}
+                onMarketClick={(marketId) => setSelectedMarketId(marketId)}
               />
             )}
           </main>

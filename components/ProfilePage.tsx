@@ -3,13 +3,18 @@
 import React from 'react';
 import { LogOut, Mail, User as UserIcon, Shield } from 'lucide-react';
 import Button from './Button';
-import type { User } from '../types';
+import type { Bet, Trade, User } from '../types';
 
 type ProfilePageProps = {
   user: User | null;
   lang: 'RU' | 'EN';
   onLogin: () => void;
   onLogout: () => void;
+  balanceMajor: number;
+  pnlMajor: number;
+  bets: Bet[];
+  soldTrades: Trade[];
+  onMarketClick: (marketId: string) => void;
 };
 
 const initialsFrom = (value?: string) => {
@@ -32,7 +37,17 @@ const formatDate = (iso?: string, lang: 'RU' | 'EN' = 'RU') => {
   });
 };
 
-const ProfilePage: React.FC<ProfilePageProps> = ({ user, lang, onLogin, onLogout }) => {
+const ProfilePage: React.FC<ProfilePageProps> = ({
+  user,
+  lang,
+  onLogin,
+  onLogout,
+  balanceMajor,
+  pnlMajor,
+  bets,
+  soldTrades,
+  onMarketClick,
+}) => {
   if (!user) {
     return (
       <div className="max-w-xl mx-auto px-4 py-10 pb-24">
@@ -57,9 +72,18 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, lang, onLogin, onLogout
   const displayName = user.name ?? user.username ?? (lang === 'RU' ? 'Пользователь' : 'User');
   const handle = user.username ? `@${user.username}` : null;
   const joined = formatDate(user.createdAt, lang);
+  const pnlIsPositive = (pnlMajor ?? 0) >= 0;
+  const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
+  const noLabel = lang === 'RU' ? 'Нет' : 'No';
+
+  const activeBets = bets.filter((b) => b.status === 'open');
+  const settledBets = bets.filter((b) => b.status !== 'open');
+
+  const formatMoney = (value: number) => `$${value.toFixed(2)}`;
 
   return (
     <div className="max-w-xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300">
+      {/* Profile header */}
       <div className="border border-zinc-900 bg-black rounded-2xl p-5">
         <div className="flex items-start gap-4">
           <div className="h-14 w-14 rounded-full bg-zinc-950/40 border border-zinc-900 flex items-center justify-center text-zinc-100 font-bold">
@@ -100,6 +124,179 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, lang, onLogin, onLogout
             <span className="sr-only">{lang === 'RU' ? 'Выйти' : 'Log out'}</span>
             <LogOut size={16} />
           </Button>
+        </div>
+      </div>
+
+      {/* Balance + PnL */}
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="border border-zinc-900 bg-black rounded-2xl p-4">
+          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">
+            {lang === 'RU' ? 'Баланс' : 'Balance'}
+          </div>
+          <div className="text-2xl font-mono font-bold text-zinc-100">
+            {formatMoney(balanceMajor)}
+          </div>
+        </div>
+        <div className="border border-zinc-900 bg-black rounded-2xl p-4">
+          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">
+            PnL
+          </div>
+          <div
+            className={`text-2xl font-mono font-bold ${
+              pnlIsPositive ? 'text-[rgba(36,182,255,1)]' : 'text-[rgba(201,37,28,1)]'
+            }`}
+          >
+            {pnlIsPositive ? '+' : '-'}${Math.abs(pnlMajor).toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {/* Transactions (bet history) */}
+      <div className="mt-8">
+        <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3 px-1">
+          {lang === 'RU' ? 'Транзакции' : 'Transactions'}
+        </h2>
+
+        {/* Active */}
+        <div className="mb-6">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-1">
+            {lang === 'RU' ? 'Активные' : 'Active'}
+          </div>
+          {activeBets.length === 0 ? (
+            <div className="text-sm text-zinc-500 px-1">
+              {lang === 'RU' ? 'Нет активных ставок' : 'No active bets'}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {activeBets.map((b) => {
+                const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
+                const sideLabel = b.side === 'YES' ? yesLabel : noLabel;
+                const sideColor = b.side === 'YES' ? 'text-[rgba(36,182,255,1)]' : 'text-[rgba(201,37,28,1)]';
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
+                    onClick={() => onMarketClick(b.marketId)}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
+                        <div className="mt-1 text-xs text-zinc-500 flex items-center gap-2">
+                          <span className={`font-semibold ${sideColor}`}>{sideLabel}</span>
+                          <span className="text-zinc-600">•</span>
+                          <span className="font-mono text-zinc-300">
+                            {lang === 'RU' ? 'Куплено на' : 'Bought for'} {formatMoney(b.amount)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-500 flex-shrink-0">
+                        {lang === 'RU' ? 'Открыта' : 'Open'}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Completed */}
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-1">
+            {lang === 'RU' ? 'Завершенные' : 'Completed'}
+          </div>
+
+          {(settledBets.length === 0 && soldTrades.length === 0) ? (
+            <div className="text-sm text-zinc-500 px-1">
+              {lang === 'RU' ? 'Нет завершенных ставок' : 'No completed bets'}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {settledBets.map((b) => {
+                const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
+                const won = b.status === 'won';
+                const resultLabel = lang === 'RU' ? (won ? 'ВЫИГРЫШ' : 'ПОТЕРЯ') : (won ? 'WON' : 'LOST');
+                const resultColor = won ? 'text-[rgba(36,182,255,1)]' : 'text-[rgba(201,37,28,1)]';
+                const redeem = b.payout ?? 0;
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
+                    onClick={() => onMarketClick(b.marketId)}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          <span className="font-mono text-zinc-300">
+                            {lang === 'RU' ? 'Куплено на' : 'Bought for'} {formatMoney(b.amount)}
+                          </span>
+                          <span className="text-zinc-600"> → </span>
+                          <span className="font-mono text-zinc-300">
+                            {lang === 'RU' ? 'Погашено на' : 'Redeemed for'} {formatMoney(redeem)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className={`text-xs font-semibold uppercase tracking-wider ${resultColor}`}>
+                        {resultLabel}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+
+              {soldTrades.map((t) => {
+                const title = t.marketTitleRu || t.marketTitleEn || t.marketId;
+                const sharesSold = Math.abs(t.sharesDelta);
+                const avgEntry = t.avgEntryPrice ?? null;
+                const boughtFor = avgEntry !== null ? avgEntry * sharesSold : null;
+                const soldFor = Math.abs(t.collateralNet);
+                const sideLabel = t.outcome === 'YES' ? yesLabel : noLabel;
+                const sideColor = t.outcome === 'YES' ? 'text-[rgba(36,182,255,1)]' : 'text-[rgba(201,37,28,1)]';
+                const resolvedOutcome = t.marketOutcome ? String(t.marketOutcome) : null;
+                const outcomeText =
+                  resolvedOutcome === 'YES' ? yesLabel : resolvedOutcome === 'NO' ? noLabel : null;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
+                    onClick={() => onMarketClick(t.marketId)}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
+                        <div className="mt-1 text-xs text-zinc-500 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`font-semibold ${sideColor}`}>{sideLabel}</span>
+                            <span className="text-zinc-600">•</span>
+                            <span className="font-mono text-zinc-300">
+                              {lang === 'RU' ? 'Куплено на' : 'Bought for'}{' '}
+                              {boughtFor !== null ? formatMoney(boughtFor) : '—'}
+                            </span>
+                            <span className="text-zinc-600"> → </span>
+                            <span className="font-mono text-zinc-300">
+                              {lang === 'RU' ? 'Продано за' : 'Sold for'} {formatMoney(soldFor)}
+                            </span>
+                          </div>
+                          {outcomeText && (
+                            <div className="text-[11px] text-zinc-500">
+                              {lang === 'RU' ? 'Исход события' : 'Event outcome'}: {outcomeText}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-500 flex-shrink-0">
+                        {lang === 'RU' ? 'Продано' : 'Sold'}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
