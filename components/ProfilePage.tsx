@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
-import { LogOut, Mail, User as UserIcon, Shield } from 'lucide-react';
+import React, { useState } from 'react';
+import { LogOut, Mail, User as UserIcon, Shield, Pencil, X } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Trade, User } from '../types';
 
@@ -10,6 +10,7 @@ type ProfilePageProps = {
   lang: 'RU' | 'EN';
   onLogin: () => void;
   onLogout: () => void;
+  onUpdateDisplayName: (nextDisplayName: string) => Promise<void>;
   balanceMajor: number;
   pnlMajor: number;
   bets: Bet[];
@@ -42,6 +43,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   lang,
   onLogin,
   onLogout,
+  onUpdateDisplayName,
   balanceMajor,
   pnlMajor,
   bets,
@@ -75,6 +77,10 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const pnlIsPositive = (pnlMajor ?? 0) >= 0;
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(displayName);
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const activeBets = bets.filter((b) => b.status === 'open');
   const settledBets = bets.filter((b) => b.status !== 'open');
@@ -92,6 +98,18 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-semibold text-zinc-100 truncate">{displayName}</h1>
+              <button
+                type="button"
+                onClick={() => {
+                  setNameError(null);
+                  setNameDraft(displayName);
+                  setIsEditingName(true);
+                }}
+                className="h-8 w-8 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 transition-colors flex items-center justify-center text-zinc-300"
+                title={lang === 'RU' ? 'Изменить ник' : 'Edit nickname'}
+              >
+                <Pencil size={14} />
+              </button>
               {user.isAdmin && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded-full border border-zinc-900 bg-zinc-950/40 text-zinc-200">
                   <Shield size={12} />
@@ -99,6 +117,53 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 </span>
               )}
             </div>
+            {isEditingName && (
+              <div className="mt-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    placeholder={lang === 'RU' ? 'Никнейм' : 'Display name'}
+                    className="flex-1 h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                  />
+                  <Button
+                    onClick={async () => {
+                      setNameError(null);
+                      const next = nameDraft.trim();
+                      if (next.length < 2) {
+                        setNameError(lang === 'RU' ? 'Слишком короткий ник' : 'Name is too short');
+                        return;
+                      }
+                      setSavingName(true);
+                      try {
+                        await onUpdateDisplayName(next);
+                        setIsEditingName(false);
+                      } catch (e) {
+                        setNameError(lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save');
+                      } finally {
+                        setSavingName(false);
+                      }
+                    }}
+                    className="h-10 rounded-full px-4"
+                    disabled={savingName}
+                  >
+                    {savingName ? (lang === 'RU' ? 'Сохранение…' : 'Saving…') : (lang === 'RU' ? 'Сохранить' : 'Save')}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNameError(null);
+                      setIsEditingName(false);
+                    }}
+                    className="h-10 w-10 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 transition-colors flex items-center justify-center text-zinc-300"
+                    title={lang === 'RU' ? 'Отмена' : 'Cancel'}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                {nameError && <div className="mt-2 text-xs text-[rgba(201,37,28,1)]">{nameError}</div>}
+              </div>
+            )}
             {handle && <div className="text-sm text-zinc-500 truncate">{handle}</div>}
             <div className="mt-2 space-y-1 text-sm text-zinc-400">
               {user.email && (

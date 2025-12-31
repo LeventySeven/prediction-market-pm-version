@@ -4,6 +4,7 @@ import { publicProcedure, router } from "../trpc";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
+import { randomBytes } from "node:crypto";
 
 const DEFAULT_ASSET = "VCOIN";
 const VCOIN_DECIMALS = 6;
@@ -25,13 +26,16 @@ const userShape = {
   email: z.string().email(),
   username: z.string(),
   displayName: z.string().nullable(),
+  referralCode: z.string().nullable(),
+  referralCommissionRate: z.number().nullable(),
+  referralEnabled: z.boolean().nullable(),
   balance: z.number(),
   createdAt: z.string(),
   isAdmin: z.boolean(),
 };
 
 const selectColumns =
-  "id, email, username, display_name, created_at, is_admin";
+  "id, email, username, display_name, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin";
 
 const USERS_TABLE = "users" as const;
 const WALLET_BALANCES_TABLE = "wallet_balances" as const;
@@ -41,10 +45,24 @@ const formatUser = (row: UserRow, balanceMinor: number = 0) => ({
   email: row.email,
   username: row.username,
   displayName: row.display_name,
+  referralCode: row.referral_code,
+  referralCommissionRate:
+    row.referral_commission_rate === null || row.referral_commission_rate === undefined
+      ? null
+      : Number(row.referral_commission_rate),
+  referralEnabled: row.referral_enabled,
   balance: toMajorUnits(balanceMinor, VCOIN_DECIMALS),
   createdAt: new Date(row.created_at).toISOString(),
   isAdmin: Boolean(row.is_admin),
 });
+
+const normalizeDisplayName = (value: string) => value.trim().replace(/\s+/g, " ");
+
+const buildReferralCode = () => {
+  // Short, URL-safe, uppercase-ish code
+  const bytes = randomBytes(6); // 12 hex chars
+  return bytes.toString("hex").toUpperCase();
+};
 
 export const userRouter = router({
   registerUser: publicProcedure
@@ -220,5 +238,175 @@ export const userRouter = router({
         tradeId: tx.trade_id,
         createdAt: new Date(tx.created_at).toISOString(),
       }));
+    }),
+
+  /**
+   * Update display name for the current user (mutable nickname).
+   */
+  updateDisplayName: publicProcedure
+    .input(
+      z.object({
+        displayName: z.string().min(2).max(32),
+      })
+    )
+    .output(z.object(userShape))
+    .mutation(async ({ ctx, input }) => {
+      const { supabaseService, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const nextName = normalizeDisplayName(input.displayName);
+      if (nextName.length < 2) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Display name is too short" });
+      }
+
+      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
+      const updated = await supabaseServiceAny
+        .from(USERS_TABLE)
+        .update({ display_name: nextName })
+        .eq("id", authUser.id)
+        .select(selectColumns)
+        .single();
+
+      if (updated.error || !updated.data) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: updated.error?.message ?? "Failed to update display name",
+        });
+      }
+
+      const { data: walletRow } = await supabaseServiceAny
+        .from(WALLET_BALANCES_TABLE)
+        .select("balance_minor")
+        .eq("user_id", authUser.id)
+        .eq("asset_code", DEFAULT_ASSET)
+        .maybeSingle();
+
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+      return formatUser(updated.data as UserRow, balanceMinor);
+    }),
+
+  /**
+   * Create a referral link/code for the current user.
+   * Default commission is 50% (0.5) unless already set (e.g. 70% issued manually in Supabase).
+   */
+  createReferralLink: publicProcedure
+    .output(
+      z.object({
+        referralCode: z.string(),
+        referralCommissionRate: z.number(),
+        referralEnabled: z.boolean(),
+      })
+    )
+    .mutation(async ({ ctx }) => {
+      const { supabaseService, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
+
+      const existing = await supabaseServiceAny
+        .from(USERS_TABLE)
+        .select("id, referral_code, referral_commission_rate, referral_enabled")
+        .eq("id", authUser.id)
+        .single();
+
+      if (existing.error || !existing.data) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: existing.error?.message ?? "Failed to load user",
+        });
+      }
+
+      const row = existing.data as Pick<
+        UserRow,
+        "id" | "referral_code" | "referral_commission_rate" | "referral_enabled"
+      >;
+
+      const desiredRate = row.referral_commission_rate ?? 0.5;
+      const desiredEnabled = true;
+
+      // If a code already exists, ensure the link is enabled and has a rate set (don't override 70% etc).
+      if (row.referral_code) {
+        if (row.referral_enabled === true && row.referral_commission_rate !== null) {
+          return {
+            referralCode: row.referral_code,
+            referralCommissionRate: Number(row.referral_commission_rate),
+            referralEnabled: true,
+          };
+        }
+
+        const updatedExisting = await supabaseServiceAny
+          .from(USERS_TABLE)
+          .update({
+            referral_commission_rate: desiredRate,
+            referral_enabled: desiredEnabled,
+          })
+          .eq("id", authUser.id)
+          .select("referral_code, referral_commission_rate, referral_enabled")
+          .single();
+
+        if (updatedExisting.error || !updatedExisting.data) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: updatedExisting.error?.message ?? "Failed to enable referral link",
+          });
+        }
+
+        return {
+          referralCode: String(updatedExisting.data.referral_code),
+          referralCommissionRate: Number(updatedExisting.data.referral_commission_rate ?? desiredRate),
+          referralEnabled: updatedExisting.data.referral_enabled === true,
+        };
+      }
+
+      // Generate a unique code (best-effort).
+      let code: string | null = null;
+      for (let i = 0; i < 8; i++) {
+        const candidate = buildReferralCode();
+        const { data: conflict } = await supabaseServiceAny
+          .from(USERS_TABLE)
+          .select("id")
+          .eq("referral_code", candidate)
+          .maybeSingle();
+        if (!conflict) {
+          code = candidate;
+          break;
+        }
+      }
+
+      if (!code) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to generate referral code",
+        });
+      }
+
+      const updated = await supabaseServiceAny
+        .from(USERS_TABLE)
+        .update({
+          referral_code: code,
+          referral_commission_rate: desiredRate,
+          referral_enabled: true,
+        })
+        .eq("id", authUser.id)
+        .select("referral_code, referral_commission_rate, referral_enabled")
+        .single();
+
+      if (updated.error || !updated.data) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: updated.error?.message ?? "Failed to create referral link",
+        });
+      }
+
+      return {
+        referralCode: String(updated.data.referral_code),
+        referralCommissionRate: Number(updated.data.referral_commission_rate ?? desiredRate),
+        referralEnabled: updated.data.referral_enabled === true,
+      };
     }),
 });

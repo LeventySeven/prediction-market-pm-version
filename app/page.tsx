@@ -28,6 +28,7 @@ export default function HomePage() {
   const [authInitialMode, setAuthInitialMode] = useState<AuthMode>("SIGN_IN");
   const [lang, setLang] = useState<"RU" | "EN">("RU");
   const [user, setUser] = useState<User | null>(null);
+  const [pendingReferralCode, setPendingReferralCode] = useState<string | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
@@ -107,6 +108,22 @@ export default function HomePage() {
     return undefined;
   }, []);
 
+  // Capture referral code from URL (e.g. ?ref=CODE) and keep it until signup completes.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const fromUrl = params.get("ref") || params.get("invite") || params.get("r");
+      const stored = localStorage.getItem("pending_referral_code");
+      const next = (fromUrl || stored || "").trim();
+      if (next) {
+        setPendingReferralCode(next);
+        localStorage.setItem("pending_referral_code", next);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const handleCloseOnboarding = () => {
     setShowOnboarding(false);
     localStorage.setItem("hasSeenOnboarding", "true");
@@ -131,6 +148,8 @@ export default function HomePage() {
       email: payload.email,
       username: payload.username,
       password: payload.password,
+      displayName: payload.displayName,
+      referralCode: pendingReferralCode ?? undefined,
     });
     setUser({
       id: String(me.user.id),
@@ -140,7 +159,17 @@ export default function HomePage() {
       createdAt: me.user.createdAt,
       balance: me.user.balance,
       isAdmin: me.user.isAdmin,
+      referralCode: me.user.referralCode,
+      referralCommissionRate: me.user.referralCommissionRate,
+      referralEnabled: me.user.referralEnabled,
     });
+
+    setPendingReferralCode(null);
+    try {
+      localStorage.removeItem("pending_referral_code");
+    } catch {
+      // ignore
+    }
   };
 
   const handleLoginSubmit = async (payload: {
@@ -159,6 +188,9 @@ export default function HomePage() {
       createdAt: me.user.createdAt,
       balance: me.user.balance,
       isAdmin: me.user.isAdmin,
+      referralCode: me.user.referralCode,
+      referralCommissionRate: me.user.referralCommissionRate,
+      referralEnabled: me.user.referralEnabled,
     });
   };
 
@@ -174,11 +206,46 @@ export default function HomePage() {
           createdAt: me.createdAt,
           balance: me.balance,
           isAdmin: me.isAdmin,
+          referralCode: me.referralCode,
+          referralCommissionRate: me.referralCommissionRate,
+          referralEnabled: me.referralEnabled,
         });
       }
     } catch (err: unknown) {
       console.error("Failed to refresh session user", err);
     }
+  }, []);
+
+  const handleUpdateDisplayName = useCallback(
+    async (nextDisplayName: string) => {
+      const updated = await trpcClient.user.updateDisplayName.mutate({
+        displayName: nextDisplayName,
+      });
+      setUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              name: updated.displayName ?? updated.username,
+            }
+          : prev
+      );
+    },
+    []
+  );
+
+  const handleCreateReferralLink = useCallback(async () => {
+    const res = await trpcClient.user.createReferralLink.mutate();
+    setUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            referralCode: res.referralCode,
+            referralCommissionRate: res.referralCommissionRate,
+            referralEnabled: res.referralEnabled,
+          }
+        : prev
+    );
+    return res;
   }, []);
 
   const handleLogout = useCallback(async () => {
@@ -720,6 +787,7 @@ export default function HomePage() {
                 user={user}
                 leaderboardUsers={MOCK_LEADERBOARD}
                 onLogin={() => openAuth("SIGN_IN")}
+                onCreateReferralLink={handleCreateReferralLink}
               />
             )}
 
@@ -729,6 +797,7 @@ export default function HomePage() {
                 lang={lang}
                 onLogin={() => openAuth("SIGN_IN")}
                 onLogout={handleLogout}
+                onUpdateDisplayName={handleUpdateDisplayName}
                 balanceMajor={user?.balance ?? 0}
                 pnlMajor={realizedPnl}
                 bets={legacyBets}

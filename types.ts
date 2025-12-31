@@ -113,6 +113,9 @@ export interface User {
   isAdmin?: boolean;
   pnl?: number; // Total Profit/Loss
   name?: string; // Display name
+  referralCode?: string | null;
+  referralCommissionRate?: number | null;
+  referralEnabled?: boolean | null;
   createdAt?: string;
   referrals?: number;
   avatar?: string;

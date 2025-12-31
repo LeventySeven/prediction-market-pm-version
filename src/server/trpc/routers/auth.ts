@@ -43,7 +43,8 @@ const usernameSchema = z
   .regex(/^[a-zA-Z0-9_.-]+$/, "Username may contain letters, numbers, _, ., -");
 const passwordSchema = z.string().min(8).max(128);
 
-const publicColumns = "id, email, username, display_name, created_at, is_admin";
+const publicColumns =
+  "id, email, username, display_name, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin";
 
 const USERS_TABLE = "users" as const;
 const WALLET_BALANCES_TABLE = "wallet_balances" as const;
@@ -59,6 +60,12 @@ const toPublicUser = (row: DbUserRow, balanceMinor: number = 0): PublicUser => (
   email: row.email,
   username: row.username,
   displayName: row.display_name,
+  referralCode: row.referral_code,
+  referralCommissionRate:
+    row.referral_commission_rate === null || row.referral_commission_rate === undefined
+      ? null
+      : Number(row.referral_commission_rate),
+  referralEnabled: row.referral_enabled,
   balance: toMajorUnits(balanceMinor, VCOIN_DECIMALS),
   createdAt: new Date(row.created_at).toISOString(),
   isAdmin: Boolean(row.is_admin),
@@ -71,12 +78,16 @@ export const authRouter = router({
         email: emailSchema,
         username: usernameSchema,
         password: passwordSchema,
+        displayName: z.string().trim().min(2).max(32).optional(),
+        referralCode: z.string().trim().min(1).max(64).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { supabase, supabaseService, setCookie } = ctx;
       const email = input.email.toLowerCase().trim();
       const username = input.username.trim();
+      const displayName = input.displayName?.trim() || username;
+      const referralCode = input.referralCode?.trim() || null;
 
       const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
 
@@ -120,7 +131,7 @@ export const authRouter = router({
         id: userId,
         email,
         username,
-        display_name: username,
+        display_name: displayName,
         is_admin: false,
         referral_code: null,
       };
@@ -149,6 +160,28 @@ export const authRouter = router({
         } as WalletBalanceInsert)
         .select()
         .maybeSingle();
+
+      // Attach referral (optional). We don't block signup if the code is invalid.
+      if (referralCode) {
+        const { data: referrerRow } = await supabaseServiceAny
+          .from(USERS_TABLE)
+          .select("id, referral_enabled")
+          .eq("referral_code", referralCode)
+          .maybeSingle();
+
+        // Only accept codes that are explicitly enabled.
+        if (referrerRow?.id && referrerRow.id !== userId && referrerRow.referral_enabled === true) {
+          await supabaseServiceAny
+            .from("user_referrals")
+            .upsert(
+              {
+                user_id: userId,
+                referrer_user_id: referrerRow.id,
+              },
+              { onConflict: "user_id" }
+            );
+        }
+      }
 
       const autoLogin = await supabase.auth.signInWithPassword({
         email,
