@@ -235,17 +235,34 @@ export default function HomePage() {
 
   const handleCreateReferralLink = useCallback(async () => {
     const res = await trpcClient.user.createReferralLink.mutate();
+
+    // Some client typings may mark fields optional; normalize + enforce at runtime.
+    const referralCode = (res as any)?.referralCode;
+    const referralCommissionRate = (res as any)?.referralCommissionRate;
+    const referralEnabled = (res as any)?.referralEnabled;
+
+    if (typeof referralCode !== "string" || referralCode.length === 0) {
+      throw new Error("INVALID_REFERRAL_CODE");
+    }
+    if (typeof referralCommissionRate !== "number" || !Number.isFinite(referralCommissionRate)) {
+      throw new Error("INVALID_REFERRAL_RATE");
+    }
+    if (typeof referralEnabled !== "boolean") {
+      throw new Error("INVALID_REFERRAL_ENABLED");
+    }
+
     setUser((prev) =>
       prev
         ? {
             ...prev,
-            referralCode: res.referralCode,
-            referralCommissionRate: res.referralCommissionRate,
-            referralEnabled: res.referralEnabled,
+            referralCode,
+            referralCommissionRate,
+            referralEnabled,
           }
         : prev
     );
-    return res;
+
+    return { referralCode, referralCommissionRate, referralEnabled };
   }, []);
 
   const handleLogout = useCallback(async () => {
