@@ -166,6 +166,19 @@ const MarketPage: React.FC<MarketPageProps> = ({
     }
   };
 
+  const setAmountFromNumber = (value: number) => {
+    if (!Number.isFinite(value) || value < 0) return;
+    const rounded = Math.round(value * 100) / 100;
+    const str = String(rounded)
+      .replace(/(\.\d*?)0+$/, '$1')
+      .replace(/\.$/, '');
+    setAmount(str);
+  };
+
+  const handleQuickAdd = (delta: number) => {
+    setAmountFromNumber(numericAmount + delta);
+  };
+
   const handlePlaceBetClick = async () => {
     if (isExpired) {
       setPlaceError(lang === 'RU' ? 'Торги закрыты.' : 'Trading closed.');
@@ -302,9 +315,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
           </div>
 
           {/* Chart */}
-          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[420px] relative">
-            <div className="flex items-baseline gap-4 mb-8">
-              <span className="text-4xl font-bold tracking-tight text-zinc-100">{displayedChance}%</span>
+          <div className="rounded-2xl border border-zinc-900 bg-black p-4 sm:p-6 h-[320px] sm:h-[420px] relative">
+            <div className="flex items-baseline gap-3 mb-5 sm:mb-8">
+              <span className="text-3xl sm:text-4xl font-bold tracking-tight text-zinc-100">{displayedChance}%</span>
               <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
                 {lang === 'RU' ? 'Вероятность (Да)' : 'Yes Probability'}
               </span>
@@ -552,6 +565,19 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         className="flex h-11 w-full rounded-md border border-zinc-900 bg-transparent px-3 py-2 pl-7 text-lg font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 placeholder:text-zinc-700"
                       />
                     </div>
+                <div className="mt-2 grid grid-cols-4 gap-2">
+                  {[1, 5, 10, 100].map((inc) => (
+                    <button
+                      key={inc}
+                      type="button"
+                      onClick={() => handleQuickAdd(inc)}
+                      disabled={placing || isExpired}
+                      className="h-9 rounded-md border border-zinc-900 bg-zinc-950/50 text-xs font-semibold text-zinc-200 hover:bg-zinc-900/40 transition-colors disabled:opacity-50 disabled:pointer-events-none tabular-nums"
+                    >
+                      +{inc}
+                    </button>
+                  ))}
+                </div>
                   </div>
 
                   {placeError && <p className="text-sm text-red-400">{placeError}</p>}
