@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade } from '../types';
 import Button from './Button';
-import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, TrendingDown } from 'lucide-react';
+import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, TrendingDown, Coins, MessageCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
 
@@ -324,21 +324,23 @@ const MarketPage: React.FC<MarketPageProps> = ({
             <button
               type="button"
               onClick={() => scrollToSection('bid-section')}
-              className="flex-1 h-9 rounded-full border border-zinc-900 bg-black text-[11px] font-bold uppercase tracking-wider text-zinc-200 hover:bg-zinc-950/60 transition-colors"
+              className="flex-1 h-11 rounded-full border border-zinc-900 bg-black px-4 text-xs font-bold uppercase tracking-wider text-zinc-200 hover:bg-zinc-950/60 transition-colors inline-flex items-center justify-center gap-2"
             >
-              {lang === 'RU' ? 'Ставка' : 'Bid'}
+              <Coins size={16} className="text-zinc-400" />
+              <span>{lang === 'RU' ? 'Ставка' : 'Bid'}</span>
             </button>
             <button
               type="button"
               onClick={() => scrollToSection('comments-section')}
-              className="flex-1 h-9 rounded-full border border-zinc-900 bg-black text-[11px] font-bold uppercase tracking-wider text-zinc-200 hover:bg-zinc-950/60 transition-colors"
+              className="flex-1 h-11 rounded-full border border-zinc-900 bg-black px-4 text-xs font-bold uppercase tracking-wider text-zinc-200 hover:bg-zinc-950/60 transition-colors inline-flex items-center justify-center gap-2"
             >
-              {lang === 'RU' ? 'Комментарии' : 'Comments'}
+              <MessageCircle size={16} className="text-zinc-400" />
+              <span>{lang === 'RU' ? 'Комментарии' : 'Comments'}</span>
             </button>
           </div>
 
           {/* Chart */}
-          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[420px] relative">
+          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[380px] relative">
             <div className="flex items-baseline gap-4 mb-8">
               <span className="text-4xl font-bold tracking-tight text-zinc-100">{displayedChance}%</span>
               <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
