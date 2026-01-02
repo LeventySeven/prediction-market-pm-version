@@ -1,10 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
 import { randomBytes } from "node:crypto";
+import { leaderboardUsersSchema } from "../../../schemas/leaderboard";
 
 const DEFAULT_ASSET = "VCOIN";
 const VCOIN_DECIMALS = 6;
@@ -20,6 +20,8 @@ type WalletTransactionRow = Pick<
   Database["public"]["Tables"]["wallet_transactions"]["Row"],
   "id" | "asset_code" | "amount_minor" | "kind" | "market_id" | "trade_id" | "created_at"
 >;
+
+type LeaderboardRow = Database["public"]["Views"]["leaderboard_public"]["Row"];
 
 const userShape = {
   id: z.string(),
@@ -115,8 +117,8 @@ export const userRouter = router({
         is_admin: false,
       };
 
-      const insert = await (supabase as unknown as SupabaseClient<any>)
-        .from(USERS_TABLE)
+      const insert = await supabase
+        .from("users")
         .insert(payload)
         .select(selectColumns)
         .single();
@@ -129,8 +131,8 @@ export const userRouter = router({
       }
 
       // Initialize wallet balance for new user
-      await (supabase as unknown as SupabaseClient<any>)
-        .from(WALLET_BALANCES_TABLE)
+      await supabase
+        .from("wallet_balances")
         .insert({
           user_id: insert.data.id,
           asset_code: DEFAULT_ASSET,
@@ -152,8 +154,8 @@ export const userRouter = router({
     .query(async ({ ctx, input }) => {
       const { supabase } = ctx;
 
-      const userResult = await (supabase as unknown as SupabaseClient<any>)
-        .from(USERS_TABLE)
+      const userResult = await supabase
+        .from("users")
         .select(selectColumns)
         .eq("id", input.userId)
         .maybeSingle();
@@ -261,9 +263,8 @@ export const userRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Display name is too short" });
       }
 
-      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
-      const updated = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const updated = await supabaseService
+        .from("users")
         .update({ display_name: nextName })
         .eq("id", authUser.id)
         .select(selectColumns)
@@ -276,8 +277,8 @@ export const userRouter = router({
         });
       }
 
-      const { data: walletRow } = await supabaseServiceAny
-        .from(WALLET_BALANCES_TABLE)
+      const { data: walletRow } = await supabaseService
+        .from("wallet_balances")
         .select("balance_minor")
         .eq("user_id", authUser.id)
         .eq("asset_code", DEFAULT_ASSET)
@@ -306,10 +307,8 @@ export const userRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
-      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
-
-      const existing = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const existing = await supabaseService
+        .from("users")
         .select("id, referral_code, referral_commission_rate, referral_enabled")
         .eq("id", authUser.id)
         .single();
@@ -339,8 +338,8 @@ export const userRouter = router({
           };
         }
 
-        const updatedExisting = await supabaseServiceAny
-          .from(USERS_TABLE)
+        const updatedExisting = await supabaseService
+          .from("users")
           .update({
             referral_commission_rate: desiredRate,
             referral_enabled: desiredEnabled,
@@ -367,8 +366,8 @@ export const userRouter = router({
       let code: string | null = null;
       for (let i = 0; i < 8; i++) {
         const candidate = buildReferralCode();
-        const { data: conflict } = await supabaseServiceAny
-          .from(USERS_TABLE)
+        const { data: conflict } = await supabaseService
+          .from("users")
           .select("id")
           .eq("referral_code", candidate)
           .maybeSingle();
@@ -385,8 +384,8 @@ export const userRouter = router({
         });
       }
 
-      const updated = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const updated = await supabaseService
+        .from("users")
         .update({
           referral_code: code,
           referral_commission_rate: desiredRate,
@@ -408,5 +407,52 @@ export const userRouter = router({
         referralCommissionRate: Number(updated.data.referral_commission_rate ?? desiredRate),
         referralEnabled: updated.data.referral_enabled === true,
       };
+    }),
+
+  /**
+   * Public leaderboard (no mock data).
+   */
+  leaderboard: publicProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().min(1).max(100).optional(),
+        })
+        .optional()
+    )
+    .output(leaderboardUsersSchema)
+    .query(async ({ ctx, input }) => {
+      const { supabase } = ctx;
+      const limit = input?.limit ?? 25;
+
+      const { data, error } = await supabase
+        .from("leaderboard_public")
+        .select("user_id, name, username, balance_minor, pnl_minor, bet_count, referrals, rank")
+        .order("rank", { ascending: true })
+        .limit(limit);
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      const rows = (data ?? []) as LeaderboardRow[];
+      return rows.map((r) => {
+        const name = (r.name || r.username || "").trim() || "Trader";
+        const avatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=111&color=ffffff`;
+        return {
+          id: r.user_id,
+          rank: Number(r.rank),
+          name,
+          username: r.username,
+          avatar,
+          balance: toMajorUnits(Number(r.balance_minor ?? 0), VCOIN_DECIMALS),
+          pnl: toMajorUnits(Number(r.pnl_minor ?? 0), VCOIN_DECIMALS),
+          referrals: Number(r.referrals ?? 0),
+          betCount: Number(r.bet_count ?? 0),
+        };
+      });
     }),
 });

@@ -215,7 +215,7 @@ export interface Database {
           updated_at?: string;
         };
         Relationships: [
-          { foreignKeyName: "market_amm_state_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] }
+          { foreignKeyName: "market_amm_state_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"]; isOneToOne: true }
         ];
       };
       positions: {
@@ -406,6 +406,20 @@ export interface Database {
           price_after: number;
           created_at: string;
         };
+        Relationships: [];
+      };
+      leaderboard_public: {
+        Row: {
+          user_id: string;
+          name: string;
+          username: string;
+          balance_minor: number;
+          pnl_minor: number;
+          bet_count: number;
+          referrals: number;
+          rank: number;
+        };
+        Relationships: [];
       };
     };
     Functions: {

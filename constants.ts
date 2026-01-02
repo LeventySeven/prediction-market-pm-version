@@ -1,4 +1,4 @@
-import { Category, LeaderboardUser } from './types';
+import { Category } from './types';
 
 export const YES_COLOR = 'rgba(36, 182, 255, 1)'; // YES / positive
 export const NO_COLOR = 'rgba(201, 37, 28, 1)'; // NO / negative
@@ -15,55 +15,4 @@ export const CATEGORIES: { id: Category; labelRU: string; labelEN: string; icon:
   { id: 'WORLD', labelRU: 'Мировые', labelEN: 'World', icon: '🌍' },
 ];
 
-export const MOCK_LEADERBOARD: LeaderboardUser[] = [
-  {
-    id: 'l1',
-    rank: 1,
-    name: 'SatoshiN',
-    avatar: 'https://ui-avatars.com/api/?name=Satoshi&background=111&color=24B6FF',
-    balance: 145000,
-    pnl: 45200,
-    referrals: 124,
-    betCount: 4,
-  },
-  {
-    id: 'l2',
-    rank: 2,
-    name: 'Oracle_X',
-    avatar: 'https://ui-avatars.com/api/?name=Oracle&background=111&color=C9251C',
-    balance: 89000,
-    pnl: 21500,
-    referrals: 45,
-    betCount: 2,
-  },
-  {
-    id: 'l3',
-    rank: 3,
-    name: 'WhaleWatcher',
-    avatar: 'https://ui-avatars.com/api/?name=Whale&background=111&color=fff',
-    balance: 56000,
-    pnl: 12400,
-    referrals: 12,
-    betCount: 1,
-  },
-  {
-    id: 'l4',
-    rank: 4,
-    name: 'ElonFan',
-    avatar: 'https://ui-avatars.com/api/?name=Elon&background=111&color=ddd',
-    balance: 42000,
-    pnl: 8900,
-    referrals: 5,
-    betCount: 1,
-  },
-  {
-    id: 'l5',
-    rank: 5,
-    name: 'BearMarket',
-    avatar: 'https://ui-avatars.com/api/?name=Bear&background=111&color=999',
-    balance: 31000,
-    pnl: -1200,
-    referrals: 0,
-    betCount: 0,
-  },
-];
+// No mock data in this codebase. Leaderboard is fetched from Supabase.

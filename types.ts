@@ -132,11 +132,7 @@ export interface WalletTransaction {
   createdAt: string;
 }
 
-export interface LeaderboardUser extends User {
-  rank: number;
-  avatar: string;
-  betCount?: number;
-}
+export type { LeaderboardUser } from "./src/schemas/leaderboard";
 
 export interface PublicTrade {
   id: string;

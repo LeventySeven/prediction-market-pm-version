@@ -5,7 +5,7 @@ import { calculateLMSRPrices, toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-type SupabaseAnyClient = SupabaseClient<Database, "public", any>;
+type SupabaseDbClient = SupabaseClient<Database, "public">;
 
 // Default asset for the platform
 const DEFAULT_ASSET = "VCOIN";
@@ -167,6 +167,7 @@ export const marketRouter = router({
         .select(`
           id, title_rus, title_eng, description, state, closes_at, expires_at,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          category_id, category_label_ru, category_label_en,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor)
         `)
         .order("created_at", { ascending: false });
@@ -183,7 +184,7 @@ export const marketRouter = router({
         });
       }
 
-      const rows = (data ?? []) as MarketWithAmm[];
+      const rows: MarketWithAmm[] = data ?? [];
       return rows.map(mapMarketRow);
     }),
 
@@ -198,6 +199,7 @@ export const marketRouter = router({
         .select(`
           id, title_rus, title_eng, description, state, closes_at, expires_at,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          category_id, category_label_ru, category_label_en,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor)
         `)
         .eq("id", input.marketId)
@@ -207,7 +209,8 @@ export const marketRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
 
-      return mapMarketRow(data as MarketWithAmm);
+      const row: MarketWithAmm = data;
+      return mapMarketRow(row);
     }),
 
   /**
@@ -239,7 +242,7 @@ export const marketRouter = router({
       }
 
       // Call the RPC - it uses auth.uid() internally, no user_id passed
-      const { data, error } = await (supabase as SupabaseAnyClient).rpc("place_bet_tx", {
+      const { data, error } = await (supabase as SupabaseDbClient).rpc("place_bet_tx", {
         p_market_id: marketId,
         p_side: side,
         p_amount: amount,
@@ -331,7 +334,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
-      const { data, error } = await (supabase as SupabaseAnyClient).rpc("sell_position_tx", {
+      const { data, error } = await (supabase as SupabaseDbClient).rpc("sell_position_tx", {
         p_market_id: marketId,
         p_side: side,
         p_shares: shares,
@@ -432,7 +435,7 @@ export const marketRouter = router({
 
       // This RPC should be called with service_role for production
       // For now we call it as admin user - the DB function should check admin status
-      const { data, error } = await (supabaseService as SupabaseAnyClient).rpc("resolve_market_service_tx", {
+      const { data, error } = await (supabaseService as SupabaseDbClient).rpc("resolve_market_service_tx", {
         p_market_id: marketId,
         p_outcome: outcome,
       });
@@ -724,7 +727,7 @@ export const marketRouter = router({
       }
 
       // Insert market
-      const { data: market, error: marketError } = await (supabaseService as SupabaseAnyClient)
+      const { data: market, error: marketError } = await (supabaseService as SupabaseDbClient)
         .from("markets")
         .insert({
           title_rus: input.titleRu.trim(),
@@ -749,7 +752,7 @@ export const marketRouter = router({
       }
 
       // Insert AMM state
-      const { error: ammError } = await (supabaseService as SupabaseAnyClient)
+      const { error: ammError } = await (supabaseService as SupabaseDbClient)
         .from("market_amm_state")
         .insert({
           market_id: market.id,

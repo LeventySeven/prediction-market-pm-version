@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LeaderboardUser } from '../types';
+import type { LeaderboardUser } from '../types';
 import { Trophy, TrendingUp, TrendingDown } from 'lucide-react';
 
 interface LeaderboardProps {

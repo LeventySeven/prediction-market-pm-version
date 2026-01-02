@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import type { Session } from "@supabase/supabase-js";
 import { authCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
@@ -89,10 +89,8 @@ export const authRouter = router({
       const displayName = input.displayName?.trim() || username;
       const referralCode = input.referralCode?.trim() || null;
 
-      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
-
-      const existing = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const existing = await supabaseService
+        .from("users")
         .select("id")
         .or(`email.eq.${email},username.eq.${username}`)
         .maybeSingle();
@@ -136,8 +134,8 @@ export const authRouter = router({
         referral_code: null,
       };
 
-      const inserted = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const inserted = await supabaseService
+        .from("users")
         .upsert(payload, { onConflict: "id" })
         .select(publicColumns)
         .single();
@@ -151,8 +149,8 @@ export const authRouter = router({
       }
 
       // Initialize wallet balance for new user
-      await supabaseServiceAny
-        .from(WALLET_BALANCES_TABLE)
+      await supabaseService
+        .from("wallet_balances")
         .insert({
           user_id: inserted.data.id,
           asset_code: DEFAULT_ASSET,
@@ -163,15 +161,15 @@ export const authRouter = router({
 
       // Attach referral (optional). We don't block signup if the code is invalid.
       if (referralCode) {
-        const { data: referrerRow } = await supabaseServiceAny
-          .from(USERS_TABLE)
+        const { data: referrerRow } = await supabaseService
+          .from("users")
           .select("id, referral_enabled")
           .eq("referral_code", referralCode)
           .maybeSingle();
 
         // Only accept codes that are explicitly enabled.
         if (referrerRow?.id && referrerRow.id !== userId && referrerRow.referral_enabled === true) {
-          await supabaseServiceAny
+          await supabaseService
             .from("user_referrals")
             .upsert(
               {
@@ -218,12 +216,11 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabase, supabaseService, setCookie } = ctx;
       const emailOrUsername = input.emailOrUsername.trim();
-      const supabaseServiceAny = supabaseService as unknown as SupabaseClient<any>;
 
       let loginEmail = emailOrUsername.toLowerCase();
       if (!emailOrUsername.includes("@")) {
-        const { data: usernameRow, error: usernameError } = await supabaseServiceAny
-          .from(USERS_TABLE)
+        const { data: usernameRow, error: usernameError } = await supabaseService
+          .from("users")
           .select("email")
           .eq("username", emailOrUsername)
           .maybeSingle();
@@ -251,8 +248,8 @@ export const authRouter = router({
 
       const authUser = signIn.data.user;
 
-      const { data: userRow, error } = await supabaseServiceAny
-        .from(USERS_TABLE)
+      const { data: userRow, error } = await supabaseService
+        .from("users")
         .select(publicColumns)
         .eq("id", authUser.id)
         .maybeSingle();

@@ -5,8 +5,8 @@ type OpenApi = {
   openapi?: string;
   swagger?: string;
   info?: unknown;
-  paths?: Record<string, any>;
-  definitions?: Record<string, any>;
+  paths?: Record<string, unknown>;
+  definitions?: Record<string, unknown>;
 };
 
 type ColumnSnapshot = {
@@ -82,9 +82,21 @@ const refNameFromRef = (ref?: string) => {
   return null;
 };
 
-const formatType = (prop: any) => {
-  const t = typeof prop?.type === "string" ? prop.type : "unknown";
-  const f = typeof prop?.format === "string" ? prop.format : null;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const getNested = (value: unknown, keys: string[]): unknown => {
+  let cur: unknown = value;
+  for (const k of keys) {
+    if (!isRecord(cur)) return undefined;
+    cur = cur[k];
+  }
+  return cur;
+};
+
+const formatType = (prop: unknown) => {
+  const t = isRecord(prop) && typeof prop.type === "string" ? prop.type : "unknown";
+  const f = isRecord(prop) && typeof prop.format === "string" ? prop.format : null;
   return f ? `${t}(${f})` : t;
 };
 
@@ -101,24 +113,26 @@ const buildSnapshot = (openapi: OpenApi, baseUrl: string): SchemaSnapshot => {
 
   for (const table of tableNames) {
     const p = `/${table}`;
-    const get = (paths as any)[p]?.get;
+    const get = getNested(paths, [p, "get"]);
     const schemaRef =
-      get?.responses?.["200"]?.schema?.items?.$ref ??
-      get?.responses?.["200"]?.schema?.$ref ??
+      getNested(get, ["responses", "200", "schema", "items", "$ref"]) ??
+      getNested(get, ["responses", "200", "schema", "$ref"]) ??
       null;
 
-    const schemaName = refNameFromRef(schemaRef);
-    const schema = schemaName ? definitions[schemaName] : null;
+    const schemaName = typeof schemaRef === "string" ? refNameFromRef(schemaRef) : null;
+    const schema = schemaName && isRecord(definitions) ? definitions[schemaName] : null;
 
-    const props: Record<string, any> = schema?.properties ?? {};
-    const required: string[] = Array.isArray(schema?.required) ? schema.required : [];
+    const props: Record<string, unknown> =
+      isRecord(schema) && isRecord(schema.properties) ? (schema.properties as Record<string, unknown>) : {};
+    const required: string[] =
+      isRecord(schema) && Array.isArray(schema.required) ? (schema.required.filter((v) => typeof v === "string") as string[]) : [];
     const requiredSet = new Set(required);
 
     const columns: ColumnSnapshot[] = Object.entries(props).map(([name, prop]) => ({
       name,
       type: formatType(prop),
-      nullable: prop?.nullable === true ? true : !requiredSet.has(name),
-      description: typeof prop?.description === "string" ? prop.description : undefined,
+      nullable: isRecord(prop) && prop.nullable === true ? true : !requiredSet.has(name),
+      description: isRecord(prop) && typeof prop.description === "string" ? prop.description : undefined,
     }));
 
     tables[table] = { name: table, columns };

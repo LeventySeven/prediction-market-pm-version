@@ -3,9 +3,12 @@ import path from "node:path";
 
 type OpenApi = {
   swagger?: string;
-  paths?: Record<string, any>;
-  definitions?: Record<string, any>;
+  paths?: Record<string, unknown>;
+  definitions?: Record<string, unknown>;
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
 
 const env = (key: string) => {
   const v = process.env[key];
@@ -61,8 +64,9 @@ const extractResourceNames = (openapi: OpenApi) => {
 
 const extractResourceColumnsFromOpenApi = (openapi: OpenApi, resource: string) => {
   const defs = openapi.definitions ?? {};
-  const def = defs[resource];
-  const props: Record<string, any> = def?.properties ?? {};
+  const def = isRecord(defs) ? defs[resource] : undefined;
+  const props: Record<string, unknown> =
+    isRecord(def) && isRecord(def.properties) ? (def.properties as Record<string, unknown>) : {};
   return Object.keys(props).sort();
 };
 

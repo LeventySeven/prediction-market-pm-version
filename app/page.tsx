@@ -9,12 +9,12 @@ import OnboardingModal from "@/components/OnboardingModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
 import ProfilePage from "@/components/ProfilePage";
-import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade } from "@/types";
+import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search, Plus } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
-import { MOCK_LEADERBOARD } from "@/constants";
+import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -50,6 +50,8 @@ export default function HomePage() {
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
+  const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
+  const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null;
@@ -98,6 +100,20 @@ export default function HomePage() {
     }
     return msg;
   };
+
+  const loadLeaderboard = useCallback(async () => {
+    setLoadingLeaderboard(true);
+    try {
+      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 25 });
+      const users: LeaderboardUser[] = leaderboardUsersSchema.parse(usersRaw);
+      setLeaderboardUsers(users);
+    } catch {
+      // Keep UI quiet; leaderboard can fail without breaking the app.
+      setLeaderboardUsers([]);
+    } finally {
+      setLoadingLeaderboard(false);
+    }
+  }, []);
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
@@ -236,20 +252,24 @@ export default function HomePage() {
   const handleCreateReferralLink = useCallback(async () => {
     const res = await trpcClient.user.createReferralLink.mutate();
 
-    // Some client typings may mark fields optional; normalize + enforce at runtime.
-    const referralCode = (res as any)?.referralCode;
-    const referralCommissionRate = (res as any)?.referralCommissionRate;
-    const referralEnabled = (res as any)?.referralEnabled;
+    const isReferralLinkResult = (
+      value: unknown
+    ): value is { referralCode: string; referralCommissionRate: number; referralEnabled: boolean } => {
+      if (!isRecord(value)) return false;
+      return (
+        typeof value.referralCode === "string" &&
+        value.referralCode.length > 0 &&
+        typeof value.referralCommissionRate === "number" &&
+        Number.isFinite(value.referralCommissionRate) &&
+        typeof value.referralEnabled === "boolean"
+      );
+    };
 
-    if (typeof referralCode !== "string" || referralCode.length === 0) {
-      throw new Error("INVALID_REFERRAL_CODE");
+    if (!isReferralLinkResult(res)) {
+      throw new Error("INVALID_REFERRAL_RESPONSE");
     }
-    if (typeof referralCommissionRate !== "number" || !Number.isFinite(referralCommissionRate)) {
-      throw new Error("INVALID_REFERRAL_RATE");
-    }
-    if (typeof referralEnabled !== "boolean") {
-      throw new Error("INVALID_REFERRAL_ENABLED");
-    }
+
+    const { referralCode, referralCommissionRate, referralEnabled } = res;
 
     setUser((prev) =>
       prev
@@ -802,7 +822,8 @@ export default function HomePage() {
               <FriendsPage
                 lang={lang}
                 user={user}
-                leaderboardUsers={MOCK_LEADERBOARD}
+                leaderboardUsers={leaderboardUsers}
+                leaderboardLoading={loadingLeaderboard}
                 onLogin={() => openAuth("SIGN_IN")}
                 onCreateReferralLink={handleCreateReferralLink}
               />
@@ -833,6 +854,9 @@ export default function HomePage() {
               setCurrentView(view);
               if (view === "PROFILE") {
                 void loadMyBets();
+              }
+              if (view === "FRIENDS") {
+                void loadLeaderboard();
               }
             }}
           />
