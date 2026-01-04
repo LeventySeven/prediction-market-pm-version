@@ -145,167 +145,6 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 </span>
               )}
             </div>
-            {isEditing && (
-              <div className="mt-4 border border-zinc-900 bg-zinc-950/30 rounded-2xl p-4 space-y-4">
-                <div>
-                  <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
-                    {lang === 'RU' ? 'Никнейм' : 'Nickname'}
-                  </div>
-                  <input
-                    value={nameDraft}
-                    onChange={(e) => setNameDraft(e.target.value)}
-                    placeholder={lang === 'RU' ? 'Никнейм' : 'Display name'}
-                    className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
-                    {lang === 'RU' ? 'Аватар' : 'Avatar'}
-                  </div>
-
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0] ?? null;
-                      setAvatarFile(f);
-                      setAvatarMode(f ? 'upload' : 'unchanged');
-                    }}
-                  />
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      className="h-10 rounded-full px-4 border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={saving}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Image size={14} />
-                        {lang === 'RU' ? 'Загрузить фото' : 'Upload photo'}
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="h-10 rounded-full px-4 border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
-                      onClick={() => {
-                        setAvatarFile(null);
-                        setAvatarMode('import_telegram');
-                      }}
-                      disabled={saving || !user.telegramPhotoUrl}
-                      title={
-                        user.telegramPhotoUrl
-                          ? undefined
-                          : lang === 'RU'
-                          ? 'Нет аватара в Telegram'
-                          : 'No Telegram avatar'
-                      }
-                    >
-                      {lang === 'RU' ? 'Импорт из Telegram' : 'Import from Telegram'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      className="h-10 rounded-full px-4"
-                      onClick={() => {
-                        setAvatarFile(null);
-                        setAvatarMode('clear');
-                      }}
-                      disabled={saving}
-                    >
-                      {lang === 'RU' ? 'Сбросить' : 'Reset'}
-                    </Button>
-                  </div>
-
-                  {avatarFile && (
-                    <div className="mt-2 text-xs text-zinc-500">
-                      {lang === 'RU' ? 'Выбран файл:' : 'Selected file:'} {avatarFile.name}
-                    </div>
-                  )}
-                  {avatarMode === 'import_telegram' && (
-                    <div className="mt-2 text-xs text-zinc-500">
-                      {lang === 'RU'
-                        ? 'Будет использован аватар из Telegram'
-                        : 'Will use your Telegram avatar'}
-                    </div>
-                  )}
-                  {avatarMode === 'clear' && (
-                    <div className="mt-2 text-xs text-zinc-500">
-                      {lang === 'RU'
-                        ? 'Аватар будет сброшен (инициалы/Telegram)'
-                        : 'Avatar will be cleared (initials/Telegram)'}
-                    </div>
-                  )}
-                </div>
-
-                {editError && <div className="text-xs text-[rgba(201,37,28,1)]">{editError}</div>}
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    className="h-10 rounded-full px-4"
-                    disabled={saving}
-                    onClick={async () => {
-                      setEditError(null);
-                      const nextName = nameDraft.trim();
-                      if (nextName.length < 2) {
-                        setEditError(lang === 'RU' ? 'Слишком короткий ник' : 'Name is too short');
-                        return;
-                      }
-
-                      setSaving(true);
-                      try {
-                        if (nextName !== displayName) {
-                          await onUpdateDisplayName(nextName);
-                        }
-
-                        if (avatarMode === 'upload' && avatarFile) {
-                          const fd = new FormData();
-                          fd.append('file', avatarFile);
-                          const resp = await fetch('/api/avatar/upload', { method: 'POST', body: fd });
-                          const data = (await resp.json()) as { avatarUrl?: string; error?: string };
-                          if (!resp.ok || !data.avatarUrl) {
-                            throw new Error(data.error || 'UPLOAD_FAILED');
-                          }
-                          await onUpdateAvatarUrl(data.avatarUrl);
-                        } else if (avatarMode === 'import_telegram') {
-                          if (!user.telegramPhotoUrl) {
-                            throw new Error('NO_TELEGRAM_AVATAR');
-                          }
-                          await onUpdateAvatarUrl(user.telegramPhotoUrl);
-                        } else if (avatarMode === 'clear') {
-                          await onUpdateAvatarUrl(null);
-                        }
-
-                        setIsEditing(false);
-                        setAvatarFile(null);
-                        setAvatarMode('unchanged');
-                      } catch {
-                        setEditError(lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save');
-                      } finally {
-                        setSaving(false);
-                      }
-                    }}
-                  >
-                    {saving ? (lang === 'RU' ? 'Сохранение…' : 'Saving…') : (lang === 'RU' ? 'Сохранить' : 'Save')}
-                  </Button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditError(null);
-                      setIsEditing(false);
-                      setAvatarFile(null);
-                      setAvatarMode('unchanged');
-                    }}
-                    className="h-10 w-10 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 transition-colors flex items-center justify-center text-zinc-300"
-                    title={lang === 'RU' ? 'Отмена' : 'Cancel'}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-              </div>
-            )}
             {handle && <div className="text-sm text-zinc-500 truncate">{handle}</div>}
             <div className="mt-2 space-y-1 text-sm text-zinc-400">
               {user.email && !isTelegramPlaceholderEmail(user.email) && (
@@ -332,6 +171,172 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
             <LogOut size={16} />
           </Button>
         </div>
+
+        {/* Full-width edit panel (better alignment on mobile/miniapp) */}
+        {isEditing && (
+          <div className="mt-4 w-full border border-zinc-900 bg-zinc-950/30 rounded-2xl p-4 sm:p-5">
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                  {lang === 'RU' ? 'Никнейм' : 'Nickname'}
+                </div>
+                <input
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  placeholder={lang === 'RU' ? 'Никнейм' : 'Display name'}
+                  className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                />
+              </div>
+
+              <div>
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                  {lang === 'RU' ? 'Аватар' : 'Avatar'}
+                </div>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    setAvatarFile(f);
+                    setAvatarMode(f ? 'upload' : 'unchanged');
+                  }}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <Button
+                    fullWidth
+                    variant="outline"
+                    className="h-11 rounded-full border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={saving}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Image size={14} />
+                      {lang === 'RU' ? 'Загрузить фото' : 'Upload photo'}
+                    </span>
+                  </Button>
+                  <Button
+                    fullWidth
+                    variant="outline"
+                    className="h-11 rounded-full border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
+                    onClick={() => {
+                      setAvatarFile(null);
+                      setAvatarMode('import_telegram');
+                    }}
+                    disabled={saving || !user.telegramPhotoUrl}
+                    title={
+                      user.telegramPhotoUrl
+                        ? undefined
+                        : lang === 'RU'
+                        ? 'Нет аватара в Telegram'
+                        : 'No Telegram avatar'
+                    }
+                  >
+                    {lang === 'RU' ? 'Импорт из Telegram' : 'Import from Telegram'}
+                  </Button>
+                  <Button
+                    fullWidth
+                    variant="ghost"
+                    className="h-11 rounded-full"
+                    onClick={() => {
+                      setAvatarFile(null);
+                      setAvatarMode('clear');
+                    }}
+                    disabled={saving}
+                  >
+                    {lang === 'RU' ? 'Сбросить' : 'Reset'}
+                  </Button>
+                </div>
+
+                {avatarFile && (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    {lang === 'RU' ? 'Выбран файл:' : 'Selected file:'} {avatarFile.name}
+                  </div>
+                )}
+                {avatarMode === 'import_telegram' && (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    {lang === 'RU' ? 'Будет использован аватар из Telegram' : 'Will use your Telegram avatar'}
+                  </div>
+                )}
+                {avatarMode === 'clear' && (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    {lang === 'RU' ? 'Аватар будет сброшен' : 'Avatar will be cleared'}
+                  </div>
+                )}
+              </div>
+
+              {editError && <div className="text-xs text-[rgba(201,37,28,1)]">{editError}</div>}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  fullWidth
+                  className="h-11 rounded-full"
+                  disabled={saving}
+                  onClick={async () => {
+                    setEditError(null);
+                    const nextName = nameDraft.trim();
+                    if (nextName.length < 2) {
+                      setEditError(lang === 'RU' ? 'Слишком короткий ник' : 'Name is too short');
+                      return;
+                    }
+
+                    setSaving(true);
+                    try {
+                      if (nextName !== displayName) {
+                        await onUpdateDisplayName(nextName);
+                      }
+
+                      if (avatarMode === 'upload' && avatarFile) {
+                        const fd = new FormData();
+                        fd.append('file', avatarFile);
+                        const resp = await fetch('/api/avatar/upload', { method: 'POST', body: fd });
+                        const data = (await resp.json()) as { avatarUrl?: string; error?: string };
+                        if (!resp.ok || !data.avatarUrl) {
+                          throw new Error(data.error || 'UPLOAD_FAILED');
+                        }
+                        await onUpdateAvatarUrl(data.avatarUrl);
+                      } else if (avatarMode === 'import_telegram') {
+                        if (!user.telegramPhotoUrl) {
+                          throw new Error('NO_TELEGRAM_AVATAR');
+                        }
+                        await onUpdateAvatarUrl(user.telegramPhotoUrl);
+                      } else if (avatarMode === 'clear') {
+                        await onUpdateAvatarUrl(null);
+                      }
+
+                      setIsEditing(false);
+                      setAvatarFile(null);
+                      setAvatarMode('unchanged');
+                    } catch {
+                      setEditError(lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save');
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                >
+                  {saving ? (lang === 'RU' ? 'Сохранение…' : 'Saving…') : (lang === 'RU' ? 'Сохранить' : 'Save')}
+                </Button>
+                <Button
+                  fullWidth
+                  variant="outline"
+                  className="h-11 rounded-full border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
+                  disabled={saving}
+                  onClick={() => {
+                    setEditError(null);
+                    setIsEditing(false);
+                    setAvatarFile(null);
+                    setAvatarMode('unchanged');
+                  }}
+                >
+                  {lang === 'RU' ? 'Отмена' : 'Cancel'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Balance + PnL */}
