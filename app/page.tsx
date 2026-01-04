@@ -111,6 +111,8 @@ export default function HomePage() {
   const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
+  const [marketCategories, setMarketCategories] = useState<Array<{ id: string; labelRu: string; labelEn: string }>>([]);
+  const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
 
   const requireValue = <T,>(v: T | null | undefined, code: string): T => {
     if (v === null || v === undefined) {
@@ -557,6 +559,19 @@ export default function HomePage() {
       setMarketsLoadingMessage(null);
     }
   }, [lang]);
+
+  const loadMarketCategories = useCallback(async () => {
+    setLoadingMarketCategories(true);
+    try {
+      const rows = await trpcClient.market.listCategories.query();
+      setMarketCategories(rows);
+    } catch (err) {
+      console.error("Failed to load market categories", err);
+      setMarketCategories([]);
+    } finally {
+      setLoadingMarketCategories(false);
+    }
+  }, []);
   useEffect(() => {
     if (!user) {
       setMyPositions([]);
@@ -1076,9 +1091,12 @@ export default function HomePage() {
                   openAuth("SIGN_IN");
                   return;
                 }
+                if (marketCategories.length === 0 && !loadingMarketCategories) {
+                  void loadMarketCategories();
+                }
                 setShowAdminModal(true);
               }}
-              className="fixed bottom-20 right-4 h-14 w-14 rounded-full bg-gradient-to-r from-sky-500 to-indigo-600 text-white flex items-center justify-center shadow-xl shadow-sky-500/25 ring-1 ring-white/10 hover:from-sky-400 hover:to-indigo-500 active:scale-[0.98] transition"
+              className="fixed bottom-20 right-4 h-14 w-14 rounded-full bg-[rgba(36,182,255,1)] text-black flex items-center justify-center shadow-xl shadow-black/30 ring-1 ring-white/10 hover:opacity-95 active:scale-[0.98] transition"
               aria-label={lang === "RU" ? "Создать рынок" : "Create market"}
               title={lang === "RU" ? "Создать рынок" : "Create market"}
             >
@@ -1117,6 +1135,9 @@ export default function HomePage() {
         isOpen={showAdminModal}
         onClose={() => setShowAdminModal(false)}
         lang={lang}
+        categories={marketCategories}
+        categoriesLoading={loadingMarketCategories}
+        onReloadCategories={loadMarketCategories}
         onCreate={async (payload) => {
           try {
             await trpcClient.market.createMarket.mutate(payload);

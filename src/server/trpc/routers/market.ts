@@ -36,6 +36,7 @@ type SellPositionResult = Database["public"]["Functions"]["sell_position_tx"]["R
 type ResolveMarketResult = Database["public"]["Functions"]["resolve_market_service_tx"]["Returns"];
 type MarketCommentPublicRow = Database["public"]["Views"]["market_comments_public"]["Row"];
 type MarketCommentInsert = Database["public"]["Tables"]["market_comments"]["Insert"];
+type MarketCategoryRow = Database["public"]["Tables"]["market_categories"]["Row"];
 
 const deriveVolumeMajor = (amm: AmmStateRow | null, feeBps?: number | null) => {
   if (!amm) return 0;
@@ -169,7 +170,35 @@ const marketOutput = z.object({
   volume: z.number(),
 });
 
+const marketCategoryOutput = z.object({
+  id: z.string(),
+  labelRu: z.string(),
+  labelEn: z.string(),
+});
+
 export const marketRouter = router({
+  listCategories: publicProcedure
+    .output(z.array(marketCategoryOutput))
+    .query(async ({ ctx }) => {
+      const { supabaseService } = ctx;
+      const { data, error } = await supabaseService
+        .from("market_categories")
+        .select("id, label_ru, label_en, is_enabled, sort_order")
+        .eq("is_enabled", true)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true });
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message,
+        });
+      }
+
+      const rows = (data ?? []) as Pick<MarketCategoryRow, "id" | "label_ru" | "label_en">[];
+      return rows.map((r) => ({ id: r.id, labelRu: r.label_ru, labelEn: r.label_en }));
+    }),
+
   listMarkets: publicProcedure
     .input(z.object({ onlyOpen: z.boolean().optional() }).optional())
     .output(z.array(marketOutput))
@@ -855,10 +884,8 @@ export const marketRouter = router({
         description: z.string().optional().nullable(),
         closesAt: z.string().optional().nullable(),
         expiresAt: z.string(),
-        liquidityB: z.number().positive().optional().default(100),
-        feeBps: z.number().min(0).max(2000).optional().default(200),
-        categoryLabelRu: z.string().optional().nullable(),
-        categoryLabelEn: z.string().optional().nullable(),
+        liquidityB: z.number().positive().optional().default(50),
+        categoryId: z.string().min(1),
       })
     )
     .output(
@@ -883,6 +910,17 @@ export const marketRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Trading close must be <= end time" });
       }
 
+      const { data: category, error: categoryError } = await supabaseService
+        .from("market_categories")
+        .select("id, label_ru, label_en, is_enabled")
+        .eq("id", input.categoryId)
+        .maybeSingle();
+
+      const cat = category as Pick<MarketCategoryRow, "id" | "label_ru" | "label_en" | "is_enabled"> | null;
+      if (categoryError || !cat || !cat.is_enabled) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid category" });
+      }
+
       // Insert market
       const { data: market, error: marketError } = await (supabaseService as SupabaseDbClient)
         .from("markets")
@@ -895,11 +933,12 @@ export const marketRouter = router({
           expires_at: new Date(expiresAtMs).toISOString(),
           created_by: authUser.id,
           settlement_asset_code: DEFAULT_ASSET,
-          fee_bps: input.feeBps,
+          fee_bps: 0,
           liquidity_b: input.liquidityB,
           amm_type: "lmsr",
-          category_label_ru: input.categoryLabelRu?.trim() ? input.categoryLabelRu.trim() : null,
-          category_label_en: input.categoryLabelEn?.trim() ? input.categoryLabelEn.trim() : null,
+          category_id: cat.id,
+          category_label_ru: cat.label_ru,
+          category_label_en: cat.label_en,
         })
         .select("id, title_rus, title_eng")
         .single();

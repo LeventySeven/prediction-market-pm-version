@@ -278,8 +278,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
     );
   };
 
-  // Fee display (in basis points)
-  const feePercent = market.feeBps ? (market.feeBps / 100).toFixed(1) : '2.0';
+  // Fee display (in basis points). When fee is 0, we should not show any fallback.
+  const feeBps = market.feeBps ?? 0;
+  const feePercent = (feeBps / 100).toFixed(1);
+  const showFee = feeBps > 0;
 
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
@@ -515,9 +517,11 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       ? `Купить ${tradeType === 'YES' ? 'ДА' : 'НЕТ'}`
                       : `BUY ${tradeType}`}
                   </Button>
-                  <p className="text-center text-[10px] uppercase text-zinc-600 tracking-wider">
-                    {feePercent}% {lang === 'RU' ? 'комиссия' : 'fee'}
-                  </p>
+                  {showFee && (
+                    <p className="text-center text-[10px] uppercase text-zinc-600 tracking-wider">
+                      {feePercent}% {lang === 'RU' ? 'комиссия' : 'fee'}
+                    </p>
+                  )}
                 </div>
 
                 {/* User Position & Sell */}

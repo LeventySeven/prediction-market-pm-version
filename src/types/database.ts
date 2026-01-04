@@ -175,6 +175,33 @@ export interface Database {
           { foreignKeyName: "market_comments_user_id_fkey"; columns: ["user_id"]; referencedRelation: "users"; referencedColumns: ["id"] }
         ];
       };
+      market_categories: {
+        Row: {
+          id: string;
+          label_ru: string;
+          label_en: string;
+          is_enabled: boolean;
+          sort_order: number;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          label_ru: string;
+          label_en: string;
+          is_enabled?: boolean;
+          sort_order?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          label_ru?: string;
+          label_en?: string;
+          is_enabled?: boolean;
+          sort_order?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       markets: {
         Row: {
           id: string;
