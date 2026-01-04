@@ -1205,7 +1205,7 @@ export default function HomePage() {
                 }
                 setShowAdminModal(true);
               }}
-              className="fixed bottom-20 right-4 h-14 w-14 rounded-full bg-[#BEFF1D] text-black flex items-center justify-center shadow-xl shadow-black/30 ring-1 ring-white/10 hover:opacity-95 active:scale-[0.98] transition"
+              className="fixed bottom-20 right-4 h-14 w-14 rounded-full bg-black border border-[#BEFF1D] text-[#BEFF1D] flex items-center justify-center shadow-xl shadow-black/30 ring-1 ring-white/10 hover:bg-[rgba(190,255,29,0.08)] active:scale-[0.98] transition"
               aria-label={lang === "RU" ? "Создать рынок" : "Create market"}
               title={lang === "RU" ? "Создать рынок" : "Create market"}
             >

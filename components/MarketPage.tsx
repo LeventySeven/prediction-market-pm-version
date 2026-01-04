@@ -473,8 +473,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('YES')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'YES'
-                        ? 'bg-white text-[#BEFF1D] shadow-sm'
-                        : 'text-[rgba(190,255,29,0.7)] hover:text-[#BEFF1D]'
+                        ? 'bg-black ring-1 ring-inset ring-[#BEFF1D] text-[#BEFF1D]'
+                        : 'text-[rgba(190,255,29,0.7)] hover:text-[#BEFF1D] hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
@@ -483,8 +483,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('NO')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'NO'
-                        ? 'bg-white text-[#F544A6] shadow-sm'
-                        : 'text-[rgba(245,68,166,0.7)] hover:text-[#F544A6]'
+                        ? 'bg-black ring-1 ring-inset ring-[#F544A6] text-[#F544A6]'
+                        : 'text-[rgba(245,68,166,0.7)] hover:text-[#F544A6] hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}
@@ -605,8 +605,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                               <span
                                 className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${
                                   position.outcome === 'YES'
-                                    ? 'bg-[#BEFF1D] text-black'
-                                    : 'bg-[#F544A6] text-white'
+                                    ? 'bg-black border border-[#BEFF1D] text-[#BEFF1D]'
+                                    : 'bg-black border border-[#F544A6] text-[#F544A6]'
                                 }`}
                               >
                                 {position.outcome}
@@ -671,7 +671,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         fullWidth
                         onClick={() => handleResolveOutcomeClick('YES')}
                         disabled={Boolean(resolvingOutcome)}
-                        className="!bg-[#BEFF1D] !text-black hover:!opacity-90"
+                        variant="primary"
                       >
                         {lang === 'RU' ? 'Завершить как ДА' : 'Resolve as YES'}
                       </Button>
@@ -679,7 +679,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         fullWidth
                         onClick={() => handleResolveOutcomeClick('NO')}
                         disabled={Boolean(resolvingOutcome)}
-                        className="!bg-[#F544A6] !text-white hover:!opacity-90"
+                        variant="destructive"
                       >
                         {lang === 'RU' ? 'Завершить как НЕТ' : 'Resolve as NO'}
                       </Button>

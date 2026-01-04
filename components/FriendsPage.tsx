@@ -38,7 +38,7 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
           onClick={() => setTab('LEADERBOARD')}
           className={`flex-1 rounded-full py-2 text-xs font-bold uppercase tracking-wider transition ${
             tab === 'LEADERBOARD'
-              ? 'bg-white text-black'
+              ? 'bg-zinc-950 text-white border border-zinc-800'
               : 'text-zinc-400 hover:text-white'
           }`}
         >
@@ -49,7 +49,7 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
           onClick={() => setTab('REFERRALS')}
           className={`flex-1 rounded-full py-2 text-xs font-bold uppercase tracking-wider transition ${
             tab === 'REFERRALS'
-              ? 'bg-white text-black'
+              ? 'bg-zinc-950 text-white border border-zinc-800'
               : 'text-zinc-400 hover:text-white'
           }`}
         >

@@ -329,7 +329,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
             onClick={() => resetAndSwitch('SIGN_IN')}
             className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
               mode === 'SIGN_IN'
-                ? 'bg-[#BEFF1D] text-black'
+                ? 'bg-black border border-[#BEFF1D] text-[#BEFF1D]'
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
@@ -339,7 +339,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
             onClick={() => resetAndSwitch('SIGN_UP')}
             className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
               mode === 'SIGN_UP'
-                ? 'bg-[#BEFF1D] text-black'
+                ? 'bg-black border border-[#BEFF1D] text-[#BEFF1D]'
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >

@@ -30,11 +30,11 @@ const YallaIcon = ({ size = 24, className = '' }: { size?: number; className?: s
       width="16"
       height="16"
       rx="4"
-      stroke="rgba(36, 182, 255, 1)"
+      stroke="currentColor"
       strokeWidth="1.5"
       strokeOpacity="0.8"
     />
-    <circle cx="12" cy="12" r="3" fill="rgba(36, 182, 255, 1)" />
+    <circle cx="12" cy="12" r="3" fill="currentColor" />
   </svg>
 );
 
@@ -65,7 +65,7 @@ const Header: React.FC<HeaderProps> = ({
           role={onLogoClick ? 'button' : undefined}
           aria-label={onLogoClick ? t.home : undefined}
         >
-          <div className="transition-transform group-hover:rotate-90 duration-500">
+          <div className="transition-transform group-hover:rotate-90 duration-500 text-[#BEFF1D]">
             <YallaIcon size={24} />
           </div>
           <div>
@@ -92,19 +92,19 @@ const Header: React.FC<HeaderProps> = ({
           {onHelpClick && (
             <button
               onClick={onHelpClick}
-              className="inline-flex items-center justify-center rounded-full text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 hover:bg-zinc-950/60 hover:text-zinc-50 h-9 w-9"
+              className="inline-flex items-center justify-center rounded-full text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-[#BEFF1D] h-9 w-9"
               title={t.help}
             >
-              <HelpCircle size={16} />
+              <HelpCircle size={16} className="text-[#BEFF1D]" />
             </button>
           )}
 
           {onToggleLang && (
             <button
               onClick={onToggleLang}
-              className="inline-flex items-center justify-center rounded-full text-xs font-bold ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-white h-9 px-3 gap-2"
+              className="inline-flex items-center justify-center rounded-full text-xs font-bold ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-[#BEFF1D] h-9 px-3 gap-2"
             >
-              <Globe size={12} />
+              <Globe size={12} className="text-[#BEFF1D]" />
               {lang}
             </button>
           )}
