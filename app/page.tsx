@@ -220,6 +220,22 @@ export default function HomePage() {
     });
   };
 
+  const handleTelegramLogin = useCallback(async (initData: string) => {
+    const res = await trpcClient.auth.telegramLogin.mutate({ initData });
+    setUser({
+      id: String(res.user.id),
+      email: res.user.email,
+      username: res.user.username,
+      name: res.user.displayName ?? res.user.username,
+      createdAt: res.user.createdAt,
+      balance: res.user.balance,
+      isAdmin: res.user.isAdmin,
+      referralCode: res.user.referralCode,
+      referralCommissionRate: res.user.referralCommissionRate,
+      referralEnabled: res.user.referralEnabled,
+    });
+  }, []);
+
   const refreshUser = useCallback(async () => {
     try {
       const me = await trpcClient.auth.me.query();
@@ -382,19 +398,7 @@ export default function HomePage() {
         const initData = getTelegramInitData();
         if (initData) {
           try {
-            const res = await trpcClient.auth.telegramLogin.mutate({ initData });
-            setUser({
-              id: String(res.user.id),
-              email: res.user.email,
-              username: res.user.username,
-              name: res.user.displayName ?? res.user.username,
-              createdAt: res.user.createdAt,
-              balance: res.user.balance,
-              isAdmin: res.user.isAdmin,
-              referralCode: res.user.referralCode,
-              referralCommissionRate: res.user.referralCommissionRate,
-              referralEnabled: res.user.referralEnabled,
-            });
+            await handleTelegramLogin(initData);
           } catch (err: unknown) {
             console.error("Telegram auto-login failed", err);
           }
@@ -404,7 +408,7 @@ export default function HomePage() {
     };
 
     void loadUser();
-  }, [refreshUser]);
+  }, [refreshUser, handleTelegramLogin]);
 
   const loadMarkets = useCallback(async () => {
     setLoadingMarkets(true);
@@ -923,6 +927,7 @@ export default function HomePage() {
         onClose={() => setShowAuth(false)}
         onSignUp={handleSignUp}
         onLogin={handleLoginSubmit}
+        onTelegramLogin={handleTelegramLogin}
         lang={lang}
         initialMode={authInitialMode}
       />

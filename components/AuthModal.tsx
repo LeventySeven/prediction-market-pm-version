@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Mail, User, Lock } from 'lucide-react';
+import { X, Mail, User, Lock, Send } from 'lucide-react';
 import Button from './Button';
 
 interface AuthModalProps {
@@ -7,6 +7,7 @@ interface AuthModalProps {
   onClose: () => void;
   onLogin: (payload: { emailOrUsername: string; password: string }) => void | Promise<void>;
   onSignUp: (payload: { email: string; username: string; password: string }) => void | Promise<void>;
+  onTelegramLogin?: (initData: string) => void | Promise<void>;
   lang?: 'RU' | 'EN';
   initialMode?: AuthMode;
 }
@@ -35,6 +36,9 @@ const friendlyMessages = {
     signupRequired: 'Заполните email, username и пароль.',
     genericError: 'Не удалось выполнить запрос',
     loadingText: 'Пожалуйста, подождите...',
+    telegramButton: 'Продолжить через Telegram',
+    telegramHint: '1 клик • без пароля',
+    orDivider: 'или',
   },
   EN: {
     loginTitle: 'Log in to Yalla Market',
@@ -57,6 +61,9 @@ const friendlyMessages = {
     genericError: 'Request failed',
     placeholderEmailOrUsername: 'you@example.com / yalla_trader',
     loadingText: 'Please wait...',
+    telegramButton: 'Continue with Telegram',
+    telegramHint: '1 click • no password',
+    orDivider: 'or',
   },
 };
 
@@ -168,7 +175,15 @@ const formatErrorMessage = (err: unknown, lang: 'RU' | 'EN'): string => {
   return t.genericError;
 };
 
-const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignUp, lang = 'RU', initialMode }) => {
+const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  onLogin,
+  onSignUp,
+  onTelegramLogin,
+  lang = 'RU',
+  initialMode,
+}) => {
   const [mode, setMode] = useState<AuthMode>('SIGN_IN');
   const [emailOrUsername, setEmailOrUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -181,10 +196,31 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
   const modalTitle = mode === 'SIGN_IN' ? t.loginTitle : t.signupTitle;
   const modalSubtitle = mode === 'SIGN_IN' ? t.loginSubtitle : t.signupSubtitle;
 
+  const telegramInitData = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    const w = window as unknown as { Telegram?: { WebApp?: { initData?: unknown } } };
+    const initData = w.Telegram?.WebApp?.initData;
+    return typeof initData === 'string' && initData.trim().length > 0 ? initData : null;
+  }, [isOpen]);
+
   useEffect(() => {
     if (!isOpen) return;
     setMode(initialMode ?? 'SIGN_IN');
   }, [isOpen, initialMode]);
+
+  const handleTelegram = async () => {
+    if (!telegramInitData || !onTelegramLogin) return;
+    try {
+      setError(null);
+      setLoading(true);
+      await Promise.resolve(onTelegramLogin(telegramInitData));
+      onClose();
+    } catch (err: unknown) {
+      setError(formatErrorMessage(err, lang));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async () => {
     try {
@@ -255,6 +291,26 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, onSignU
                 {modalSubtitle}
             </p>
         </div>
+
+        {telegramInitData && onTelegramLogin && (
+          <>
+            <button
+              type="button"
+              onClick={handleTelegram}
+              disabled={loading}
+              className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors flex items-center justify-center gap-2 font-semibold"
+            >
+              <Send size={16} className="text-[rgba(36,182,255,1)]" />
+              <span>{t.telegramButton}</span>
+              <span className="text-xs text-zinc-400 font-medium">{t.telegramHint}</span>
+            </button>
+            <div className="my-5 flex items-center gap-3">
+              <div className="h-px flex-1 bg-zinc-900" />
+              <span className="text-[10px] uppercase tracking-wider text-zinc-600">{t.orDivider}</span>
+              <div className="h-px flex-1 bg-zinc-900" />
+            </div>
+          </>
+        )}
 
         <div className="flex items-center gap-2 mb-6">
           <button
