@@ -45,6 +45,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   onLogin,
   onLogout,
   onUpdateDisplayName,
+  onUpdateAvatarUrl,
   balanceMajor,
   pnlMajor,
   bets,
