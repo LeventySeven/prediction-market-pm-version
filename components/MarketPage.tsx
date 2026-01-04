@@ -170,6 +170,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
         roots.push(node);
       }
     });
+    // Ensure replies feel natural: oldest -> newest within a thread, so new replies appear at the bottom.
+    const sortChildren = (node: CommentNode) => {
+      node.children.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      node.children.forEach(sortChildren);
+    };
+    roots.forEach(sortChildren);
     return roots;
   }, [comments]);
 
@@ -752,42 +758,33 @@ const MarketPage: React.FC<MarketPageProps> = ({
             {activeTab === 'COMMENTS' && (
               <div className="space-y-8">
                 {/* Input */}
-                <div className="flex gap-4">
-                  <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center flex-shrink-0">
-                    <UserIcon size={16} className="text-zinc-500" />
-                  </div>
-                  <div className="flex-1 relative">
-                    {replyTo && (
-                      <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
-                        <div className="min-w-0 truncate">
-                          {lang === 'RU' ? 'Ответ на' : 'Replying to'}: <span className="text-white">{replyTo.label}</span>
-                        </div>
+                {!replyTo && (
+                  <div className="flex gap-4">
+                    <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center flex-shrink-0">
+                      <UserIcon size={16} className="text-zinc-500" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={commentText}
+                          onChange={(e) => setCommentText(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handlePostComment()}
+                          placeholder={lang === 'RU' ? "Написать комментарий..." : "Write something..."}
+                          className="flex h-10 w-full rounded-md border border-zinc-900 bg-transparent px-3 py-2 pr-12 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 placeholder:text-zinc-600"
+                        />
                         <button
                           type="button"
-                          onClick={() => setReplyTo(null)}
-                          className="h-7 w-7 rounded-full border border-zinc-900 bg-black/40 hover:bg-black/60 flex items-center justify-center text-zinc-300"
-                          aria-label={lang === 'RU' ? 'Отменить' : 'Cancel'}
+                          onClick={handlePostComment}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-zinc-500 hover:text-white transition-colors"
+                          aria-label={lang === 'RU' ? 'Отправить' : 'Send'}
                         >
-                          <X size={14} />
+                          <Send size={16} />
                         </button>
                       </div>
-                    )}
-                    <input
-                      type="text"
-                      value={commentText}
-                      onChange={(e) => setCommentText(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handlePostComment()}
-                      placeholder={lang === 'RU' ? "Написать комментарий..." : "Write something..."}
-                      className="flex h-10 w-full rounded-md border border-zinc-900 bg-transparent px-3 py-2 pr-10 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 placeholder:text-zinc-600"
-                    />
-                    <button
-                      onClick={handlePostComment}
-                      className="absolute right-2 top-2 p-1 text-zinc-500 hover:text-white transition-colors"
-                    >
-                      <Send size={16} />
-                    </button>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* List */}
                 <div className="space-y-6">
@@ -796,12 +793,13 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       const canLike = Boolean(onToggleCommentLike && user);
                       const liked = Boolean(node.likedByMe);
                       const likeClasses = liked ? "text-[#BEFF1D]" : "text-zinc-500 hover:text-white";
+                      const isReplyingHere = Boolean(replyTo && replyTo.id === node.id);
 
                       return (
                         <div key={node.id} className="animate-in fade-in">
                           <div
-                            className={`flex gap-4 group ${depth > 0 ? "border-l border-zinc-900/60 pl-4" : ""}`}
-                            style={{ marginLeft: depth * 16 }}
+                            className={`flex gap-4 group ${depth > 0 ? "border-l-2 border-zinc-800 pl-4" : ""}`}
+                            style={{ marginLeft: depth * 20 }}
                           >
                             <img
                               src={node.avatar}
@@ -844,6 +842,58 @@ const MarketPage: React.FC<MarketPageProps> = ({
                                   {lang === 'RU' ? 'Ответить' : 'Reply'}
                                 </button>
                               </div>
+
+                              {isReplyingHere && (
+                                <div className="mt-3 flex gap-4 border-l-2 border-zinc-800 pl-4">
+                                  <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center flex-shrink-0">
+                                    <UserIcon size={16} className="text-zinc-500" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
+                                      <div className="min-w-0 truncate">
+                                        {lang === 'RU' ? 'Ответ на' : 'Replying to'}: <span className="text-white">{replyTo?.label}</span>
+                                      </div>
+                                    </div>
+                                    <div className="relative">
+                                      <input
+                                        type="text"
+                                        value={commentText}
+                                        onChange={(e) => setCommentText(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') handlePostComment();
+                                          if (e.key === 'Escape') {
+                                            setReplyTo(null);
+                                            setCommentText('');
+                                          }
+                                        }}
+                                        placeholder={lang === 'RU' ? "Написать ответ..." : "Write a reply..."}
+                                        className="flex h-10 w-full rounded-md border border-zinc-900 bg-transparent px-3 py-2 pr-24 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 placeholder:text-zinc-600"
+                                      />
+                                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setReplyTo(null);
+                                            setCommentText('');
+                                          }}
+                                          className="h-8 w-8 rounded-md border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
+                                          aria-label={lang === 'RU' ? 'Отменить' : 'Cancel'}
+                                        >
+                                          <X size={14} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={handlePostComment}
+                                          className="h-8 w-8 rounded-md border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300 hover:text-white"
+                                          aria-label={lang === 'RU' ? 'Отправить' : 'Send'}
+                                        >
+                                          <Send size={14} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                           {node.children.length > 0 && (

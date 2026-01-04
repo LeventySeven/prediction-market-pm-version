@@ -811,6 +811,7 @@ export default function HomePage() {
             user: userLabel,
             avatar,
             text: c.body,
+            createdAt: c.createdAt,
             timestamp,
             likes: c.likesCount ?? 0,
             likedByMe: c.likedByMe ?? false,
@@ -998,6 +999,7 @@ export default function HomePage() {
         user: userLabel,
         avatar,
         text: parsed.body,
+        createdAt: parsed.createdAt,
         timestamp,
         likes: parsed.likesCount ?? 0,
         likedByMe: parsed.likedByMe ?? false,
@@ -1009,12 +1011,33 @@ export default function HomePage() {
   );
 
   const handleToggleMarketCommentLike = useCallback(async (commentId: string) => {
-    const res = await trpcClient.market.toggleMarketCommentLike.mutate({ commentId });
+    // Optimistic UI update for instant feedback.
+    let previous: { likes: number; likedByMe: boolean } | null = null;
     setMarketComments((prev) =>
-      prev.map((c) =>
-        c.id === res.commentId ? { ...c, likes: res.likesCount, likedByMe: res.likedByMe } : c
-      )
+      prev.map((c) => {
+        if (c.id !== commentId) return c;
+        const likedByMe = Boolean(c.likedByMe);
+        previous = { likes: c.likes, likedByMe };
+        const nextLiked = !likedByMe;
+        const delta = nextLiked ? 1 : -1;
+        return { ...c, likedByMe: nextLiked, likes: Math.max(0, c.likes + delta) };
+      })
     );
+
+    try {
+      const res = await trpcClient.market.toggleMarketCommentLike.mutate({ commentId });
+      setMarketComments((prev) =>
+        prev.map((c) => (c.id === res.commentId ? { ...c, likes: res.likesCount, likedByMe: res.likedByMe } : c))
+      );
+    } catch (err) {
+      console.error("toggleMarketCommentLike failed", err);
+      if (previous) {
+        setMarketComments((prev) =>
+          prev.map((c) => (c.id === commentId ? { ...c, likes: previous.likes, likedByMe: previous.likedByMe } : c))
+        );
+      }
+      throw err;
+    }
   }, []);
 
   return (

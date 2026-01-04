@@ -11,6 +11,7 @@ export interface Comment {
   user: string;
   avatar: string;
   text: string;
+  createdAt: string;
   timestamp: string;
   likes: number;
   likedByMe?: boolean;
