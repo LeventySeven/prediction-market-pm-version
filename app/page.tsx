@@ -35,13 +35,32 @@ export default function HomePage() {
   const [loadingUser, setLoadingUser] = useState(false);
   const telegramAutoLoginAttemptedRef = useRef(false);
 
+  const getTelegramInitDataFromUrl = () => {
+    if (typeof window === "undefined") return null;
+    try {
+      const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+      const fromHash = new URLSearchParams(hash).get("tgWebAppData");
+      const fromSearch = new URLSearchParams(window.location.search).get("tgWebAppData");
+      const raw = (fromHash || fromSearch || "").trim();
+      if (!raw) return null;
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    } catch {
+      return null;
+    }
+  };
+
   const getTelegramInitData = () => {
     if (typeof window === "undefined") return null;
     const w = window as unknown as {
       Telegram?: { WebApp?: { initData?: unknown } };
     };
     const initData = w.Telegram?.WebApp?.initData;
-    return typeof initData === "string" && initData.trim().length > 0 ? initData : null;
+    if (typeof initData === "string" && initData.trim().length > 0) return initData;
+    return getTelegramInitDataFromUrl();
   };
   const [currentView, setCurrentView] = useState<ViewType>("EVENTS");
 
