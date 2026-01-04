@@ -18,6 +18,7 @@ import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 import { positionsSchema, tradesSchema } from "@/src/schemas/portfolio";
 import { priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
+import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 
 // VCOIN decimals for display
@@ -111,7 +112,8 @@ export default function HomePage() {
   const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
-  const [marketCategories, setMarketCategories] = useState<Array<{ id: string; labelRu: string; labelEn: string }>>([]);
+  type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
+  const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
   const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
 
   const requireValue = <T,>(v: T | null | undefined, code: string): T => {
@@ -563,7 +565,13 @@ export default function HomePage() {
   const loadMarketCategories = useCallback(async () => {
     setLoadingMarketCategories(true);
     try {
-      const rows = await trpcClient.market.listCategories.query();
+      const rowsRaw = await trpcClient.market.listCategories.query();
+      const rowsParsed = marketCategoriesSchema.parse(rowsRaw);
+      const rows: MarketCategoryStrict[] = rowsParsed.map((c) => ({
+        id: requireValue(c.id, "CATEGORY_ID_MISSING"),
+        labelRu: requireValue(c.labelRu, "CATEGORY_LABEL_RU_MISSING"),
+        labelEn: requireValue(c.labelEn, "CATEGORY_LABEL_EN_MISSING"),
+      }));
       setMarketCategories(rows);
     } catch (err) {
       console.error("Failed to load market categories", err);

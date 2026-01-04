@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { X, Calendar, Clock, Info, Sparkles } from "lucide-react";
 import Button from "./Button";
 
-type MarketCategory = { id: string; labelRu: string; labelEn: string };
+type MarketCategory = { id?: string; labelRu?: string; labelEn?: string };
 
 type AdminMarketModalProps = {
   isOpen: boolean;
@@ -44,7 +44,22 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
   const t = (ru: string, en: string) => (lang === "RU" ? ru : en);
 
-  const selectedCategory = useMemo(() => categories.find((c) => c.id === categoryId) ?? null, [categories, categoryId]);
+  const categoriesStrict = useMemo(
+    () =>
+      categories.filter(
+        (c): c is { id: string; labelRu: string; labelEn: string } =>
+          typeof c.id === "string" &&
+          c.id.trim().length > 0 &&
+          typeof c.labelRu === "string" &&
+          typeof c.labelEn === "string"
+      ),
+    [categories]
+  );
+
+  const selectedCategory = useMemo(
+    () => categoriesStrict.find((c) => c.id === categoryId) ?? null,
+    [categoriesStrict, categoryId]
+  );
 
   const isValid =
     titleRu.trim().length >= 3 &&
@@ -174,7 +189,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                     ? (lang === "RU" ? selectedCategory.labelRu : selectedCategory.labelEn)
                     : t("Выберите категорию", "Select a category")}
               </button>
-              {!categoriesLoading && categories.length === 0 && (
+              {!categoriesLoading && categoriesStrict.length === 0 && (
                 <button
                   type="button"
                   onClick={() => onReloadCategories?.()}
@@ -342,14 +357,14 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
             {categoriesLoading ? (
               <div className="py-8 text-center text-sm text-zinc-500">{t("Загрузка...", "Loading...")}</div>
-            ) : categories.length === 0 ? (
+            ) : categoriesStrict.length === 0 ? (
               <div className="py-6 text-center text-sm text-zinc-500">
                 <div className="mb-3">{t("Категории не найдены.", "No categories found.")}</div>
                 <Button onClick={() => onReloadCategories?.()}>{t("Обновить", "Reload")}</Button>
               </div>
             ) : (
               <div className="max-h-[60vh] overflow-y-auto space-y-2">
-                {categories.map((c) => {
+                {categoriesStrict.map((c) => {
                   const label = lang === "RU" ? c.labelRu : c.labelEn;
                   const isSelected = c.id === categoryId;
                   return (
