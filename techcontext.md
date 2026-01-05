@@ -7,6 +7,6 @@
 **Database**: Supabase (Postgres + Auth)  
 **Admin**: users.is_admin boolean  
 
-**Colors**: YES `#BEFF1D` | NO `rgba(250,73,159,1)`
+**Colors**: Accent `rgba(229, 12, 0, 1)`
 
 **EVERY FEATURE = Frontend + tRPC + Supabase**

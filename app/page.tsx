@@ -35,6 +35,7 @@ export default function HomePage() {
   type PostAuthAction =
     | { type: "OPEN_CREATE_MARKET" }
     | { type: "PLACE_BET"; marketId: string; side: "YES" | "NO"; amount: number; marketTitle: string }
+    | { type: "OPEN_MARKET_BET"; marketId: string; side: "YES" | "NO" }
     | null;
   const [postAuthAction, setPostAuthAction] = useState<PostAuthAction>(null);
   const [lang, setLang] = useState<"RU" | "EN">(() => {
@@ -110,6 +111,8 @@ export default function HomePage() {
     newBalance?: number;
     errorMessage?: string | null;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
+  type MarketBetIntent = { marketId: string; side: "YES" | "NO"; nonce: number } | null;
+  const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
@@ -921,6 +924,18 @@ export default function HomePage() {
     }
   };
 
+  const handleOpenMarketBet = useCallback(
+    (market: Market, side: "YES" | "NO") => {
+      setSelectedMarketId(market.id);
+      setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
+      if (!user) {
+        setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
+        openAuth("SIGN_UP");
+      }
+    },
+    [openAuth, user]
+  );
+
   // Post-auth actions (run only after user becomes available).
   useEffect(() => {
     if (!user || !postAuthAction) return;
@@ -930,6 +945,13 @@ export default function HomePage() {
         void loadMarketCategories();
       }
       setShowAdminModal(true);
+      return;
+    }
+    if (postAuthAction.type === "OPEN_MARKET_BET") {
+      const action = postAuthAction;
+      setPostAuthAction(null);
+      setSelectedMarketId(action.marketId);
+      setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
       return;
     }
     if (postAuthAction.type === "PLACE_BET") {
@@ -1068,6 +1090,9 @@ export default function HomePage() {
               user={user}
               onBack={() => setSelectedMarketId(null)}
               onLogin={() => openAuth("SIGN_IN")}
+              betIntent={
+                marketBetIntent && marketBetIntent.marketId === selectedMarket.id ? marketBetIntent : null
+              }
               onRequireBetAuth={(params) => {
                 setPostAuthAction({
                   type: "PLACE_BET",
@@ -1147,7 +1172,7 @@ export default function HomePage() {
                       }
                       setShowAdminModal(true);
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-[#BEFF1D] bg-black px-4 py-2 text-sm font-semibold text-[#BEFF1D] hover:bg-[rgba(190,255,29,0.10)] transition"
+                    className="inline-flex items-center justify-center rounded-full border border-[#E50C00] bg-black px-4 py-2 text-sm font-semibold text-[#E50C00] hover:bg-[rgba(229,12,0,0.10)] transition"
                   >
                     {lang === "RU" ? "Создать рынок" : "Create market"}
                   </button>
@@ -1175,7 +1200,7 @@ export default function HomePage() {
                       onClick={() => setActiveCategoryId("all")}
                       className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                         activeCategoryId === "all"
-                          ? "border-[#BEFF1D] bg-[rgba(190,255,29,0.10)] text-[#BEFF1D]"
+                          ? "border-[#E50C00] bg-[rgba(229,12,0,0.10)] text-[#E50C00]"
                           : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                       }`}
                     >
@@ -1191,7 +1216,7 @@ export default function HomePage() {
                           onClick={() => setActiveCategoryId(c.id)}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             selected
-                              ? "border-[#BEFF1D] bg-[rgba(190,255,29,0.10)] text-[#BEFF1D]"
+                              ? "border-[#E50C00] bg-[rgba(229,12,0,0.10)] text-[#E50C00]"
                               : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                           }`}
                         >
@@ -1214,6 +1239,7 @@ export default function HomePage() {
                           key={market.id}
                           market={market}
                           onClick={() => setSelectedMarketId(market.id)}
+                          onQuickBet={(side) => handleOpenMarketBet(market, side)}
                           lang={lang}
                         />
                       ))}

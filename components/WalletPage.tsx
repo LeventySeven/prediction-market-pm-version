@@ -54,7 +54,7 @@ const WalletPage: React.FC<WalletPageProps> = ({
       
       {/* Balance Card */}
       <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-xl p-8 mb-8 relative overflow-hidden shadow-sm">
-        <div className="absolute top-0 right-0 p-32 bg-[#BEFF1D] opacity-[0.05] rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+        <div className="absolute top-0 right-0 p-32 bg-[#E50C00] opacity-[0.05] rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
         
         <div className="text-center relative z-10">
             <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2 block">
@@ -65,11 +65,11 @@ const WalletPage: React.FC<WalletPageProps> = ({
             </h1>
 
             <div className="flex gap-4 justify-center">
-                <button className="flex-1 bg-[#BEFF1D] hover:opacity-90 text-black font-semibold py-2.5 px-4 rounded-md flex items-center justify-center gap-2 transition-colors text-sm shadow-sm">
+                <button className="flex-1 bg-[#E50C00] hover:opacity-90 text-white font-semibold py-2.5 px-4 rounded-md flex items-center justify-center gap-2 transition-colors text-sm shadow-sm">
                     <ArrowDownLeft size={16} />
                     {lang === 'RU' ? 'Пополнить' : 'Deposit'}
                 </button>
-                <button className="flex-1 bg-[#F544A6] hover:opacity-90 text-white font-semibold py-2.5 px-4 rounded-md flex items-center justify-center gap-2 transition-colors border border-[rgba(245,68,166,0.6)] text-sm shadow-sm">
+                <button className="flex-1 bg-black hover:bg-[rgba(229,12,0,0.10)] text-[#E50C00] font-semibold py-2.5 px-4 rounded-md flex items-center justify-center gap-2 transition-colors border border-[#E50C00] text-sm shadow-sm">
                     <ArrowUpRight size={16} />
                     {lang === 'RU' ? 'Вывести' : 'Withdraw'}
                 </button>
@@ -83,7 +83,7 @@ const WalletPage: React.FC<WalletPageProps> = ({
           <div className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">
             {lang === 'RU' ? 'Прибыль/Убыток (PnL)' : 'Profit/Loss (PnL)'}
           </div>
-          <div className={`text-2xl font-mono font-bold ${pnlIsPositive ? 'text-[#BEFF1D]' : 'text-[#F544A6]'}`}>
+          <div className="text-2xl font-mono font-bold text-[#E50C00]">
             {pnlIsPositive ? '+' : '-'}${Math.abs(pnlMajor).toFixed(2)}
           </div>
           <div className="text-xs text-zinc-500 mt-1">
@@ -113,7 +113,7 @@ const WalletPage: React.FC<WalletPageProps> = ({
                 {activeBets.map((b) => {
                   const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
                   const sideLabel = b.side === 'YES' ? yesLabel : noLabel;
-                  const sideColor = b.side === 'YES' ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
+                  const sideColor = b.side === 'YES' ? 'text-[#E50C00]' : 'text-[#E50C00]';
                   return (
                     <button
                       key={b.id}
@@ -160,7 +160,7 @@ const WalletPage: React.FC<WalletPageProps> = ({
                   const won = b.status === 'won';
                   const resultLabel =
                     lang === 'RU' ? (won ? 'ВЫИГРЫШ' : 'ПОТЕРЯ') : (won ? 'WON' : 'LOST');
-                  const resultColor = won ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
+                  const resultColor = won ? 'text-[#E50C00]' : 'text-[#E50C00]';
                   const redeem = b.payout ?? 0;
                   return (
                     <button
@@ -199,7 +199,7 @@ const WalletPage: React.FC<WalletPageProps> = ({
                   const boughtFor = avgEntry !== null ? avgEntry * sharesSold : null;
                   const soldFor = Math.abs(t.collateralNet);
                   const sideLabel = t.outcome === 'YES' ? yesLabel : noLabel;
-                  const sideColor = t.outcome === 'YES' ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
+                  const sideColor = t.outcome === 'YES' ? 'text-[#E50C00]' : 'text-[#E50C00]';
                   const resolvedOutcome = t.marketOutcome ? String(t.marketOutcome) : null;
                   const outcomeText =
                     resolvedOutcome === 'YES' ? yesLabel : resolvedOutcome === 'NO' ? noLabel : null;

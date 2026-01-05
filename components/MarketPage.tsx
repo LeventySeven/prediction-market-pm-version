@@ -25,6 +25,7 @@ interface MarketPageProps {
   user: User | null;
   onBack: () => void;
   onLogin: () => void;
+  betIntent?: { side: 'YES' | 'NO'; nonce: number } | null;
   onRequireBetAuth?: (params: { marketId: string; side: 'YES' | 'NO'; amount: number; marketTitle: string }) => void;
   onPlaceBet: (params: { side: 'YES' | 'NO'; amount: number; marketId: string; marketTitle: string }) => Promise<void>;
   onSellPosition?: (params: { marketId: string; side: 'YES' | 'NO'; shares: number }) => Promise<void>;
@@ -44,6 +45,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   user,
   onBack,
   onLogin,
+  betIntent = null,
   onRequireBetAuth,
   onPlaceBet,
   onSellPosition,
@@ -70,6 +72,13 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; label: string } | null>(null);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!betIntent) return;
+    setTradeType(betIntent.side);
+    const el = document.getElementById("bid-section");
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [betIntent?.nonce]);
 
   // Use closesAt for trading deadline, expiresAt for event end
   const tradingDeadline = market.closesAt || market.expiresAt;
@@ -479,8 +488,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('YES')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'YES'
-                        ? 'bg-black ring-1 ring-inset ring-[#BEFF1D] text-[#BEFF1D]'
-                        : 'text-[rgba(190,255,29,0.7)] hover:text-[#BEFF1D] hover:bg-zinc-900/40'
+                        ? 'bg-black ring-1 ring-inset ring-[#E50C00] text-[#E50C00]'
+                        : 'text-[rgba(229,12,0,0.75)] hover:text-[#E50C00] hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
@@ -489,8 +498,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('NO')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'NO'
-                        ? 'bg-black ring-1 ring-inset ring-[#F544A6] text-[#F544A6]'
-                        : 'text-[rgba(245,68,166,0.7)] hover:text-[#F544A6] hover:bg-zinc-900/40'
+                        ? 'bg-black ring-1 ring-inset ring-[#E50C00] text-[#E50C00]'
+                        : 'text-[rgba(229,12,0,0.75)] hover:text-[#E50C00] hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}
@@ -542,7 +551,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     </div>
                     <div className="flex justify-between text-xs text-zinc-500 uppercase font-medium">
                       <span>{lang === 'RU' ? 'Прибыль' : 'Profit'}</span>
-                      <span className="text-[#BEFF1D] font-mono">+${potentialProfit}</span>
+                      <span className="text-[#E50C00] font-mono">+${potentialProfit}</span>
                     </div>
                   </div>
 
@@ -611,8 +620,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                               <span
                                 className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${
                                   position.outcome === 'YES'
-                                    ? 'bg-black border border-[#BEFF1D] text-[#BEFF1D]'
-                                    : 'bg-black border border-[#F544A6] text-[#F544A6]'
+                                    ? 'bg-black border border-[#E50C00] text-[#E50C00]'
+                                    : 'bg-black border border-[#E50C00] text-[#E50C00]'
                                 }`}
                               >
                                 {position.outcome}
@@ -792,7 +801,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     const renderNode = (node: CommentNode, depth: number): React.ReactNode => {
                       const canLike = Boolean(onToggleCommentLike && user);
                       const liked = Boolean(node.likedByMe);
-                      const likeClasses = liked ? "text-[#BEFF1D]" : "text-zinc-500 hover:text-white";
+                      const likeClasses = liked ? "text-[#E50C00]" : "text-zinc-500 hover:text-white";
                       const isReplyingHere = Boolean(replyTo && replyTo.id === node.id);
 
                       return (

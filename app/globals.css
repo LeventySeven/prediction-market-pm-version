@@ -5,7 +5,7 @@
 :root {
   --background: #0a0a0a;
   --foreground: #ffffff;
-  --accent-color: #beff1d;
+  --accent-color: rgba(229, 12, 0, 1);
   --accent-text-color: #000000;
 }
 
@@ -43,8 +43,8 @@ body {
     filter: none;
   }
   50% {
-    color: rgba(36, 182, 255, 1);
-    filter: drop-shadow(0 0 8px rgba(36, 182, 255, 0.35));
+    color: rgba(229, 12, 0, 1);
+    filter: drop-shadow(0 0 8px rgba(229, 12, 0, 0.35));
   }
 }
 
@@ -53,8 +53,8 @@ body {
 }
 
 ::selection {
-  background-color: #beff1d;
-  color: #000000;
+  background-color: rgba(229, 12, 0, 1);
+  color: #ffffff;
 }
 
 .scrollbar-hide {

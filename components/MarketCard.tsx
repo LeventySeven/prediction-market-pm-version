@@ -6,10 +6,11 @@ import { formatTimeRemaining } from '../lib/time';
 interface MarketCardProps {
   market: Market;
   onClick?: () => void;
+  onQuickBet?: (side: 'YES' | 'NO') => void;
   lang?: 'RU' | 'EN';
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, lang = 'RU' }) => {
   const localizedTitle =
     lang === 'RU'
       ? market.titleRu ?? market.titleEn ?? market.title
@@ -28,6 +29,13 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
 
   // Use closesAt for trading deadline, fall back to expiresAt
   const deadline = market.closesAt || market.expiresAt;
+  const tradingClosed = (() => {
+    if (!deadline) return false;
+    const now = Date.now();
+    const parsed = Date.parse(deadline);
+    return Number.isFinite(parsed) && parsed < now;
+  })();
+  const isExpired = isResolved || tradingClosed;
   const timeLeft = isResolved
     ? (lang === 'RU' ? 'Завершено' : 'Resolved')
     : (deadline ? formatTimeRemaining(deadline, 'hours', lang) : '—');
@@ -93,20 +101,38 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
 
         {/* Minimalist probability line (white); colors are reserved for YES/NO labels + prices */}
         <div className="w-full h-1.5 bg-white/10 rounded-full mb-3 overflow-hidden">
-          <div className="h-full bg-white/70" style={{ width: `${displayChance}%` }} />
+          <div className="h-full bg-[rgba(229,12,0,0.85)]" style={{ width: `${displayChance}%` }} />
         </div>
 
-        {/* Inline info instead of buttons */}
-        <div className="flex items-center justify-between gap-3 text-xs text-zinc-400 tabular-nums">
-          <span className="flex items-center gap-1">
-            <span className="font-semibold text-[#BEFF1D]">{yesLabel}</span>
-            <span className="text-[#BEFF1D]">${market.yesPrice}</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="font-semibold text-[#F544A6]">{noLabel}</span>
-            <span className="text-[#F544A6]">${market.noPrice}</span>
-          </span>
-        </div>
+        {/* Quick bet buttons - only show if market is active */}
+        {!isExpired && (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickBet?.("YES");
+              }}
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E50C00] hover:text-[#E50C00] transition-colors flex items-center justify-between tabular-nums"
+              aria-label={`${yesLabel} $${market.yesPrice}`}
+            >
+              <span>{yesLabel}</span>
+              <span className="font-mono">${market.yesPrice}</span>
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickBet?.("NO");
+              }}
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E50C00] hover:text-[#E50C00] transition-colors flex items-center justify-between tabular-nums"
+              aria-label={`${noLabel} $${market.noPrice}`}
+            >
+              <span>{noLabel}</span>
+              <span className="font-mono">${market.noPrice}</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

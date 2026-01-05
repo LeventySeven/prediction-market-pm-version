@@ -52,7 +52,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                 <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full bg-black object-cover" />
                 
                 <div className="flex-1">
-                    <h3 className="font-bold text-white text-sm group-hover:text-[#BEFF1D] transition-colors">{user.name}</h3>
+                    <h3 className="font-bold text-white text-sm group-hover:text-[#E50C00] transition-colors">{user.name}</h3>
                     <p className="text-[10px] text-neutral-500 uppercase tracking-wider">
                         {user.betCount ?? 0} {lang === 'RU' ? 'ставок' : 'bets'}
                     </p>
@@ -61,7 +61,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                 {/* PnL (numbers only, aligned) */}
                 <div
                   className={`w-[140px] text-right font-mono font-bold tabular-nums ${
-                    (user.pnl || 0) >= 0 ? 'text-[#BEFF1D]' : 'text-[#F544A6]'
+                    (user.pnl || 0) >= 0 ? 'text-[#E50C00]' : 'text-[#E50C00]'
                   }`}
                 >
                   {(user.pnl || 0) >= 0 ? '+' : ''}
