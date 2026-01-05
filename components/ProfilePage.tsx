@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Trade, User, UserCommentSummary } from '../types';
@@ -38,6 +38,52 @@ const formatDate = (iso?: string, lang: 'RU' | 'EN' = 'RU') => {
     month: 'short',
     day: '2-digit',
   });
+};
+
+const hashStringToInt = (value: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+};
+
+const accentPairFromSeed = (seed: string) => {
+  const h = hashStringToInt(seed);
+  const hueA = h % 360;
+  const hueB = (hueA + 32 + ((h >> 8) % 48)) % 360;
+  return {
+    a: `hsla(${hueA}, 85%, 58%, 0.20)`,
+    b: `hsla(${hueB}, 85%, 58%, 0.16)`,
+  };
+};
+
+const buildSparklinePath = (values: number[]) => {
+  // viewBox: 0 0 100 40
+  const W = 100;
+  const H = 40;
+  const P = 2; // padding
+  const n = values.length;
+  if (n === 0) {
+    return { lineD: "", areaD: "" };
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1e-9, max - min);
+
+  const toX = (i: number) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
+  const toY = (v: number) => {
+    const t = (v - min) / span;
+    // invert Y (0 is top)
+    return P + (1 - t) * (H - P * 2);
+  };
+
+  const points = values.map((v, i) => ({ x: toX(i), y: toY(v) }));
+  const lineD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+  const areaD = `${lineD} L ${points[points.length - 1].x.toFixed(2)} ${(H - P).toFixed(2)} L ${points[0].x.toFixed(2)} ${(H - P).toFixed(2)} Z`;
+  return { lineD, areaD };
 };
 
 const ProfilePage: React.FC<ProfilePageProps> = ({
@@ -110,8 +156,32 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const formatPct = (value: number) => `${value.toFixed(1)}%`;
   const formatSignedMoney = (value: number) => `${value >= 0 ? '+' : '-'}$${Math.abs(value).toFixed(2)}`;
 
+  const accentSeed = String(user.avatarUrl ?? user.telegramPhotoUrl ?? user.id ?? displayName);
+  const accent = useMemo(() => accentPairFromSeed(accentSeed), [accentSeed]);
+
+  const pnlSparkline = useMemo(() => {
+    const trades = [...soldTrades].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    let cum = 0;
+    const values = trades.map((t) => {
+      cum += Number(t.realizedPnl ?? 0);
+      return cum;
+    });
+    // If no sells yet, show a flat line.
+    const series = values.length > 1 ? values : [0, 0];
+    return buildSparklinePath(series);
+  }, [soldTrades]);
+
   return (
-    <div className="max-w-xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300">
+    <div className="max-w-xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300 relative">
+      {/* subtle personalized header gradient */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-32 rounded-b-[32px] blur-[2px]"
+        style={{
+          backgroundImage: `radial-gradient(700px 220px at 0% 0%, ${accent.a}, transparent 60%), radial-gradient(520px 180px at 100% 0%, ${accent.b}, transparent 55%)`,
+        }}
+      />
+
+      <div className="relative">
       {/* Profile header */}
       <div className="border border-zinc-900 bg-black rounded-2xl p-5">
         <div className="flex items-start gap-4">
@@ -342,6 +412,55 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
             </div>
           </div>
         )}
+      </div>
+
+      {/* PnL graph (lightweight sparkline) */}
+      <div className="mt-4 border border-zinc-900 bg-black rounded-2xl overflow-hidden">
+        <div
+          className="relative p-4"
+          style={{
+            backgroundImage: `radial-gradient(600px 220px at 20% 0%, ${accent.a}, transparent 60%), radial-gradient(520px 200px at 80% 0%, ${accent.b}, transparent 60%)`,
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                {lang === "RU" ? "Прибыль / Убыток" : "Profit / Loss"}
+              </div>
+              <div className={`mt-1 text-2xl font-mono font-bold ${pnlIsPositive ? "text-[#BEFF1D]" : "text-[#F544A6]"}`}>
+                {formatSignedMoney(pnlMajor)}
+              </div>
+              <div className="mt-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                {lang === "RU" ? "За всё время" : "All-time"}
+              </div>
+            </div>
+            <div className="shrink-0 rounded-full border border-zinc-900 bg-zinc-950/40 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-zinc-300">
+              ALL
+            </div>
+          </div>
+
+          <svg viewBox="0 0 100 40" className="mt-4 h-16 w-full">
+            <defs>
+              <linearGradient id="pnlFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={pnlIsPositive ? "#BEFF1D" : "#F544A6"} stopOpacity="0.20" />
+                <stop offset="100%" stopColor={pnlIsPositive ? "#BEFF1D" : "#F544A6"} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            {pnlSparkline.areaD && (
+              <path d={pnlSparkline.areaD} fill="url(#pnlFill)" />
+            )}
+            {pnlSparkline.lineD && (
+              <path
+                d={pnlSparkline.lineD}
+                fill="none"
+                stroke={pnlIsPositive ? "#BEFF1D" : "#F544A6"}
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            )}
+          </svg>
+        </div>
       </div>
 
       {/* Balance + PnL */}
@@ -643,6 +762,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
             )}
           </div>
         )}
+      </div>
       </div>
     </div>
   );

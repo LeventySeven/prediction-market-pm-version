@@ -11,7 +11,7 @@ import AdminMarketModal from "@/components/AdminMarketModal";
 import ProfilePage from "@/components/ProfilePage";
 import type { Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search, Plus } from "lucide-react";
+import { Search } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
@@ -1129,6 +1129,30 @@ export default function HomePage() {
           <main className="mx-auto w-full max-w-7xl pb-24">
             {currentView === "EVENTS" && (
               <>
+                {/* Create market (top-left) */}
+                <div className="px-4 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!user) {
+                        setPostAuthAction({ type: "OPEN_CREATE_MARKET" });
+                        if (marketCategories.length === 0 && !loadingMarketCategories) {
+                          void loadMarketCategories();
+                        }
+                        openAuth("SIGN_IN");
+                        return;
+                      }
+                      if (marketCategories.length === 0 && !loadingMarketCategories) {
+                        void loadMarketCategories();
+                      }
+                      setShowAdminModal(true);
+                    }}
+                    className="inline-flex items-center justify-center rounded-full border border-[#BEFF1D] bg-black px-4 py-2 text-sm font-semibold text-[#BEFF1D] hover:bg-[rgba(190,255,29,0.10)] transition"
+                  >
+                    {lang === "RU" ? "Создать рынок" : "Create market"}
+                  </button>
+                </div>
+
                 {/* Mobile search (desktop search is in Header) */}
                 <div className="px-4 pt-4 pb-3 md:hidden">
                   <div className="relative">
@@ -1250,31 +1274,6 @@ export default function HomePage() {
               }
             }}
           />
-
-          {currentView === "EVENTS" && (
-            <button
-              type="button"
-              onClick={() => {
-                if (!user) {
-                  setPostAuthAction({ type: "OPEN_CREATE_MARKET" });
-                  if (marketCategories.length === 0 && !loadingMarketCategories) {
-                    void loadMarketCategories();
-                  }
-                  openAuth("SIGN_IN");
-                  return;
-                }
-                if (marketCategories.length === 0 && !loadingMarketCategories) {
-                  void loadMarketCategories();
-                }
-                setShowAdminModal(true);
-              }}
-              className="fixed bottom-20 right-4 h-14 w-14 rounded-full bg-black border border-[#BEFF1D] text-[#BEFF1D] flex items-center justify-center shadow-xl shadow-black/30 ring-1 ring-white/10 hover:bg-[rgba(190,255,29,0.08)] active:scale-[0.98] transition"
-              aria-label={lang === "RU" ? "Создать рынок" : "Create market"}
-              title={lang === "RU" ? "Создать рынок" : "Create market"}
-            >
-              <Plus size={22} />
-            </button>
-          )}
         </>
       )}
 
