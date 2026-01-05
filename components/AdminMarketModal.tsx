@@ -302,7 +302,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div>
                 <label className="block text-xs text-neutral-400 mb-1">
                   <span className="inline-flex items-center gap-2">
@@ -325,17 +325,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                   onChange={(e) => setLiquidityB(e.target.value)}
                   className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-white focus:border-zinc-700 focus:outline-none"
                 />
-              </div>
-              <div className="flex items-center justify-center sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => setHelpOpen(true)}
-                  className="h-11 w-11 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
-                  aria-label={t("Подсказка", "Help")}
-                  title={t("Подсказка", "Help")}
-                >
-                  <HelpCircle size={18} />
-                </button>
               </div>
             </div>
           </div>
@@ -374,7 +363,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
           <p className="text-xs text-red-400 mt-3 text-center">{error}</p>
         )}
 
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="mt-6 pt-4 border-t border-zinc-900 flex items-center justify-between gap-3">
           <Button variant="ghost" onClick={onClose}>
             {t("Отмена", "Cancel")}
           </Button>
