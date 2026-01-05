@@ -39,7 +39,9 @@ export interface Market {
   state: MarketState;
   outcome: "YES" | "NO" | null;
   createdBy?: string | null;
-  category: Category;
+  categoryId: string | null;
+  categoryLabelRu: string | null;
+  categoryLabelEn: string | null;
   imageUrl: string;
   volume: string;
   closesAt: string; // Trading stops

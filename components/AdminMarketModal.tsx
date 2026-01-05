@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { X, Calendar, Clock, Info, Sparkles, HelpCircle } from "lucide-react";
+import { X, Clock, Info, Sparkles, HelpCircle } from "lucide-react";
 import Button from "./Button";
 
 type MarketCategory = { id?: string; labelRu?: string; labelEn?: string };
@@ -34,7 +34,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
   const [titleRu, setTitleRu] = useState("");
   const [titleEn, setTitleEn] = useState("");
   const [description, setDescription] = useState("");
-  const [closesAt, setClosesAt] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [liquidityB, setLiquidityB] = useState("50");
   const [categoryId, setCategoryId] = useState<string>("");
@@ -85,15 +84,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       issues.push(t("Окончание события — некорректная дата", "Event end time — invalid date"));
     }
 
-    if (closesAt.trim()) {
-      const closesAtMs = Date.parse(closesAt);
-      if (!Number.isFinite(closesAtMs)) {
-        issues.push(t("Торги закрываются — некорректная дата", "Trading close time — invalid date"));
-      } else if (Number.isFinite(expiresAtMs) && closesAtMs > expiresAtMs) {
-        issues.push(t("Торги должны закрываться не позже окончания события", "Trading close must be <= event end time"));
-      }
-    }
-
     if (parsedLiquidityB === null) {
       issues.push(t("Ликвидность B — должна быть числом > 0", "Liquidity B — must be a number > 0"));
     }
@@ -111,7 +101,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
     }
 
     return issues;
-  }, [titleRu, titleEn, expiresAt, closesAt, parsedLiquidityB, categoryId, categoriesLoading, categoriesStrict, t]);
+  }, [titleRu, titleEn, expiresAt, parsedLiquidityB, categoryId, categoriesLoading, categoriesStrict, t]);
 
   const canSubmit = validationIssues.length === 0 && !loading;
 
@@ -140,7 +130,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
         titleRu: titleRu.trim(),
         titleEn: titleEn.trim(),
         description: description.trim() || null,
-        closesAt: closesAt.trim() ? closesAt.trim() : null,
         expiresAt,
         liquidityB: parsedLiquidityB,
         categoryId,
@@ -148,7 +137,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       setTitleRu("");
       setTitleEn("");
       setDescription("");
-      setClosesAt("");
       setExpiresAt("");
       setLiquidityB("50");
       setCategoryId("");
@@ -248,27 +236,10 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs text-neutral-400 mb-2">{t("Торги закрываются (UTC)", "Trading closes (UTC)")}</label>
-              <div className="flex items-center gap-3 mb-2 text-xs text-neutral-500">
-                <Calendar size={14} />
-                {t("Можно оставить пустым — будет равно времени окончания", "Optional — defaults to end time")}
-              </div>
-              <div className="relative">
-                <input
-                  type="datetime-local"
-                  value={closesAt}
-                  onChange={(e) => setClosesAt(e.target.value)}
-                  className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-white focus:border-zinc-700 focus:outline-none"
-                />
-                <Clock size={16} className="absolute right-3 top-3.5 text-neutral-600" />
-              </div>
-            </div>
-
-            <div>
               <label className="block text-xs text-neutral-400 mb-2">{t("Окончание события (UTC)", "Event end (UTC)")}</label>
               <div className="flex items-center gap-3 mb-2 text-xs text-neutral-500">
                 <Info size={14} />
-                {t("После этого времени торги должны быть закрыты, а рынок можно разрешить.", "After this, trading should be closed and the market can be resolved.")}
+                {t("После этого времени торги закрываются, а рынок можно разрешить.", "After this time, trading closes and the market can be resolved.")}
               </div>
               <div className="flex flex-wrap gap-2 mb-3">
                 {[24, 72, 168].map((hours) => (
@@ -278,9 +249,6 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                     onClick={() => {
                       const iso = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString().slice(0, 16);
                       setExpiresAt(iso);
-                      if (!closesAt.trim()) {
-                        setClosesAt(iso);
-                      }
                     }}
                     className="px-3 py-1 rounded-full border border-zinc-900 text-xs text-zinc-400 hover:text-white hover:border-zinc-700"
                   >

@@ -21,6 +21,10 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
   const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
   const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
+  const categoryLabel =
+    lang === "RU"
+      ? market.categoryLabelRu ?? market.categoryLabelEn
+      : market.categoryLabelEn ?? market.categoryLabelRu;
 
   // Use closesAt for trading deadline, fall back to expiresAt
   const deadline = market.closesAt || market.expiresAt;
@@ -58,6 +62,14 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, lang = 'RU' })
             {localizedTitle}
           </h3>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
+            {categoryLabel && (
+              <>
+                <span className="shrink-0 rounded-full border border-zinc-900 bg-zinc-950/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-300">
+                  {categoryLabel}
+                </span>
+                <span className="text-zinc-700">•</span>
+              </>
+            )}
             <span className="uppercase tracking-wider">{volLabel}</span>
             <span className="text-zinc-400">{market.volume}</span>
             <span className="ml-auto flex items-center gap-1">

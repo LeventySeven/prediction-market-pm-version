@@ -9,7 +9,7 @@ import OnboardingModal from "@/components/OnboardingModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import AdminMarketModal from "@/components/AdminMarketModal";
 import ProfilePage from "@/components/ProfilePage";
-import type { Category, Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
+import type { Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search, Plus } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
@@ -27,7 +27,7 @@ const VCOIN_DECIMALS = 6;
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 export default function HomePage() {
-  const [activeCategory, setActiveCategory] = useState<Category>("ALL");
+  const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -551,7 +551,9 @@ export default function HomePage() {
           state: m.state as Market["state"],
           outcome: m.outcome,
           createdBy: m.createdBy ?? null,
-          category: "ALL" as Category,
+          categoryId: m.categoryId ?? null,
+          categoryLabelRu: m.categoryLabelRu ?? null,
+          categoryLabelEn: m.categoryLabelEn ?? null,
           imageUrl: buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
           volume: `$${m.volume.toFixed(2)}`,
           closesAt: m.closesAt,
@@ -629,7 +631,10 @@ export default function HomePage() {
 
   useEffect(() => {
     void loadMarkets();
-  }, [loadMarkets]);
+    if (marketCategories.length === 0 && !loadingMarketCategories) {
+      void loadMarketCategories();
+    }
+  }, [loadMarkets, loadMarketCategories, marketCategories.length, loadingMarketCategories]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -736,14 +741,14 @@ export default function HomePage() {
     () =>
       markets.filter((market) => {
         const matchesCategory =
-          activeCategory === "ALL" || market.category === activeCategory;
+          activeCategoryId === "all" || (market.categoryId ?? "") === activeCategoryId;
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
         const matchesSearch = targetTitle
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
         return matchesCategory && matchesSearch;
       }),
-    [activeCategory, searchQuery, markets, lang]
+    [activeCategoryId, searchQuery, markets, lang]
   );
 
   const selectedMarket = useMemo(
@@ -1138,7 +1143,42 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div className="border-t border-zinc-900 px-4 pt-4">
+                {/* Categories */}
+                <div className="px-4 pb-3 border-b border-zinc-900">
+                  <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveCategoryId("all")}
+                      className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                        activeCategoryId === "all"
+                          ? "border-[#BEFF1D] bg-[rgba(190,255,29,0.10)] text-[#BEFF1D]"
+                          : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
+                      }`}
+                    >
+                      {lang === "RU" ? "Все" : "All"}
+                    </button>
+                    {marketCategories.map((c) => {
+                      const label = lang === "RU" ? c.labelRu : c.labelEn;
+                      const selected = activeCategoryId === c.id;
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setActiveCategoryId(c.id)}
+                          className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                            selected
+                              ? "border-[#BEFF1D] bg-[rgba(190,255,29,0.10)] text-[#BEFF1D]"
+                              : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="px-4 pt-4">
                   {loadingMarkets ? (
                     <div className="text-center py-10 text-zinc-500">
                       {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
