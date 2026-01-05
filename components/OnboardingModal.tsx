@@ -65,12 +65,12 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
             return (
                 <div className="w-full bg-black border border-neutral-800 rounded-lg p-4 mb-6 relative overflow-hidden flex flex-col justify-center">
                     <div className="flex justify-between items-end mb-4">
-                        <span className="text-3xl font-bold text-[#E50C00]">72%</span>
+                        <span className="text-3xl font-bold text-[#E70024]">72%</span>
                         <span className="text-[10px] uppercase text-neutral-500 tracking-widest">{lang === 'RU' ? 'Вероятность' : 'Chance'}</span>
                     </div>
                     {/* Fake Bar */}
                     <div className="w-full h-2 bg-neutral-900 rounded-full flex mb-4">
-                        <div className="w-[72%] h-full bg-[#E50C00] shadow-[0_0_10px_rgba(229,12,0,0.35)]"></div>
+                        <div className="w-[72%] h-full bg-[#E70024] shadow-[0_0_10px_rgba(231,0,36,0.35)]"></div>
                         <div className="w-[28%] h-full bg-white/10"></div>
                     </div>
                      <div className="flex justify-between items-center">
@@ -89,14 +89,14 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
             return (
                 <div className="w-full flex gap-3 mb-6">
                     <div
-                      className="flex-1 p-3 rounded-lg border flex flex-col items-center justify-center bg-[#E50C00] border-[#E50C00] shadow-[0_0_20px_rgba(229,12,0,0.25)] animate-pulse"
+                      className="flex-1 p-3 rounded-lg border flex flex-col items-center justify-center bg-[#E70024] border-[#E70024] shadow-[0_0_20px_rgba(231,0,36,0.25)] animate-pulse"
                       style={{ animationDuration: '1.5s' }}
                     >
                         <span className="text-lg font-bold mb-1 text-white">{lang === 'RU' ? 'ДА' : 'YES'}</span>
                         <span className="text-xs text-white">$0.72</span>
                     </div>
                     <div
-                      className="flex-1 p-3 rounded-lg border flex flex-col items-center justify-center bg-[#E50C00] border-[#E50C00] shadow-[0_0_20px_rgba(229,12,0,0.25)] animate-pulse"
+                      className="flex-1 p-3 rounded-lg border flex flex-col items-center justify-center bg-[#E70024] border-[#E70024] shadow-[0_0_20px_rgba(231,0,36,0.25)] animate-pulse"
                       style={{ animationDuration: '1.5s', animationDelay: '750ms' }}
                     >
                         <span className="text-lg font-bold mb-1 text-white">{lang === 'RU' ? 'НЕТ' : 'NO'}</span>
@@ -107,7 +107,7 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
         case 3: // Profit Card
             return (
                 <div className="w-full bg-neutral-900/30 border border-neutral-800 rounded-lg p-4 mb-6 relative">
-                     <div className="absolute -top-2 -right-2 bg-[#E50C00] text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
+                     <div className="absolute -top-2 -right-2 bg-[#E70024] text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
                         {lang === 'RU' ? 'Победа' : 'Win'}
                      </div>
                     <div className="flex justify-between items-center mb-2">
@@ -116,10 +116,10 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
                     </div>
                     <div className="flex justify-between items-center pt-2 border-t border-neutral-800">
                         <span className="text-xs text-neutral-400">{lang === 'RU' ? 'Выигрыш' : 'Redeem'}</span>
-                        <span className="text-xl font-bold text-[#E50C00] font-mono">$138.00</span>
+                        <span className="text-xl font-bold text-[#E70024] font-mono">$138.00</span>
                     </div>
                      <div className="mt-2 text-right">
-                        <span className="text-[10px] text-[#E50C00] font-bold bg-[rgba(229,12,0,0.12)] px-1.5 py-0.5 rounded">
+                        <span className="text-[10px] text-[#E70024] font-bold bg-[rgba(231,0,36,0.12)] px-1.5 py-0.5 rounded">
                             +38% {lang === 'RU' ? 'ПРИБЫЛЬ' : 'PROFIT'}
                         </span>
                     </div>

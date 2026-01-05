@@ -126,11 +126,11 @@ const Referrals: React.FC<ReferralsProps> = ({ user, onLogin, lang, onCreateRefe
               className="h-8 w-8 rounded-lg border border-zinc-900 bg-black/40 hover:bg-black/60 transition-colors flex items-center justify-center text-zinc-300 disabled:opacity-50"
               title={t.copy}
             >
-              {copied ? <Check size={14} className="text-[#E50C00]" /> : <Copy size={14} />}
+              {copied ? <Check size={14} className="text-[#E70024]" /> : <Copy size={14} />}
                         </button>
                     </div>
 
-          {error && <div className="mt-2 text-xs text-[#E50C00]">{error}</div>}
+          {error && <div className="mt-2 text-xs text-[#E70024]">{error}</div>}
 
           {user && (
             <div className="mt-3 text-[11px] text-zinc-500">

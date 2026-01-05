@@ -16,15 +16,15 @@ const Button: React.FC<ButtonProps> = ({
 }) => {
   // shadcn/ui inspired base styles
   const baseStyles =
-    "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E50C00] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50";
+    "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E70024] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50";
   
   const variants = {
-    // Dark UI with brand accent for readability
-    primary: "bg-black border border-[#E50C00] text-[#E50C00] hover:bg-[rgba(229,12,0,0.10)]",
+    // Red background with white text for less aggressive look
+    primary: "bg-[rgba(231,0,36,1)] border border-[rgba(231,0,36,1)] text-white hover:opacity-90",
     secondary: "bg-zinc-800 text-zinc-50 hover:bg-zinc-800/80",
     outline: "border border-zinc-800 bg-black hover:bg-zinc-800 hover:text-zinc-50",
     ghost: "hover:bg-zinc-800 hover:text-zinc-50",
-    destructive: "bg-[#E50C00] border border-[#E50C00] text-white hover:bg-[rgba(229,12,0,0.85)]",
+    destructive: "bg-[rgba(231,0,36,1)] border border-[rgba(231,0,36,1)] text-white hover:opacity-90",
   };
 
   const sizes = {

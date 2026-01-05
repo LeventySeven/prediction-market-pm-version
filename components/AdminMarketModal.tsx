@@ -371,7 +371,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
               <ul className="space-y-2">
                 {validationIssues.map((msg) => (
                   <li key={msg} className="flex items-start gap-2">
-                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[#E50C00] flex-shrink-0" />
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[#E70024] flex-shrink-0" />
                     <span>{msg}</span>
                   </li>
                 ))}
@@ -428,7 +428,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                       }}
                       className={`w-full text-left rounded-xl border px-3 py-3 text-sm transition ${
                         isSelected
-                          ? "border-[#E50C00] bg-[rgba(229,12,0,0.10)] text-zinc-100"
+                          ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
                           : "border-zinc-900 bg-zinc-950/40 text-zinc-200 hover:border-zinc-700"
                       }`}
                     >
@@ -437,7 +437,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                           <div className="font-medium truncate">{label}</div>
                         </div>
                         {isSelected && (
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#E50C00]">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-white">
                             {t("Выбрано", "Selected")}
                           </div>
                         )}

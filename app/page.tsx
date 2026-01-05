@@ -410,6 +410,7 @@ export default function HomePage() {
       setMyPositions([]);
       setMyTrades([]);
       setCurrentView("EVENTS");
+      setMarketBetIntent(null);
       setSelectedMarketId(null);
     }
   }, []);
@@ -926,8 +927,8 @@ export default function HomePage() {
 
   const handleOpenMarketBet = useCallback(
     (market: Market, side: "YES" | "NO") => {
-      setSelectedMarketId(market.id);
       setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
+      setSelectedMarketId(market.id);
       if (!user) {
         setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
         openAuth("SIGN_UP");
@@ -1088,7 +1089,10 @@ export default function HomePage() {
             <MarketPage
               market={selectedMarket}
               user={user}
-              onBack={() => setSelectedMarketId(null)}
+              onBack={() => {
+                setMarketBetIntent(null);
+                setSelectedMarketId(null);
+              }}
               onLogin={() => openAuth("SIGN_IN")}
               betIntent={
                 marketBetIntent && marketBetIntent.marketId === selectedMarket.id ? marketBetIntent : null
@@ -1125,6 +1129,7 @@ export default function HomePage() {
             onLoginRequest={() => openAuth("SIGN_IN")}
             onChange={(view) => {
               // Bottom nav always navigates back to the main shell
+              setMarketBetIntent(null);
               setSelectedMarketId(null);
 
               setCurrentView(view);
@@ -1144,6 +1149,7 @@ export default function HomePage() {
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
             onLogoClick={() => {
+              setMarketBetIntent(null);
               setSelectedMarketId(null);
               setCurrentView("EVENTS");
             }}
@@ -1172,7 +1178,7 @@ export default function HomePage() {
                       }
                       setShowAdminModal(true);
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-[#E50C00] bg-black px-4 py-2 text-sm font-semibold text-[#E50C00] hover:bg-[rgba(229,12,0,0.10)] transition"
+                    className="inline-flex items-center justify-center rounded-full border border-[#E70024] bg-[rgba(231,0,36,1)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition"
                   >
                     {lang === "RU" ? "Создать рынок" : "Create market"}
                   </button>
@@ -1200,7 +1206,7 @@ export default function HomePage() {
                       onClick={() => setActiveCategoryId("all")}
                       className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                         activeCategoryId === "all"
-                          ? "border-[#E50C00] bg-[rgba(229,12,0,0.10)] text-[#E50C00]"
+                          ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
                           : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                       }`}
                     >
@@ -1216,7 +1222,7 @@ export default function HomePage() {
                           onClick={() => setActiveCategoryId(c.id)}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             selected
-                              ? "border-[#E50C00] bg-[rgba(229,12,0,0.10)] text-[#E50C00]"
+                              ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
                               : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                           }`}
                         >
@@ -1239,7 +1245,9 @@ export default function HomePage() {
                           key={market.id}
                           market={market}
                           onClick={() => {
-                            setMarketBetIntent(null); // Clear bet intent when clicking card normally
+                            // Always clear bet intent when clicking card normally to ensure we start at top
+                            // Clear it first, then set the market ID
+                            setMarketBetIntent(null);
                             setSelectedMarketId(market.id);
                           }}
                           onQuickBet={(side) => handleOpenMarketBet(market, side)}
@@ -1296,6 +1304,7 @@ export default function HomePage() {
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
             onChange={(view) => {
+              setMarketBetIntent(null);
               setCurrentView(view);
               if (view === "PROFILE") {
                 void loadMyBets();
