@@ -28,7 +28,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
       <button
         onClick={() => onChange('FRIENDS')}
         className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
-          currentView === 'FRIENDS' ? 'text-[#E70024]' : 'text-zinc-500 hover:text-zinc-300'
+          currentView === 'FRIENDS' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
         <Users size={20} />
@@ -38,7 +38,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
       <button
         onClick={() => onChange('EVENTS')}
         className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
-          currentView === 'EVENTS' ? 'text-[#E70024]' : 'text-zinc-500 hover:text-zinc-300'
+          currentView === 'EVENTS' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
         <Zap size={20} />
@@ -48,7 +48,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
       <button
         onClick={() => handleProtectedClick('PROFILE')}
         className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
-          currentView === 'PROFILE' ? 'text-[#E70024]' : 'text-zinc-500 hover:text-zinc-300'
+          currentView === 'PROFILE' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
         <UserIcon size={20} />

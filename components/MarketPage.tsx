@@ -489,7 +489,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'YES'
                         ? 'bg-[rgba(231,0,36,1)] ring-1 ring-inset ring-[rgba(231,0,36,1)] text-white'
-                        : 'text-[rgba(231,0,36,0.75)] hover:text-[#E70024] hover:bg-zinc-900/40'
+                        : 'text-[rgba(231,0,36,0.75)] hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
@@ -499,7 +499,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'NO'
                         ? 'bg-[rgba(231,0,36,1)] ring-1 ring-inset ring-[rgba(231,0,36,1)] text-white'
-                        : 'text-[rgba(231,0,36,0.75)] hover:text-[#E70024] hover:bg-zinc-900/40'
+                        : 'text-[rgba(231,0,36,0.75)] hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}

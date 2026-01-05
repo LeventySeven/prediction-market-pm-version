@@ -113,7 +113,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 e.stopPropagation();
                 onQuickBet?.("YES");
               }}
-              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-[#E70024] transition-colors flex items-center justify-between tabular-nums"
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-white transition-colors flex items-center justify-between tabular-nums"
               aria-label={`${yesLabel} $${market.yesPrice}`}
             >
               <span>{yesLabel}</span>
@@ -125,7 +125,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 e.stopPropagation();
                 onQuickBet?.("NO");
               }}
-              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-[#E70024] transition-colors flex items-center justify-between tabular-nums"
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-white transition-colors flex items-center justify-between tabular-nums"
               aria-label={`${noLabel} $${market.noPrice}`}
             >
               <span>{noLabel}</span>

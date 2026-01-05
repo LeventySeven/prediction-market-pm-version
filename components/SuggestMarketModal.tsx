@@ -201,7 +201,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                             ))}
                             <button 
                                 onClick={handleAddOutcome}
-                                className="w-full py-2 border border-dashed border-zinc-800 hover:border-zinc-600 rounded-md text-zinc-500 hover:text-[#E70024] text-xs uppercase font-bold transition-all flex items-center justify-center gap-2"
+                                className="w-full py-2 border border-dashed border-zinc-800 hover:border-zinc-600 rounded-md text-zinc-500 hover:text-white text-xs uppercase font-bold transition-all flex items-center justify-center gap-2"
                             >
                                 <Plus size={14} />
                                 {lang === 'RU' ? 'Добавить вариант' : 'Add Option'}

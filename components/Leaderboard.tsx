@@ -52,7 +52,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                 <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full bg-black object-cover" />
                 
                 <div className="flex-1">
-                    <h3 className="font-bold text-white text-sm group-hover:text-[#E70024] transition-colors">{user.name}</h3>
+                    <h3 className="font-bold text-white text-sm transition-colors">{user.name}</h3>
                     <p className="text-[10px] text-neutral-500 uppercase tracking-wider">
                         {user.betCount ?? 0} {lang === 'RU' ? 'ставок' : 'bets'}
                     </p>

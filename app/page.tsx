@@ -1161,7 +1161,7 @@ export default function HomePage() {
             {currentView === "EVENTS" && (
               <>
                 {/* Create market (top-left) */}
-                <div className="px-4 pt-4">
+                <div className="px-4 pt-4 flex items-start">
                   <button
                     type="button"
                     onClick={() => {

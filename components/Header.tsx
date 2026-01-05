@@ -65,11 +65,11 @@ const Header: React.FC<HeaderProps> = ({
           role={onLogoClick ? 'button' : undefined}
           aria-label={onLogoClick ? t.home : undefined}
         >
-          <div className="transition-transform group-hover:rotate-90 duration-500 text-[#E70024]">
+          <div className="transition-transform group-hover:rotate-90 duration-500 text-white">
             <YallaIcon size={24} />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-white leading-none uppercase group-hover:text-[#E70024] transition-colors">
+            <h1 className="text-sm font-bold tracking-tight text-white leading-none uppercase transition-colors">
               YALLA MARKET
             </h1>
           </div>
@@ -92,19 +92,19 @@ const Header: React.FC<HeaderProps> = ({
           {onHelpClick && (
             <button
               onClick={onHelpClick}
-              className="inline-flex items-center justify-center rounded-full text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-[#E70024] h-9 w-9"
+              className="inline-flex items-center justify-center rounded-full text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-white h-9 w-9"
               title={t.help}
             >
-              <HelpCircle size={16} className="text-[#E70024]" />
+              <HelpCircle size={16} className="text-white" />
             </button>
           )}
 
           {onToggleLang && (
             <button
               onClick={onToggleLang}
-              className="inline-flex items-center justify-center rounded-full text-xs font-bold ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-[#E70024] h-9 px-3 gap-2"
+              className="inline-flex items-center justify-center rounded-full text-xs font-bold ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-white h-9 px-3 gap-2"
             >
-              <Globe size={12} className="text-[#E70024]" />
+              <Globe size={12} className="text-white" />
               {lang}
             </button>
           )}

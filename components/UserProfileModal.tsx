@@ -65,7 +65,7 @@ const PortfolioItem: React.FC<PortfolioItemProps> = ({ item, lang, onClick }) =>
                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${item.side === 'YES' ? 'bg-[#E70024] text-white' : 'bg-[#E70024] text-white'}`}>
                         {item.side}
                      </span>
-                     <span className="text-xs text-white max-w-[150px] truncate group-hover:text-[#E70024] transition-colors font-medium">
+                     <span className="text-xs text-white max-w-[150px] truncate transition-colors font-medium">
                         {item.marketTitle}
                      </span>
                 </div>
