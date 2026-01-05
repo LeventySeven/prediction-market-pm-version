@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image } from 'lucide-react';
+import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Trade, User, UserCommentSummary } from '../types';
 
@@ -107,6 +107,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const settledBets = bets.filter((b) => b.status !== 'open');
 
   const formatMoney = (value: number) => `$${value.toFixed(2)}`;
+  const formatPct = (value: number) => `${value.toFixed(1)}%`;
+  const formatSignedMoney = (value: number) => `${value >= 0 ? '+' : '-'}$${Math.abs(value).toFixed(2)}`;
 
   return (
     <div className="max-w-xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300">
@@ -393,13 +395,13 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
         {activeTab === 'BETS' && (
           <>
             <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3 px-1">
-              {lang === 'RU' ? 'Транзакции' : 'Transactions'}
+              {lang === 'RU' ? 'События' : 'Events'}
             </h2>
 
             {/* Active */}
             <div className="mb-6">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-1">
-                {lang === 'RU' ? 'Активные' : 'Active'}
+                {lang === 'RU' ? 'Текущие' : 'Ongoing'}
               </div>
               {activeBets.length === 0 ? (
                 <div className="text-sm text-zinc-500 px-1">
@@ -411,6 +413,14 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                     const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
                     const sideLabel = b.side === 'YES' ? yesLabel : noLabel;
                     const sideColor = b.side === 'YES' ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
+                    const shares = Number(b.shares ?? 0);
+                    const entry = Number(b.priceAtBet ?? 0);
+                    const currentPrice = b.side === 'YES' ? Number(b.priceYes ?? 0) : Number(b.priceNo ?? 0);
+                    const cost = Number(b.amount ?? 0);
+                    const currentValue = shares * currentPrice;
+                    const pnl = currentValue - cost;
+                    const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
+                    const pnlPositive = pnl >= 0;
                     return (
                       <button
                         key={b.id}
@@ -428,9 +438,22 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                 {lang === 'RU' ? 'Куплено на' : 'Bought for'} {formatMoney(b.amount)}
                               </span>
                             </div>
+                            <div className="mt-1 text-[11px] text-zinc-500 font-mono">
+                              {shares.toFixed(1)} {lang === 'RU' ? 'акций' : 'shares'} @ {(entry * 100).toFixed(0)}¢
+                            </div>
                           </div>
-                          <div className="text-xs text-zinc-500 flex-shrink-0">
-                            {lang === 'RU' ? 'Открыта' : 'Open'}
+                          <div className="text-right flex-shrink-0">
+                            <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(currentValue)}</div>
+                            <div className={`mt-0.5 text-[11px] font-mono ${pnlPositive ? 'text-[#BEFF1D]' : 'text-[#F544A6]'}`}>
+                              {formatSignedMoney(pnl)} ({pnlPositive ? '+' : '-'}
+                              {formatPct(Math.abs(pnlPct))})
+                            </div>
+                            <div className="mt-1 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                              <span className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-zinc-900 bg-zinc-950/40">
+                                <Clock size={10} className="text-zinc-400" />
+                              </span>
+                              {lang === 'RU' ? 'Текущая' : 'Ongoing'}
+                            </div>
                           </div>
                         </div>
                       </button>
@@ -457,7 +480,10 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 const won = b.status === 'won';
                 const resultLabel = lang === 'RU' ? (won ? 'ВЫИГРЫШ' : 'ПОТЕРЯ') : (won ? 'WON' : 'LOST');
                 const resultColor = won ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
-                const redeem = b.payout ?? 0;
+                const redeem = Number(b.payout ?? 0);
+                const cost = Number(b.amount ?? 0);
+                const pnl = redeem - cost;
+                const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
                 return (
                   <button
                     key={b.id}
@@ -478,8 +504,16 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           </span>
                         </div>
                       </div>
-                      <div className={`text-xs font-semibold uppercase tracking-wider ${resultColor}`}>
-                        {resultLabel}
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(redeem)}</div>
+                        <div className={`mt-0.5 text-[11px] font-mono ${won ? 'text-[#BEFF1D]' : 'text-[#F544A6]'}`}>
+                          {formatSignedMoney(pnl)} ({pnl >= 0 ? '+' : '-'}
+                          {formatPct(Math.abs(pnlPct))})
+                        </div>
+                        <div className={`mt-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${resultColor}`}>
+                          {won ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+                          {resultLabel}
+                        </div>
                       </div>
                     </div>
                   </button>
@@ -492,6 +526,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 const avgEntry = t.avgEntryPrice ?? null;
                 const boughtFor = avgEntry !== null ? avgEntry * sharesSold : null;
                 const soldFor = Math.abs(t.collateralNet);
+                const pnl = boughtFor !== null ? soldFor - boughtFor : null;
+                const pnlPct = boughtFor && boughtFor > 0 && pnl !== null ? (pnl / boughtFor) * 100 : null;
                 const sideLabel = t.outcome === 'YES' ? yesLabel : noLabel;
                 const sideColor = t.outcome === 'YES' ? 'text-[#BEFF1D]' : 'text-[#F544A6]';
                 const resolvedOutcome = t.marketOutcome ? String(t.marketOutcome) : null;
@@ -527,8 +563,20 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           )}
                         </div>
                       </div>
-                      <div className="text-xs text-zinc-500 flex-shrink-0">
-                        {lang === 'RU' ? 'Продано' : 'Sold'}
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(soldFor)}</div>
+                        {pnl !== null ? (
+                          <div className={`mt-0.5 text-[11px] font-mono ${pnl >= 0 ? 'text-[#BEFF1D]' : 'text-[#F544A6]'}`}>
+                            {formatSignedMoney(pnl)} ({pnl >= 0 ? '+' : '-'}
+                            {formatPct(Math.abs(pnlPct ?? 0))})
+                          </div>
+                        ) : (
+                          <div className="mt-0.5 text-[11px] font-mono text-zinc-500">—</div>
+                        )}
+                        <div className="mt-1 inline-flex items-center justify-end gap-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                          {pnl !== null ? (pnl >= 0 ? <ArrowUpRight size={12} className="text-[#BEFF1D]" /> : <ArrowDownRight size={12} className="text-[#F544A6]" />) : null}
+                          {lang === 'RU' ? 'Продано' : 'Sold'}
+                        </div>
                       </div>
                     </div>
                   </button>
