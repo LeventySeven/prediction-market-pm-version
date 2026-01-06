@@ -200,15 +200,6 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'BETS' | 'COMMENTS'>('BETS');
 
-  useEffect(() => {
-    if (!avatarFile) {
-      setAvatarPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(avatarFile);
-    setAvatarPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [avatarFile]);
 
   const activeBets = bets.filter((b) => b.status === 'open');
   const settledBets = bets.filter((b) => b.status !== 'open');
@@ -283,6 +274,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   setNameDraft(displayName);
                   setAvatarMode('unchanged');
                   setAvatarFile(null);
+                  setAvatarPreviewUrl(null);
                   setIsEditing(true);
                 }}
                 className="h-8 w-8 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 transition-colors flex items-center justify-center text-zinc-300"
@@ -352,8 +344,19 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   className="hidden"
                   onChange={(e) => {
                     const f = e.target.files?.[0] ?? null;
+                    // Clean up previous preview URL
+                    if (avatarPreviewUrl) {
+                      URL.revokeObjectURL(avatarPreviewUrl);
+                    }
                     setAvatarFile(f);
                     setAvatarMode(f ? 'upload' : 'unchanged');
+                    // Handle preview URL directly
+                    if (f) {
+                      const url = URL.createObjectURL(f);
+                      setAvatarPreviewUrl(url);
+                    } else {
+                      setAvatarPreviewUrl(null);
+                    }
                   }}
                 />
 
@@ -376,6 +379,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                     className="h-11 rounded-full border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60"
                     onClick={() => {
                       setAvatarFile(null);
+                      setAvatarPreviewUrl(null);
                       setAvatarMode('import_telegram');
                     }}
                     disabled={saving || !user.telegramPhotoUrl}
@@ -395,6 +399,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                     className="h-11 rounded-full"
                     onClick={() => {
                       setAvatarFile(null);
+                      setAvatarPreviewUrl(null);
                       setAvatarMode('clear');
                     }}
                     disabled={saving}
@@ -461,6 +466,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
 
                       setIsEditing(false);
                       setAvatarFile(null);
+                      setAvatarPreviewUrl(null);
                       setAvatarMode('unchanged');
                     } catch {
                       setEditError(lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save');
@@ -480,6 +486,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                     setEditError(null);
                     setIsEditing(false);
                     setAvatarFile(null);
+                    setAvatarPreviewUrl(null);
                     setAvatarMode('unchanged');
                   }}
                 >

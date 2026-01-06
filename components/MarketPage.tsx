@@ -1,7 +1,7 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment } from '../types';
 import Button from './Button';
-import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, TrendingDown, Coins, MessageCircle, X, Info } from 'lucide-react';
+import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
 
@@ -72,13 +72,22 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; label: string } | null>(null);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+  const betSectionRef = useRef<HTMLDivElement | null>(null);
+  const lastBetIntentNonce = useRef<number | null>(null);
 
+  // Handle bet intent scrolling - use useEffect to avoid side effects in render
   useEffect(() => {
     if (!betIntent) return;
-    setTradeType(betIntent.side);
-    const el = document.getElementById("bid-section");
-    el?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [betIntent?.nonce]);
+    const currentNonce = betIntent.nonce;
+    if (currentNonce !== lastBetIntentNonce.current) {
+      lastBetIntentNonce.current = currentNonce;
+      setTradeType(betIntent.side);
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        betSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }, [betIntent?.nonce, betIntent]);
 
   // Use closesAt for trading deadline, expiresAt for event end
   const tradingDeadline = market.closesAt || market.expiresAt;
@@ -453,6 +462,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
 
         {/* Bet (trade card) */}
         <div
+          ref={betSectionRef}
           id="bid-section"
           className="scroll-mt-24 lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2"
         >
@@ -574,35 +584,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     </p>
                   )}
                 </div>
-
-                {/* User Position & Sell */}
-                {user && userShares > 0 && onSellPosition && (
-                  <div className="mt-6 pt-4 border-t border-zinc-900/50 space-y-3">
-                    <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 flex items-center gap-2">
-                      <TrendingDown size={12} />
-                      {lang === 'RU' ? 'Ваша позиция' : 'Your Position'}
-                    </p>
-                    <div className="bg-zinc-950/40 rounded-2xl p-3 border border-zinc-900">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-zinc-400">{tradeType} {lang === 'RU' ? 'акции' : 'shares'}</span>
-                        <span className="text-white font-mono">{userShares.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs text-zinc-500 mt-1">
-                        <span>{lang === 'RU' ? 'Текущая стоимость' : 'Current value'}</span>
-                        <span className="font-mono">${(userShares * currentPrice).toFixed(2)}</span>
-                      </div>
-                    </div>
-                    <Button
-                      fullWidth
-                      onClick={handleSellClick}
-                      disabled={selling}
-                      className="!bg-zinc-800 !text-white hover:!bg-zinc-700"
-                    >
-                      {lang === 'RU' ? `Продать все ${tradeType}` : `Sell All ${tradeType}`}
-                    </Button>
-                    {sellError && <p className="text-sm text-red-400">{sellError}</p>}
-                  </div>
-                )}
 
                 {user && onSellPosition && sellablePositions.length > 0 && (
                   <div className="mt-6 space-y-3">

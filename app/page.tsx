@@ -241,7 +241,7 @@ export default function HomePage() {
     setShowAuth(true);
   }, []);
 
-  const handleSignUp = async (payload: {
+  const handleSignUp = useCallback(async (payload: {
     email: string;
     username: string;
     password: string;
@@ -254,7 +254,7 @@ export default function HomePage() {
       displayName: payload.displayName,
       referralCode: pendingReferralCode ?? undefined,
     });
-    setUser({
+    const newUser = {
       id: String(me.user.id),
       email: me.user.email,
       username: me.user.username,
@@ -268,7 +268,9 @@ export default function HomePage() {
       referralCode: me.user.referralCode,
       referralCommissionRate: me.user.referralCommissionRate,
       referralEnabled: me.user.referralEnabled,
-    });
+    };
+    setUser(newUser);
+    void loadMyBets(true);
 
     setPendingReferralCode(null);
     try {
@@ -276,9 +278,32 @@ export default function HomePage() {
     } catch {
       // ignore
     }
+
+    // Handle post-auth actions
+    const action = postAuthAction;
+    if (action) {
+      setPostAuthAction(null);
+      if (action.type === "OPEN_CREATE_MARKET") {
+        if (marketCategories.length === 0 && !loadingMarketCategories) {
+          void loadMarketCategories();
+        }
+        setShowAdminModal(true);
+      } else if (action.type === "OPEN_MARKET_BET") {
+        setSelectedMarketId(action.marketId);
+        setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
+      } else if (action.type === "PLACE_BET") {
+        setSelectedMarketId(action.marketId);
+        void handlePlaceBet({
+          amount: action.amount,
+          marketId: action.marketId,
+          side: action.side,
+          marketTitle: action.marketTitle,
+        });
+      }
+    }
   };
 
-  const handleLoginSubmit = async (payload: {
+  const handleLoginSubmit = useCallback(async (payload: {
     emailOrUsername: string;
     password: string;
   }) => {
@@ -286,7 +311,7 @@ export default function HomePage() {
       emailOrUsername: payload.emailOrUsername,
       password: payload.password,
     });
-    setUser({
+    const newUser = {
       id: String(me.user.id),
       email: me.user.email,
       username: me.user.username,
@@ -300,8 +325,33 @@ export default function HomePage() {
       referralCode: me.user.referralCode,
       referralCommissionRate: me.user.referralCommissionRate,
       referralEnabled: me.user.referralEnabled,
-    });
-  };
+    };
+    setUser(newUser);
+    void loadMyBets(true);
+
+    // Handle post-auth actions
+    const action = postAuthAction;
+    if (action) {
+      setPostAuthAction(null);
+      if (action.type === "OPEN_CREATE_MARKET") {
+        if (marketCategories.length === 0 && !loadingMarketCategories) {
+          void loadMarketCategories();
+        }
+        setShowAdminModal(true);
+      } else if (action.type === "OPEN_MARKET_BET") {
+        setSelectedMarketId(action.marketId);
+        setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
+      } else if (action.type === "PLACE_BET") {
+        setSelectedMarketId(action.marketId);
+        void handlePlaceBet({
+          amount: action.amount,
+          marketId: action.marketId,
+          side: action.side,
+          marketTitle: action.marketTitle,
+        });
+      }
+    }
+  }, [loadMyBets, postAuthAction, marketCategories.length, loadingMarketCategories, loadMarketCategories, handlePlaceBet]);
 
   const handleTelegramLogin = useCallback(async (initData: string) => {
     const res = await trpcClient.auth.telegramLogin.mutate({ initData });
@@ -320,7 +370,9 @@ export default function HomePage() {
       referralCommissionRate: res.user.referralCommissionRate,
       referralEnabled: res.user.referralEnabled,
     });
-  }, []);
+    // Load bets directly when user is set
+    void loadMyBets(true);
+  }, [loadMyBets]);
 
   const refreshUser = useCallback(async () => {
     try {
@@ -341,13 +393,19 @@ export default function HomePage() {
           referralCommissionRate: me.referralCommissionRate,
           referralEnabled: me.referralEnabled,
         });
+        // Load bets directly when user is set
+        void loadMyBets(true);
         return me;
+      } else {
+        // Clear positions/trades when no user
+        setMyPositions([]);
+        setMyTrades([]);
       }
     } catch (err) {
       console.error("Failed to refresh session user", err);
     }
     return null;
-  }, []);
+  }, [loadMyBets]);
 
   const handleUpdateDisplayName = useCallback(
     async (nextDisplayName: string) => {
@@ -457,8 +515,8 @@ export default function HomePage() {
   /**
    * Load user positions and trades
    */
-  const loadMyBets = useCallback(async () => {
-    if (!user) return;
+  const loadMyBets = useCallback(async (forceLoad = false) => {
+    if (!user && !forceLoad) return;
     try {
       const [positionsRaw, tradesRaw] = await Promise.all([
         trpcClient.market.myPositions.query(),
@@ -624,14 +682,6 @@ export default function HomePage() {
       setMyComments([]);
     }
   }, [user]);
-  useEffect(() => {
-    if (!user) {
-      setMyPositions([]);
-      setMyTrades([]);
-      return;
-    }
-    void loadMyBets();
-  }, [user, loadMyBets]);
 
   useEffect(() => {
     void loadMarkets();
@@ -719,10 +769,29 @@ export default function HomePage() {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [myTrades]);
 
-  const realizedPnl = useMemo(
-    () => soldTrades.reduce((acc, trade) => acc + Number(trade.realizedPnl ?? 0), 0),
-    [soldTrades]
-  );
+  // Calculate total PNL from all transactions
+  const totalPnl = useMemo(() => {
+    // Realized PNL from sold trades
+    const realizedFromSells = soldTrades.reduce((acc, trade) => acc + Number(trade.realizedPnl ?? 0), 0);
+    
+    // Calculate cost basis from all buy trades
+    const totalSpent = myTrades
+      .filter(t => t.action === 'buy')
+      .reduce((acc, trade) => acc + Math.abs(trade.collateralGross) + trade.fee, 0);
+    
+    // Calculate proceeds from all sell trades
+    const totalReceived = myTrades
+      .filter(t => t.action === 'sell')
+      .reduce((acc, trade) => acc + Math.abs(trade.collateralNet), 0);
+    
+    // Calculate value of resolved positions (if won, shares * $1)
+    const resolvedPositionsValue = myPositions
+      .filter(p => p.marketState === 'RESOLVED' && p.marketOutcome === p.outcome)
+      .reduce((acc, pos) => acc + pos.shares, 0);
+    
+    // Total PNL = (received + resolved value) - spent
+    return totalReceived + resolvedPositionsValue - totalSpent;
+  }, [soldTrades, myTrades, myPositions]);
 
   const resolveMarketOutcome = useCallback(
     async ({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) => {
@@ -938,35 +1007,6 @@ export default function HomePage() {
   );
 
   // Post-auth actions (run only after user becomes available).
-  useEffect(() => {
-    if (!user || !postAuthAction) return;
-    if (postAuthAction.type === "OPEN_CREATE_MARKET") {
-      setPostAuthAction(null);
-      if (marketCategories.length === 0 && !loadingMarketCategories) {
-        void loadMarketCategories();
-      }
-      setShowAdminModal(true);
-      return;
-    }
-    if (postAuthAction.type === "OPEN_MARKET_BET") {
-      const action = postAuthAction;
-      setPostAuthAction(null);
-      setSelectedMarketId(action.marketId);
-      setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
-      return;
-    }
-    if (postAuthAction.type === "PLACE_BET") {
-      const action = postAuthAction;
-      setPostAuthAction(null);
-      setSelectedMarketId(action.marketId);
-      void handlePlaceBet({
-        amount: action.amount,
-        marketId: action.marketId,
-        side: action.side,
-        marketTitle: action.marketTitle,
-      });
-    }
-  }, [user, postAuthAction, marketCategories.length, loadingMarketCategories, loadMarketCategories]);
 
   /**
    * Handle selling a position (cash out)
@@ -1262,7 +1302,7 @@ export default function HomePage() {
                 onUpdateDisplayName={handleUpdateDisplayName}
                 onUpdateAvatarUrl={handleUpdateAvatarUrl}
                 balanceMajor={user?.balance ?? 0}
-                pnlMajor={realizedPnl}
+                pnlMajor={totalPnl}
                 bets={legacyBets}
                 soldTrades={soldTrades}
                 comments={myComments}
