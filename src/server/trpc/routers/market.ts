@@ -15,7 +15,15 @@ type MarketRow = Database["public"]["Tables"]["markets"]["Row"];
 type AmmStateRow = Database["public"]["Tables"]["market_amm_state"]["Row"];
 type PositionRow = Database["public"]["Tables"]["positions"]["Row"];
 type TradeRow = Database["public"]["Tables"]["trades"]["Row"];
-type MarketWithAmm = MarketRow & {
+
+// We intentionally do NOT rely on markets.category_label_ru/en being present in the DB schema
+// (some deployments may not have these columns). Make them optional in the type used for reads.
+type MarketRowForRead = Omit<MarketRow, "category_label_ru" | "category_label_en"> & {
+  category_label_ru?: string | null;
+  category_label_en?: string | null;
+};
+
+type MarketWithAmm = MarketRowForRead & {
   market_amm_state: AmmStateRow | null;
 };
 
