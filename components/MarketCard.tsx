@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Market } from '../types';
 import { Bookmark, Clock } from 'lucide-react';
 import { formatTimeRemaining } from '../lib/time';
@@ -8,11 +8,10 @@ interface MarketCardProps {
   onClick?: () => void;
   onQuickBet?: (side: 'YES' | 'NO') => void;
   bookmarked?: boolean;
-  onSetBookmarked?: (marketId: string, bookmarked: boolean) => void;
   lang?: 'RU' | 'EN';
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, onSetBookmarked, lang = 'RU' }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, lang = 'RU' }) => {
   const localizedTitle =
     lang === 'RU'
       ? market.titleRu ?? market.titleEn ?? market.title
@@ -42,72 +41,11 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
     ? (lang === 'RU' ? 'Завершено' : 'Resolved')
     : (deadline ? formatTimeRemaining(deadline, 'hours', lang) : '—');
 
-  const [swipeAnim, setSwipeAnim] = useState<null | { dir: 'LEFT' | 'RIGHT'; ts: number }>(null);
-
-  // Swipe gesture (mini-app): swipe right to bookmark, left to unbookmark.
-  const swipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
-  const didSwipeRef = React.useRef(false);
-  const handleTouchStart: React.TouchEventHandler<HTMLDivElement> = (e) => {
-    if (e.touches.length !== 1) return;
-    const t = e.touches[0];
-    if (!t) return;
-    swipeStartRef.current = { x: t.clientX, y: t.clientY };
-    didSwipeRef.current = false;
-  };
-  const handleTouchEnd: React.TouchEventHandler<HTMLDivElement> = (e) => {
-    const start = swipeStartRef.current;
-    swipeStartRef.current = null;
-    if (!start) return;
-    const t = e.changedTouches[0];
-    if (!t) return;
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-    if (absX < 70 || absX < absY * 1.2) return;
-    didSwipeRef.current = true;
-
-    const dir: 'LEFT' | 'RIGHT' = dx > 0 ? 'RIGHT' : 'LEFT';
-    setSwipeAnim({ dir, ts: Date.now() });
-    window.setTimeout(() => setSwipeAnim(null), 180);
-
-    // Bookmark toggle: swipe left OR right toggles bookmark.
-    onSetBookmarked?.(market.id, !bookmarked);
-  };
-
   return (
     <div 
-        onClick={() => {
-          if (didSwipeRef.current) {
-            didSwipeRef.current = false;
-            return;
-          }
-          onClick?.();
-        }}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        data-events-swipe-ignore="true"
-        className={`group relative rounded-2xl border border-zinc-900 bg-black hover:bg-zinc-950/60 transition-all flex flex-col h-full cursor-pointer overflow-hidden p-4 ${
-          swipeAnim?.dir === 'RIGHT' ? 'translate-x-1' : swipeAnim?.dir === 'LEFT' ? '-translate-x-1' : ''
-        }`}
+        onClick={() => onClick?.()}
+        className="group relative rounded-2xl border border-zinc-900 bg-black hover:bg-zinc-950/60 transition-all flex flex-col h-full cursor-pointer overflow-hidden p-4"
     >
-      {swipeAnim && (
-        <div className="absolute inset-0 pointer-events-none">
-          <div
-            className={`absolute inset-0 ${
-              bookmarked ? 'bg-zinc-950/10' : 'bg-[rgba(245,68,166,0.06)]'
-            }`}
-          />
-          <div
-            className={`absolute top-1/2 -translate-y-1/2 ${
-              swipeAnim.dir === 'RIGHT' ? 'left-4' : 'right-4'
-            } inline-flex items-center gap-2 rounded-full border border-[rgba(245,68,166,1)] bg-black/70 px-3 py-1 text-xs font-semibold text-[rgba(245,68,166,1)]`}
-          >
-            <Bookmark size={16} />
-          </div>
-        </div>
-      )}
-      
       {/* NEW Badge - Subtle Outline */}
       {market.isNew && (
           <div className="absolute top-3 left-3 border border-zinc-800 text-zinc-200 text-[9px] font-semibold px-1.5 py-0.5 rounded-sm uppercase tracking-wider z-10">

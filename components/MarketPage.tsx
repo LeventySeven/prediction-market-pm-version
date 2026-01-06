@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment } from '../types';
 import Button from './Button';
-import { ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info } from 'lucide-react';
+import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
 
@@ -25,6 +25,8 @@ interface MarketPageProps {
   user: User | null;
   onBack: () => void;
   onLogin: () => void;
+  bookmarked?: boolean;
+  onToggleBookmark?: (params: { marketId: string; bookmarked: boolean }) => void;
   betIntent?: { side: 'YES' | 'NO'; nonce: number } | null;
   onRequireBetAuth?: (params: { marketId: string; side: 'YES' | 'NO'; amount: number; marketTitle: string }) => void;
   onPlaceBet: (params: { side: 'YES' | 'NO'; amount: number; marketId: string; marketTitle: string }) => Promise<void>;
@@ -47,6 +49,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   user,
   onBack,
   onLogin,
+  bookmarked = false,
+  onToggleBookmark,
   betIntent = null,
   onRequireBetAuth,
   onPlaceBet,
@@ -373,6 +377,26 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 </span>
                 {renderOutcomeBadge()}
               </div>
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!user) {
+                    onLogin();
+                    return;
+                  }
+                  onToggleBookmark?.({ marketId: market.id, bookmarked: !bookmarked });
+                }}
+                className={`h-10 w-10 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center transition-colors ${
+                  bookmarked ? "text-[rgba(245,68,166,1)]" : "text-zinc-300"
+                }`}
+                aria-label={lang === "RU" ? "Закладка" : "Bookmark"}
+                title={lang === "RU" ? "Закладка" : "Bookmark"}
+              >
+                <Bookmark size={18} fill={bookmarked ? "currentColor" : "none"} />
+              </button>
             </div>
           </div>
 
