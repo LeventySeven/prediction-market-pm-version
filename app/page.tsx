@@ -736,7 +736,7 @@ export default function HomePage() {
     
     // Calculate value of resolved positions (if won, shares * $1)
     const resolvedPositionsValue = myPositions
-      .filter(p => p.marketState === 'RESOLVED' && p.marketOutcome === p.outcome)
+      .filter(p => p.marketState === 'resolved' && p.marketOutcome === p.outcome)
       .reduce((acc, pos) => acc + pos.shares, 0);
     
     // Total PNL = (received + resolved value) - spent
