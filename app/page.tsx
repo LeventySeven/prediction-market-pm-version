@@ -159,7 +159,6 @@ export default function HomePage() {
     createdAt: string;
     likesCount: number;
   };
-  type PublicProfilePnlPoint = { day: string; pnlMajor: number };
   type PublicProfileTx = {
     id: string;
     kind: string;
@@ -174,7 +173,6 @@ export default function HomePage() {
   const [publicProfileError, setPublicProfileError] = useState<string | null>(null);
   const [publicProfileUser, setPublicProfileUser] = useState<PublicProfileUser | null>(null);
   const [publicProfilePnl, setPublicProfilePnl] = useState(0);
-  const [publicProfilePnlSeries, setPublicProfilePnlSeries] = useState<PublicProfilePnlPoint[]>([]);
   const [publicProfileVotes, setPublicProfileVotes] = useState<PublicProfileVote[]>([]);
   const [publicProfileComments, setPublicProfileComments] = useState<PublicProfileComment[]>([]);
   const [publicProfileTxs, setPublicProfileTxs] = useState<PublicProfileTx[]>([]);
@@ -1142,16 +1140,14 @@ export default function HomePage() {
       setPublicProfileError(null);
       setPublicProfileUser(null);
       setPublicProfilePnl(0);
-      setPublicProfilePnlSeries([]);
       setPublicProfileVotes([]);
       setPublicProfileComments([]);
       setPublicProfileTxs([]);
 
       try {
-        const [u, stats, series, votes, comments, txs] = await Promise.all([
+        const [u, stats, votes, comments, txs] = await Promise.all([
           trpcClient.user.publicUser.query({ userId }),
           trpcClient.user.publicUserStats.query({ userId }),
-          trpcClient.user.publicUserPnlSeries.query({ userId, limitDays: 90 }),
           trpcClient.user.publicUserVotes.query({ userId, limit: 100 }),
           trpcClient.user.publicUserComments.query({ userId, limit: 50 }),
           trpcClient.user.publicUserTransactions.query({ userId, limit: 100 }),
@@ -1165,12 +1161,6 @@ export default function HomePage() {
           telegramPhotoUrl: u.telegramPhotoUrl ?? null,
         });
         setPublicProfilePnl(Number(stats.pnlMajor ?? 0));
-        setPublicProfilePnlSeries(
-          (series ?? []).map((p) => ({
-            day: requireValue(p.day, "PUBLIC_PNL_DAY_MISSING"),
-            pnlMajor: Number(requireValue(p.pnlMajor, "PUBLIC_PNL_VALUE_MISSING")),
-          }))
-        );
         setPublicProfileVotes(
           (votes ?? []).map((v) => ({
             marketId: requireValue(v.marketId, "PUBLIC_VOTE_MARKET_ID_MISSING"),
@@ -1714,7 +1704,6 @@ export default function HomePage() {
         error={publicProfileError}
         user={publicProfileUser}
         pnlMajor={publicProfilePnl}
-        pnlSeries={publicProfilePnlSeries}
         votes={publicProfileVotes}
         comments={publicProfileComments}
         transactions={publicProfileTxs}

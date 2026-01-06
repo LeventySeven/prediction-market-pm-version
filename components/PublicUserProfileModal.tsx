@@ -20,7 +20,6 @@ type PublicComment = {
   likesCount: number;
 };
 
-type PublicPnlPoint = { day: string; pnlMajor: number };
 type PublicTx = {
   id: string;
   kind: string;
@@ -39,7 +38,6 @@ type PublicUserProfileModalProps = {
   error: string | null;
   user: PublicUser | null;
   pnlMajor: number;
-  pnlSeries: PublicPnlPoint[];
   votes: PublicVote[];
   comments: PublicComment[];
   transactions: PublicTx[];
@@ -122,28 +120,6 @@ const sampleAvatarHue = async (src: string): Promise<number | null> => {
   }
 };
 
-const buildSparklinePath = (values: number[]) => {
-  const W = 100;
-  const H = 40;
-  const P = 2;
-  const n = values.length;
-  if (n === 0) return { lineD: "" };
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = Math.max(1e-9, max - min);
-
-  const toX = (i: number) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
-  const toY = (v: number) => {
-    const t = (v - min) / span;
-    return P + (1 - t) * (H - P * 2);
-  };
-
-  const points = values.map((v, i) => ({ x: toX(i), y: toY(v) }));
-  const lineD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
-  return { lineD };
-};
-
 const formatSignedMoney = (v: number) => `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`;
 
 const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
@@ -154,7 +130,6 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
   error,
   user,
   pnlMajor,
-  pnlSeries,
   votes,
   comments,
   transactions,
@@ -167,39 +142,27 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
   const displayName = user ? (user.displayName ?? user.username) : "";
   const avatarSrc = user ? (user.avatarUrl ?? user.telegramPhotoUrl) : null;
 
-  const [accent, setAccent] = useState(() => accentPairFromSeed(user?.id ?? "seed"));
+  const accentSeed = String(user?.avatarUrl ?? user?.telegramPhotoUrl ?? user?.id ?? displayName ?? "seed");
+  const [accent, setAccent] = useState(() => accentPairFromSeed(accentSeed));
 
   useEffect(() => {
-    const seed = user?.id ?? "seed";
     const src = avatarSrc && avatarSrc.trim().length > 0 ? avatarSrc : null;
     if (!src) {
-      setAccent(accentPairFromSeed(seed));
+      setAccent(accentPairFromSeed(accentSeed));
       return;
     }
     let cancelled = false;
     void (async () => {
       const hue = await sampleAvatarHue(src);
       if (cancelled) return;
-      if (hue === null) {
-        setAccent(accentPairFromSeed(seed));
-      } else {
-        setAccent(accentPairFromHue(hue));
-      }
+      setAccent(hue === null ? accentPairFromSeed(accentSeed) : accentPairFromHue(hue));
     })();
     return () => {
       cancelled = true;
     };
-  }, [user?.id, avatarSrc]);
+  }, [avatarSrc, accentSeed]);
 
   const pnlIsPositive = pnlMajor >= 0;
-  const seriesCumulative = useMemo(() => {
-    let acc = 0;
-    return pnlSeries.map((p) => {
-      acc += p.pnlMajor;
-      return acc;
-    });
-  }, [pnlSeries]);
-  const spark = useMemo(() => buildSparklinePath(seriesCumulative), [seriesCumulative]);
 
   if (!isOpen) return null;
 
@@ -207,9 +170,9 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="w-full max-w-2xl bg-black border border-zinc-900 rounded-2xl overflow-hidden max-h-[92vh] flex flex-col">
         <div
-          className="relative p-5 border-b border-zinc-900"
+          className="relative overflow-hidden p-5 border-b border-zinc-900"
           style={{
-            background: `radial-gradient(900px circle at 20% 0%, ${accent.a} 0%, transparent 55%), radial-gradient(900px circle at 90% 20%, ${accent.b} 0%, transparent 55%)`,
+            backgroundImage: `radial-gradient(700px 220px at 0% 0%, ${accent.a}, transparent 60%), radial-gradient(520px 180px at 100% 0%, ${accent.b}, transparent 55%)`,
           }}
         >
           <button
@@ -237,17 +200,14 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="border border-zinc-900 bg-black/60 rounded-2xl p-4">
-              <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">PnL</div>
-              <div className={`text-2xl font-mono font-bold ${pnlIsPositive ? "text-[rgba(245,68,166,1)]" : "text-[rgba(245,68,166,1)]"}`}>
-                {formatSignedMoney(pnlMajor)}
-              </div>
-            </div>
-            <div className="border border-zinc-900 bg-black/60 rounded-2xl p-4 flex items-center justify-center">
-              <svg viewBox="0 0 100 40" className="w-full h-10">
-                <path d={spark.lineD} fill="none" stroke="rgba(245,68,166,1)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-              </svg>
+          <div className="mt-4 border border-zinc-900 bg-black/60 rounded-2xl p-4">
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">PnL</div>
+            <div
+              className={`text-2xl font-mono font-bold ${
+                pnlIsPositive ? "text-[rgba(245,68,166,1)]" : "text-[rgba(245,68,166,1)]"
+              }`}
+            >
+              {formatSignedMoney(pnlMajor)}
             </div>
           </div>
 
