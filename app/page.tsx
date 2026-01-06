@@ -1347,6 +1347,21 @@ export default function HomePage() {
     }
   }, []);
 
+  const shellViewIndex = (() => {
+    switch (currentView) {
+      case "FRIENDS":
+        return 0;
+      case "FEED":
+        return 1;
+      case "CATALOG":
+        return 2;
+      case "PROFILE":
+        return 3;
+      default:
+        return 1;
+    }
+  })();
+
   return (
     <div className="tg-scroll bg-black text-zinc-100 font-sans">
       {selectedMarket ? (
@@ -1442,197 +1457,208 @@ export default function HomePage() {
             onTouchStart={handleShellTouchStart}
             onTouchEnd={handleShellTouchEnd}
           >
-            {currentView === "FEED" && (
-              <div>
-                {user && bookmarkedMarkets.length > 0 && (
-                  <>
+            <div className="overflow-x-hidden">
+              <div
+                className="flex w-[400%] transition-transform duration-200 ease-out will-change-transform"
+                style={{ transform: `translateX(-${shellViewIndex * 25}%)` }}
+              >
+                {/* FRIENDS */}
+                <div className="w-1/4">
+                  <FriendsPage
+                    lang={lang}
+                    user={user}
+                    leaderboardUsers={leaderboardUsers}
+                    leaderboardLoading={loadingLeaderboard}
+                    leaderboardError={leaderboardError}
+                    onLogin={() => openAuth("SIGN_IN")}
+                    onUserClick={(u) => void openPublicProfile(u.id)}
+                    onCreateReferralLink={handleCreateReferralLink}
+                  />
+                </div>
+
+                {/* FEED */}
+                <div className="w-1/4">
+                  <div>
+                    {user && bookmarkedMarkets.length > 0 && (
+                      <>
+                        <div className="px-4 pt-3 pb-2">
+                          <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                            {lang === "RU" ? "Закладки" : "Bookmarks"}
+                          </div>
+                        </div>
+                        <div className="px-4 pt-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                            {bookmarkedMarkets.map((market) => (
+                              <MarketCard
+                                key={`bm-${market.id}`}
+                                market={market}
+                                bookmarked
+                                onClick={() => {
+                                  setMarketBetIntent(null);
+                                  setSelectedMarketId(market.id);
+                                }}
+                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                lang={lang}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
                     <div className="px-4 pt-3 pb-2">
                       <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                        {lang === "RU" ? "Закладки" : "Bookmarks"}
+                        {lang === "RU" ? "Рекомендовано" : "Recommended"}
                       </div>
                     </div>
+
                     <div className="px-4 pt-2">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
-                        {bookmarkedMarkets.map((market) => (
-                          <MarketCard
-                            key={`bm-${market.id}`}
-                            market={market}
-                            bookmarked
-                            onClick={() => {
-                              setMarketBetIntent(null);
-                              setSelectedMarketId(market.id);
-                            }}
-                            onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                            lang={lang}
-                          />
-                        ))}
+                      {loadingMarkets ? (
+                        <div className="text-center py-10 text-zinc-500">
+                          {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
+                        </div>
+                      ) : feedMarkets.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                          {feedMarkets
+                            .filter((m) => !bookmarkedMarketIds.has(m.id))
+                            .map((market) => (
+                              <MarketCard
+                                key={market.id}
+                                market={market}
+                                bookmarked={bookmarkedMarketIds.has(market.id)}
+                                onClick={() => {
+                                  setMarketBetIntent(null);
+                                  setSelectedMarketId(market.id);
+                                }}
+                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                lang={lang}
+                              />
+                            ))}
+                        </div>
+                      ) : marketsError ? (
+                        <div className="text-center py-20 text-zinc-500 px-4">
+                          <p className="text-sm">{marketsError}</p>
+                        </div>
+                      ) : (
+                        <div className="text-center py-20 text-zinc-500 px-4">
+                          <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
+                          <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* CATALOG */}
+                <div className="w-1/4">
+                  <div>
+                    {/* Mobile search (desktop search is in Header) */}
+                    <div className="px-4 pt-2 pb-3 md:hidden">
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          placeholder={lang === "RU" ? "Поиск..." : "Search..."}
+                          className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 pl-10 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                        />
+                        <Search size={16} className="absolute left-3.5 top-3 text-zinc-600" />
                       </div>
                     </div>
-                  </>
-                )}
 
-                <div className="px-4 pt-3 pb-2">
-                  <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                    {lang === "RU" ? "Рекомендовано" : "Recommended"}
-                  </div>
-                </div>
-
-                <div className="px-4 pt-2">
-                  {loadingMarkets ? (
-                    <div className="text-center py-10 text-zinc-500">
-                      {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
-                    </div>
-                  ) : feedMarkets.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
-                      {feedMarkets
-                        .filter((m) => !bookmarkedMarketIds.has(m.id))
-                        .map((market) => (
-                          <MarketCard
-                            key={market.id}
-                            market={market}
-                            bookmarked={bookmarkedMarketIds.has(market.id)}
-                            onClick={() => {
-                              setMarketBetIntent(null);
-                              setSelectedMarketId(market.id);
-                            }}
-                            onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                            lang={lang}
-                          />
-                        ))}
-                    </div>
-                  ) : marketsError ? (
-                    <div className="text-center py-20 text-zinc-500 px-4">
-                      <p className="text-sm">{marketsError}</p>
-                    </div>
-                  ) : (
-                    <div className="text-center py-20 text-zinc-500 px-4">
-                      <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
-                      <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {currentView === "CATALOG" && (
-              <div>
-                {/* Mobile search (desktop search is in Header) */}
-                <div className="px-4 pt-2 pb-3 md:hidden">
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder={lang === "RU" ? "Поиск..." : "Search..."}
-                      className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 pl-10 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
-                    />
-                    <Search size={16} className="absolute left-3.5 top-3 text-zinc-600" />
-                  </div>
-                </div>
-
-                {/* Categories */}
-                <div className="px-4 pb-3 border-b border-zinc-900">
-                  <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
-                    <button
-                      type="button"
-                      onClick={() => setActiveCategoryId("all")}
-                      className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
-                        activeCategoryId === "all"
-                          ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
-                          : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
-                      }`}
-                    >
-                      {lang === "RU" ? "Все" : "All"}
-                    </button>
-                    {marketCategories.map((c) => {
-                      const label = lang === "RU" ? c.labelRu : c.labelEn;
-                      const selected = activeCategoryId === c.id;
-                      return (
+                    {/* Categories */}
+                    <div className="px-4 pb-3 border-b border-zinc-900">
+                      <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
                         <button
-                          key={c.id}
                           type="button"
-                          onClick={() => setActiveCategoryId(c.id)}
+                          onClick={() => setActiveCategoryId("all")}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
-                            selected
+                            activeCategoryId === "all"
                               ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
                               : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                           }`}
                         >
-                          {label}
+                          {lang === "RU" ? "Все" : "All"}
                         </button>
-                      );
-                    })}
+                        {marketCategories.map((c) => {
+                          const label = lang === "RU" ? c.labelRu : c.labelEn;
+                          const selected = activeCategoryId === c.id;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setActiveCategoryId(c.id)}
+                              className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                                selected
+                                  ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
+                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="px-4 pt-4">
+                      {loadingMarkets ? (
+                        <div className="text-center py-10 text-zinc-500">
+                          {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
+                        </div>
+                      ) : filteredMarkets.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                          {filteredMarkets.map((market) => (
+                            <MarketCard
+                              key={market.id}
+                              market={market}
+                              bookmarked={bookmarkedMarketIds.has(market.id)}
+                              onClick={() => {
+                                setMarketBetIntent(null);
+                                setSelectedMarketId(market.id);
+                              }}
+                              onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                              lang={lang}
+                            />
+                          ))}
+                        </div>
+                      ) : marketsError ? (
+                        <div className="text-center py-20 text-zinc-500 px-4">
+                          <p className="text-sm">{marketsError}</p>
+                        </div>
+                      ) : (
+                        <div className="text-center py-20 text-zinc-500 px-4">
+                          <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
+                          <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                <div className="px-4 pt-4">
-                  {loadingMarkets ? (
-                    <div className="text-center py-10 text-zinc-500">
-                      {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
-                    </div>
-                  ) : filteredMarkets.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
-                      {filteredMarkets.map((market) => (
-                        <MarketCard
-                          key={market.id}
-                          market={market}
-                          bookmarked={bookmarkedMarketIds.has(market.id)}
-                          onClick={() => {
-                            setMarketBetIntent(null);
-                            setSelectedMarketId(market.id);
-                          }}
-                          onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                          lang={lang}
-                        />
-                      ))}
-                    </div>
-                  ) : marketsError ? (
-                    <div className="text-center py-20 text-zinc-500 px-4">
-                      <p className="text-sm">{marketsError}</p>
-                    </div>
-                  ) : (
-                    <div className="text-center py-20 text-zinc-500 px-4">
-                      <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
-                      <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
-                    </div>
-                  )}
+                {/* PROFILE */}
+                <div className="w-1/4">
+                  <ProfilePage
+                    user={user}
+                    lang={lang}
+                    onLogin={() => openAuth("SIGN_IN")}
+                    onLogout={handleLogout}
+                    onUpdateDisplayName={handleUpdateDisplayName}
+                    onUpdateAvatarUrl={handleUpdateAvatarUrl}
+                    balanceMajor={user?.balance ?? 0}
+                    pnlMajor={totalPnl}
+                    bets={legacyBets}
+                    soldTrades={soldTrades}
+                    comments={myComments}
+                    bookmarks={bookmarkedMarkets}
+                    onMarketClick={(marketId) => {
+                      setMarketBetIntent(null); // Clear bet intent when clicking from profile
+                      setSelectedMarketId(marketId);
+                    }}
+                  />
                 </div>
               </div>
-            )}
-
-            {currentView === "FRIENDS" && (
-              <FriendsPage
-                lang={lang}
-                user={user}
-                leaderboardUsers={leaderboardUsers}
-                leaderboardLoading={loadingLeaderboard}
-                leaderboardError={leaderboardError}
-                onLogin={() => openAuth("SIGN_IN")}
-                onUserClick={(u) => void openPublicProfile(u.id)}
-                onCreateReferralLink={handleCreateReferralLink}
-              />
-            )}
-
-            {currentView === "PROFILE" && (
-              <ProfilePage
-                user={user}
-                lang={lang}
-                onLogin={() => openAuth("SIGN_IN")}
-                onLogout={handleLogout}
-                onUpdateDisplayName={handleUpdateDisplayName}
-                onUpdateAvatarUrl={handleUpdateAvatarUrl}
-                balanceMajor={user?.balance ?? 0}
-                pnlMajor={totalPnl}
-                bets={legacyBets}
-                soldTrades={soldTrades}
-                comments={myComments}
-                bookmarks={bookmarkedMarkets}
-                onMarketClick={(marketId) => {
-                  setMarketBetIntent(null); // Clear bet intent when clicking from profile
-                  setSelectedMarketId(marketId);
-                }}
-              />
-            )}
+            </div>
           </main>
 
           <BottomMenu

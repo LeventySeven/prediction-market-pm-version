@@ -204,8 +204,8 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-end md:items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full md:max-w-2xl md:mx-4 bg-black border border-zinc-900 rounded-t-2xl md:rounded-2xl overflow-hidden max-h-[92vh] flex flex-col">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="w-full max-w-2xl bg-black border border-zinc-900 rounded-2xl overflow-hidden max-h-[92vh] flex flex-col">
         <div
           className="relative p-5 border-b border-zinc-900"
           style={{
