@@ -488,7 +488,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('YES')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'YES'
-                        ? 'bg-[rgba(245,68,166,1)] ring-1 ring-inset ring-[rgba(245,68,166,1)] text-white'
+                        ? 'bg-black ring-1 ring-inset ring-[rgba(245,68,166,1)] text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]'
                         : 'text-[rgba(245,68,166,0.75)] hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
@@ -498,7 +498,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('NO')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'NO'
-                        ? 'bg-[rgba(245,68,166,1)] ring-1 ring-inset ring-[rgba(245,68,166,1)] text-white'
+                        ? 'bg-black ring-1 ring-inset ring-[rgba(245,68,166,1)] text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]'
                         : 'text-[rgba(245,68,166,0.75)] hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
@@ -551,7 +551,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     </div>
                     <div className="flex justify-between text-xs text-zinc-500 uppercase font-medium">
                       <span>{lang === 'RU' ? 'Прибыль' : 'Profit'}</span>
-                      <span className="text-[rgba(245,68,166,1)] font-mono">+${potentialProfit}</span>
+                      <span className="text-[rgba(245,68,166,1)] font-mono">{numericAmount > 0 && currentPrice > 0 ? (((1 / currentPrice) - 1) * 100).toFixed(1) : '0.0'}%</span>
                     </div>
                   </div>
 

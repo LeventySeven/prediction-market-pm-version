@@ -123,7 +123,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                                 <button
                                     key={cat.id}
                                     onClick={() => setCategory(cat.id)}
-                                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-all ${category === cat.id ? 'bg-[rgba(245,68,166,1)] text-white border-[rgba(245,68,166,1)]' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300'}`}
+                                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-all ${category === cat.id ? 'bg-black text-[rgba(245,68,166,1)] border-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300'}`}
                                 >
                                     {lang === 'RU' ? cat.labelRU : cat.labelEN}
                                 </button>

@@ -114,10 +114,10 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 onQuickBet?.("YES");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${yesLabel} $${market.yesPrice}`}
+              aria-label={`${yesLabel} ${market.chance}%`}
             >
               <span>{yesLabel}</span>
-              <span className="font-mono">${market.yesPrice}</span>
+              <span className="font-mono">{market.chance}%</span>
             </button>
             <button
               type="button"
@@ -126,10 +126,10 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 onQuickBet?.("NO");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${noLabel} $${market.noPrice}`}
+              aria-label={`${noLabel} ${100 - market.chance}%`}
             >
               <span>{noLabel}</span>
-              <span className="font-mono">${market.noPrice}</span>
+              <span className="font-mono">{100 - market.chance}%</span>
             </button>
           </div>
         )}

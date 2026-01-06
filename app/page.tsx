@@ -11,7 +11,7 @@ import AdminMarketModal from "@/components/AdminMarketModal";
 import ProfilePage from "@/components/ProfilePage";
 import type { Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search } from "lucide-react";
+import { Search, Plus } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
@@ -1160,30 +1160,6 @@ export default function HomePage() {
           <main className="mx-auto w-full max-w-7xl pb-24">
             {currentView === "EVENTS" && (
               <>
-                {/* Create market (top-left) */}
-                <div className="px-4 pt-4 flex items-start">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!user) {
-                        setPostAuthAction({ type: "OPEN_CREATE_MARKET" });
-                        if (marketCategories.length === 0 && !loadingMarketCategories) {
-                          void loadMarketCategories();
-                        }
-                        openAuth("SIGN_IN");
-                        return;
-                      }
-                      if (marketCategories.length === 0 && !loadingMarketCategories) {
-                        void loadMarketCategories();
-                      }
-                      setShowAdminModal(true);
-                    }}
-                    className="inline-flex items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-black px-4 py-2 text-sm font-semibold text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)] transition"
-                  >
-                    {lang === "RU" ? "Создать рынок" : "Create market"}
-                  </button>
-                </div>
-
                 {/* Mobile search (desktop search is in Header) */}
                 <div className="px-4 pt-4 pb-3 md:hidden">
                   <div className="relative">
@@ -1206,7 +1182,7 @@ export default function HomePage() {
                       onClick={() => setActiveCategoryId("all")}
                       className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                         activeCategoryId === "all"
-                          ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
+                          ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
                           : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                       }`}
                     >
@@ -1222,7 +1198,7 @@ export default function HomePage() {
                           onClick={() => setActiveCategoryId(c.id)}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             selected
-                              ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
+                              ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
                               : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                           }`}
                         >
@@ -1367,6 +1343,31 @@ export default function HomePage() {
           }
         }}
       />
+      
+      {/* Floating Create Market Button */}
+      {currentView === "EVENTS" && (
+        <button
+          type="button"
+          onClick={() => {
+            if (!user) {
+              setPostAuthAction({ type: "OPEN_CREATE_MARKET" });
+              if (marketCategories.length === 0 && !loadingMarketCategories) {
+                void loadMarketCategories();
+              }
+              openAuth("SIGN_IN");
+              return;
+            }
+            if (marketCategories.length === 0 && !loadingMarketCategories) {
+              void loadMarketCategories();
+            }
+            setShowAdminModal(true);
+          }}
+          className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-[60] w-14 h-14 rounded-full border-2 border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)] transition-all shadow-lg flex items-center justify-center"
+          aria-label={lang === "RU" ? "Создать рынок" : "Create market"}
+        >
+          <Plus size={24} />
+        </button>
+      )}
     </div>
   );
 }

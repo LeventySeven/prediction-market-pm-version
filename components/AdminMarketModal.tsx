@@ -428,7 +428,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                       }}
                       className={`w-full text-left rounded-xl border px-3 py-3 text-sm transition ${
                         isSelected
-                          ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
+                          ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
                           : "border-zinc-900 bg-zinc-950/40 text-zinc-200 hover:border-zinc-700"
                       }`}
                     >
