@@ -1178,7 +1178,7 @@ export default function HomePage() {
                       }
                       setShowAdminModal(true);
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-[#E70024] bg-[rgba(231,0,36,1)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition"
+                    className="inline-flex items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition"
                   >
                     {lang === "RU" ? "Создать рынок" : "Create market"}
                   </button>
@@ -1206,7 +1206,7 @@ export default function HomePage() {
                       onClick={() => setActiveCategoryId("all")}
                       className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                         activeCategoryId === "all"
-                          ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
+                          ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
                           : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                       }`}
                     >
@@ -1222,7 +1222,7 @@ export default function HomePage() {
                           onClick={() => setActiveCategoryId(c.id)}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             selected
-                              ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
+                              ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
                               : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
                           }`}
                         >

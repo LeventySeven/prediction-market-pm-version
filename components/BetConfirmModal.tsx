@@ -53,7 +53,7 @@ export const BetConfirmModal: React.FC<BetConfirmModalProps> = ({
                 <span className="text-neutral-500">Side</span>
                 <span
                   className={`font-semibold ${
-                    side === 'YES' ? 'text-[#E70024]' : 'text-[#E70024]'
+                    side === 'YES' ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
                   }`}
                 >
                   {side}

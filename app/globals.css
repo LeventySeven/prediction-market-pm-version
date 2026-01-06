@@ -5,7 +5,7 @@
 :root {
   --background: #0a0a0a;
   --foreground: #ffffff;
-  --accent-color: rgba(231, 0, 36, 1);
+  --accent-color: rgba(245, 68, 166, 1);
   --accent-text-color: #000000;
 }
 
@@ -43,8 +43,8 @@ body {
     filter: none;
   }
   50% {
-    color: rgba(231, 0, 36, 1);
-    filter: drop-shadow(0 0 8px rgba(231, 0, 36, 0.35));
+    color: rgba(245, 68, 166, 1);
+    filter: drop-shadow(0 0 8px rgba(245, 68, 166, 0.35));
   }
 }
 
@@ -53,7 +53,7 @@ body {
 }
 
 ::selection {
-  background-color: rgba(231, 0, 36, 1);
+  background-color: rgba(245, 68, 166, 1);
   color: #ffffff;
 }
 

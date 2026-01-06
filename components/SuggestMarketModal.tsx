@@ -65,14 +65,14 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
       <div className="relative bg-[#09090b] border border-zinc-800 w-full max-w-md rounded-xl p-6 shadow-lg animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto custom-scrollbar">
         <button 
           onClick={onClose}
-          className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#E70024] focus:ring-offset-2 disabled:pointer-events-none"
+          className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[rgba(245,68,166,1)] focus:ring-offset-2 disabled:pointer-events-none"
         >
           <X size={16} className="text-zinc-400" />
         </button>
 
         {isSuccess ? (
              <div className="flex flex-col items-center justify-center py-10">
-                <CheckCircle size={48} className="text-[#E70024] mb-4 animate-bounce" />
+                <CheckCircle size={48} className="text-[rgba(245,68,166,1)] mb-4 animate-bounce" />
                 <h3 className="text-xl font-semibold tracking-tight text-white mb-2">
                     {lang === 'RU' ? 'Отправлено!' : 'Submitted!'}
                 </h3>
@@ -109,7 +109,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                             value={title}
                             onChange={(e) => setTitle(e.target.value)}
                             placeholder={lang === 'RU' ? "Например: Вырастет ли BTC до 100к?" : "E.g., Will BTC hit 100k?"}
-                            className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024] disabled:cursor-not-allowed disabled:opacity-50"
+                            className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)] disabled:cursor-not-allowed disabled:opacity-50"
                         />
                     </div>
 
@@ -123,7 +123,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                                 <button
                                     key={cat.id}
                                     onClick={() => setCategory(cat.id)}
-                                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-all ${category === cat.id ? 'bg-[#E70024] text-white border-[#E70024]' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300'}`}
+                                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-all ${category === cat.id ? 'bg-[rgba(245,68,166,1)] text-white border-[rgba(245,68,166,1)]' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300'}`}
                                 >
                                     {lang === 'RU' ? cat.labelRU : cat.labelEN}
                                 </button>
@@ -141,7 +141,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                                 type="date"
                                 value={endDate}
                                 onChange={(e) => setEndDate(e.target.value)}
-                                className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent pl-9 pr-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024] [color-scheme:dark]"
+                                className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent pl-9 pr-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)] [color-scheme:dark]"
                             />
                             <Calendar size={14} className="absolute left-3 top-2.5 text-zinc-500" />
                         </div>
@@ -175,8 +175,8 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                         <div className="p-4 bg-zinc-900/30 rounded-md border border-zinc-800 flex justify-between items-center">
                             <span className="text-xs text-zinc-500">{lang === 'RU' ? 'Стандартные исходы:' : 'Standard outcomes:'}</span>
                             <div className="flex gap-2">
-                                    <span className="bg-zinc-800 border border-zinc-700 text-[#E70024] text-[10px] font-bold px-2 py-1 rounded-sm">{lang === 'RU' ? 'ДА' : 'YES'}</span>
-                                    <span className="bg-zinc-800 border border-zinc-700 text-[#E70024] text-[10px] font-bold px-2 py-1 rounded-sm">{lang === 'RU' ? 'НЕТ' : 'NO'}</span>
+                                    <span className="bg-zinc-800 border border-zinc-700 text-[rgba(245,68,166,1)] text-[10px] font-bold px-2 py-1 rounded-sm">{lang === 'RU' ? 'ДА' : 'YES'}</span>
+                                    <span className="bg-zinc-800 border border-zinc-700 text-[rgba(245,68,166,1)] text-[10px] font-bold px-2 py-1 rounded-sm">{lang === 'RU' ? 'НЕТ' : 'NO'}</span>
                             </div>
                         </div>
                     ) : (
@@ -187,7 +187,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                                         value={outcome}
                                         onChange={(e) => handleOutcomeChange(index, e.target.value)}
                                         placeholder={lang === 'RU' ? `Вариант ${index + 1}` : `Option ${index + 1}`}
-                                        className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                                        className="flex h-9 w-full rounded-md border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                                     />
                                     {customOutcomes.length > 2 && (
                                         <button 

@@ -14,27 +14,25 @@ interface HeaderProps {
   onLogoClick?: () => void;
 }
 
-// Custom Minimalist Yalla Icon (Abstract Geometric)
+// Exact logo from ylogo2.svg
 const YallaIcon = ({ size = 24, className = '' }: { size?: number; className?: string }) => (
   <svg
     width={size}
-    height={size}
-    viewBox="0 0 24 24"
+    height={size * (554 / 297)}
+    viewBox="0 0 297 554"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
     className={className}
   >
-    <rect
-      x="4"
-      y="4"
-      width="16"
-      height="16"
-      rx="4"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeOpacity="0.8"
-    />
-    <circle cx="12" cy="12" r="3" fill="currentColor" />
+    <g clipPath="url(#clip0_579_11)">
+      <path d="M0 491.137L108.931 425.633V423.309L0 357.515V296.077L148.727 387.725L297.455 294.625V357.079L189.25 423.309V425.633L297.455 491.863V554.026L148.727 460.055L0 552.864V491.137Z" fill="currentColor"/>
+      <circle cx="148.5" cy="148.5" r="125" stroke="currentColor" strokeWidth="47"/>
+    </g>
+    <defs>
+      <clipPath id="clip0_579_11">
+        <rect width="297" height="554" fill="white"/>
+      </clipPath>
+    </defs>
   </svg>
 );
 

@@ -371,7 +371,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
               <ul className="space-y-2">
                 {validationIssues.map((msg) => (
                   <li key={msg} className="flex items-start gap-2">
-                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[#E70024] flex-shrink-0" />
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[rgba(245,68,166,1)] flex-shrink-0" />
                     <span>{msg}</span>
                   </li>
                 ))}
@@ -428,7 +428,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                       }}
                       className={`w-full text-left rounded-xl border px-3 py-3 text-sm transition ${
                         isSelected
-                          ? "border-[#E70024] bg-[rgba(231,0,36,1)] text-white"
+                          ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white"
                           : "border-zinc-900 bg-zinc-950/40 text-zinc-200 hover:border-zinc-700"
                       }`}
                     >

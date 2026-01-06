@@ -101,7 +101,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
 
         {/* Minimalist probability line (white); colors are reserved for YES/NO labels + prices */}
         <div className="w-full h-1.5 bg-white/10 rounded-full mb-3 overflow-hidden">
-          <div className="h-full bg-[rgba(231,0,36,0.85)]" style={{ width: `${displayChance}%` }} />
+          <div className="h-full bg-[rgba(245,68,166,0.85)]" style={{ width: `${displayChance}%` }} />
         </div>
 
         {/* Quick bet buttons - only show if market is active */}
@@ -113,7 +113,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 e.stopPropagation();
                 onQuickBet?.("YES");
               }}
-              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-white transition-colors flex items-center justify-between tabular-nums"
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
               aria-label={`${yesLabel} $${market.yesPrice}`}
             >
               <span>{yesLabel}</span>
@@ -125,7 +125,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, la
                 e.stopPropagation();
                 onQuickBet?.("NO");
               }}
-              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[#E70024] hover:text-white transition-colors flex items-center justify-between tabular-nums"
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
               aria-label={`${noLabel} $${market.noPrice}`}
             >
               <span>{noLabel}</span>

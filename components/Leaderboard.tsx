@@ -61,7 +61,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                 {/* PnL (numbers only, aligned) */}
                 <div
                   className={`w-[140px] text-right font-mono font-bold tabular-nums ${
-                    (user.pnl || 0) >= 0 ? 'text-[#E70024]' : 'text-[#E70024]'
+                    (user.pnl || 0) >= 0 ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
                   }`}
                 >
                   {(user.pnl || 0) >= 0 ? '+' : ''}

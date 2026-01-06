@@ -296,7 +296,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
       <div className="relative bg-[#09090b] border border-zinc-800 w-full max-w-sm rounded-xl p-6 shadow-lg animate-in zoom-in-95 duration-200">
         <button 
           onClick={onClose}
-          className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#E70024] focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-zinc-800 data-[state=open]:text-zinc-500"
+          className="absolute top-4 right-4 rounded-sm opacity-70 ring-offset-black transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[rgba(245,68,166,1)] focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-zinc-800 data-[state=open]:text-zinc-500"
         >
           <X size={16} className="text-zinc-400" />
       </button>
@@ -318,7 +318,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
               disabled={loading}
               className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors inline-flex items-center justify-center gap-2 font-semibold mb-5"
             >
-              <Send size={16} className="text-[#E70024] shrink-0" />
+              <Send size={16} className="text-[rgba(245,68,166,1)] shrink-0" />
               <span className="leading-none">{t.telegramButton}</span>
             </button>
           </>
@@ -329,7 +329,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
             onClick={() => resetAndSwitch('SIGN_IN')}
             className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
               mode === 'SIGN_IN'
-                ? 'bg-[rgba(231,0,36,1)] border border-[rgba(231,0,36,1)] text-white'
+                ? 'bg-[rgba(245,68,166,1)] border border-[rgba(245,68,166,1)] text-white'
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
@@ -339,7 +339,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
             onClick={() => resetAndSwitch('SIGN_UP')}
             className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${
               mode === 'SIGN_UP'
-                ? 'bg-[rgba(231,0,36,1)] border border-[rgba(231,0,36,1)] text-white'
+                ? 'bg-[rgba(245,68,166,1)] border border-[rgba(245,68,166,1)] text-white'
                 : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
@@ -358,7 +358,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
                   value={emailOrUsername}
                   onChange={(e) => setEmailOrUsername(e.target.value)}
                   placeholder={t.placeholderEmailOrUsername}
-                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                 />
               </div>
               <div className="space-y-2">
@@ -370,7 +370,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t.placeholderPassword}
-                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                 />
               </div>
             </>
@@ -385,7 +385,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder={t.placeholderEmail}
-                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                 />
               </div>
               <div className="space-y-2">
@@ -396,7 +396,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder={t.placeholderUsername}
-                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                 />
               </div>
               <div className="space-y-2">
@@ -408,7 +408,7 @@ const AuthModal: React.FC<AuthModalProps> = ({
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t.placeholderPassword}
-                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#E70024]"
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(245,68,166,1)]"
                 />
               </div>
             </>

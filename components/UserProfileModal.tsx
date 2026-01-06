@@ -62,7 +62,7 @@ const PortfolioItem: React.FC<PortfolioItemProps> = ({ item, lang, onClick }) =>
         >
             <div>
                 <div className="flex items-center gap-2 mb-2">
-                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${item.side === 'YES' ? 'bg-[#E70024] text-white' : 'bg-[#E70024] text-white'}`}>
+                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${item.side === 'YES' ? 'bg-[rgba(245,68,166,1)] text-white' : 'bg-[rgba(245,68,166,1)] text-white'}`}>
                         {item.side}
                      </span>
                      <span className="text-xs text-white max-w-[150px] truncate transition-colors font-medium">
@@ -77,7 +77,7 @@ const PortfolioItem: React.FC<PortfolioItemProps> = ({ item, lang, onClick }) =>
             </div>
             <div className="text-right">
                 {isSettled ? (
-                    <div className={`font-mono text-sm font-bold ${isProfit ? 'text-[#E70024]' : 'text-[#E70024]'}`}>
+                    <div className={`font-mono text-sm font-bold ${isProfit ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
                         {isProfit ? '+' : ''}${Math.abs(displayPnL).toFixed(2)} ({Math.abs(displayPercent).toFixed(1)}%)
                     </div>
                 ) : (
@@ -152,7 +152,7 @@ const SellHistoryItem: React.FC<SellHistoryItemProps> = ({ trade, lang, onClick 
         </div>
       </div>
       <div className="text-right">
-        <div className="font-mono text-sm text-[#E70024]">
+        <div className="font-mono text-sm text-[rgba(245,68,166,1)]">
           +${payout.toFixed(2)}
         </div>
         <div className="text-[11px] text-zinc-500">
@@ -165,7 +165,7 @@ const SellHistoryItem: React.FC<SellHistoryItemProps> = ({ trade, lang, onClick 
         {realizedPnlValue !== null && (
           <div
             className={`text-[11px] font-mono ${
-              pnlIsPositive ? 'text-[#E70024]' : 'text-[#E70024]'
+              pnlIsPositive ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
             }`}
           >
             {lang === 'RU' ? 'Профит' : 'P&L'} {pnlIsPositive ? '+' : '-'}$
@@ -230,10 +230,10 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     PNL (PROFIT/LOSS)
                 </span>
                 <div className="flex items-center gap-2">
-                    <span className={`text-2xl font-mono tracking-tight ${isPositivePnL ? 'text-[#E70024]' : 'text-[#E70024]'}`}>
+                    <span className={`text-2xl font-mono tracking-tight ${isPositivePnL ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
                         {isPositivePnL ? '+' : ''}${Math.abs(totalRealizedPnL).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).replace('.', ',')}
                     </span>
-                    {isPositivePnL ? <TrendingUp size={16} className="text-[#E70024]"/> : <TrendingDown size={16} className="text-[#E70024]"/>}
+                    {isPositivePnL ? <TrendingUp size={16} className="text-[rgba(245,68,166,1)]"/> : <TrendingDown size={16} className="text-[rgba(245,68,166,1)]"/>}
                 </div>
             </div>
         </div>

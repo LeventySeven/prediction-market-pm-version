@@ -420,7 +420,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 )}
               </div>
 
-              {editError && <div className="text-xs text-[#E70024]">{editError}</div>}
+              {editError && <div className="text-xs text-[rgba(245,68,166,1)]">{editError}</div>}
 
               <div className="grid grid-cols-2 gap-2">
                 <Button
@@ -499,7 +499,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
               <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
                 {lang === "RU" ? "Прибыль / Убыток" : "Profit / Loss"}
               </div>
-              <div className="mt-1 text-2xl font-mono font-bold text-[#E70024]">
+              <div className="mt-1 text-2xl font-mono font-bold text-[rgba(245,68,166,1)]">
                 {formatSignedMoney(pnlMajor)}
               </div>
               <div className="mt-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
@@ -516,7 +516,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
               <path
                 d={pnlSparkline.lineD}
                 fill="none"
-                stroke={"#E70024"}
+                stroke={"rgba(245,68,166,1)"}
                 strokeWidth="1.5"
                 strokeLinejoin="round"
                 strokeLinecap="round"
@@ -542,7 +542,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
           <div
             className={`text-2xl font-mono font-bold ${
-              pnlIsPositive ? 'text-[#E70024]' : 'text-[#E70024]'
+              pnlIsPositive ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
             }`}
           >
             {pnlIsPositive ? '+' : '-'}${Math.abs(pnlMajor).toFixed(2)}
@@ -594,7 +594,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   {activeBets.map((b) => {
                     const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
                     const sideLabel = b.side === 'YES' ? yesLabel : noLabel;
-                    const sideColor = b.side === 'YES' ? 'text-[#E70024]' : 'text-[#E70024]';
+                    const sideColor = b.side === 'YES' ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]';
                     const shares = Number(b.shares ?? 0);
                     const entry = Number(b.priceAtBet ?? 0);
                     const currentPrice = b.side === 'YES' ? Number(b.priceYes ?? 0) : Number(b.priceNo ?? 0);
@@ -626,7 +626,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           </div>
                           <div className="text-right flex-shrink-0">
                             <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(currentValue)}</div>
-                            <div className={`mt-0.5 text-[11px] font-mono ${pnlPositive ? 'text-[#E70024]' : 'text-[#E70024]'}`}>
+                            <div className={`mt-0.5 text-[11px] font-mono ${pnlPositive ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
                               {formatSignedMoney(pnl)} ({pnlPositive ? '+' : '-'}
                               {formatPct(Math.abs(pnlPct))})
                             </div>
@@ -661,7 +661,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 const title = (lang === 'RU' ? b.marketTitleRu : b.marketTitleEn) || b.marketTitle;
                 const won = b.status === 'won';
                 const resultLabel = lang === 'RU' ? (won ? 'ВЫИГРЫШ' : 'ПОТЕРЯ') : (won ? 'WON' : 'LOST');
-                const resultColor = won ? 'text-[#E70024]' : 'text-[#E70024]';
+                const resultColor = won ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]';
                 const redeem = Number(b.payout ?? 0);
                 const cost = Number(b.amount ?? 0);
                 const pnl = redeem - cost;
@@ -688,7 +688,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                       </div>
                       <div className="text-right flex-shrink-0">
                         <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(redeem)}</div>
-                        <div className={`mt-0.5 text-[11px] font-mono ${won ? 'text-[#E70024]' : 'text-[#E70024]'}`}>
+                        <div className={`mt-0.5 text-[11px] font-mono ${won ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
                           {formatSignedMoney(pnl)} ({pnl >= 0 ? '+' : '-'}
                           {formatPct(Math.abs(pnlPct))})
                         </div>
@@ -711,7 +711,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 const pnl = boughtFor !== null ? soldFor - boughtFor : null;
                 const pnlPct = boughtFor && boughtFor > 0 && pnl !== null ? (pnl / boughtFor) * 100 : null;
                 const sideLabel = t.outcome === 'YES' ? yesLabel : noLabel;
-                const sideColor = t.outcome === 'YES' ? 'text-[#E70024]' : 'text-[#E70024]';
+                const sideColor = t.outcome === 'YES' ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]';
                 const resolvedOutcome = t.marketOutcome ? String(t.marketOutcome) : null;
                 const outcomeText =
                   resolvedOutcome === 'YES' ? yesLabel : resolvedOutcome === 'NO' ? noLabel : null;
@@ -748,7 +748,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                       <div className="text-right flex-shrink-0">
                         <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(soldFor)}</div>
                         {pnl !== null ? (
-                          <div className={`mt-0.5 text-[11px] font-mono ${pnl >= 0 ? 'text-[#E70024]' : 'text-[#E70024]'}`}>
+                          <div className={`mt-0.5 text-[11px] font-mono ${pnl >= 0 ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
                             {formatSignedMoney(pnl)} ({pnl >= 0 ? '+' : '-'}
                             {formatPct(Math.abs(pnlPct ?? 0))})
                           </div>
@@ -756,7 +756,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           <div className="mt-0.5 text-[11px] font-mono text-zinc-500">—</div>
                         )}
                         <div className="mt-1 inline-flex items-center justify-end gap-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                          {pnl !== null ? (pnl >= 0 ? <ArrowUpRight size={12} className="text-[#E70024]" /> : <ArrowDownRight size={12} className="text-[#E70024]" />) : null}
+                          {pnl !== null ? (pnl >= 0 ? <ArrowUpRight size={12} className="text-[rgba(245,68,166,1)]" /> : <ArrowDownRight size={12} className="text-[rgba(245,68,166,1)]" />) : null}
                           {lang === 'RU' ? 'Продано' : 'Sold'}
                         </div>
                       </div>
