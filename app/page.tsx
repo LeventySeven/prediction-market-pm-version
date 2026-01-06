@@ -28,6 +28,21 @@ import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 const VCOIN_DECIMALS = 6;
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
+type ErrorLike = unknown;
+const getErrorMessage = (error: ErrorLike) => {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const msg = (error as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown error";
+  }
+};
+
 export default function HomePage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -126,6 +141,7 @@ export default function HomePage() {
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
   const [marketComments, setMarketComments] = useState<MarketComment[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
+  const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
   const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
@@ -243,13 +259,14 @@ export default function HomePage() {
       setLeaderboardUsers(users);
     } catch (err) {
       console.error("Failed to load leaderboard", err);
-      setLeaderboardError(lang === "RU" ? "Не удалось загрузить лидерборд" : "Failed to load leaderboard");
+      const base = lang === "RU" ? "Не удалось загрузить лидерборд" : "Failed to load leaderboard";
+      setLeaderboardError(`${base}: ${getErrorMessage(err)}`);
       // Keep the previous list if we have one; avoid flashing "No data yet" on transient errors.
       setLeaderboardUsers((prev) => prev);
     } finally {
       setLoadingLeaderboard(false);
     }
-  }, []);
+  }, [lang]);
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
@@ -884,6 +901,7 @@ export default function HomePage() {
       setMarketPublicTrades([]);
       setMarketComments([]);
       setMarketInsightsLoading(false);
+      setMarketInsightsError(null);
       return;
     }
 
@@ -891,6 +909,7 @@ export default function HomePage() {
 
     const fetchInsights = async () => {
       setMarketInsightsLoading(true);
+      setMarketInsightsError(null);
       try {
         const [candlesRaw, tradesRaw, commentsRaw] = await Promise.all([
           trpcClient.market.getPriceCandles.query({ marketId: selectedMarketId, limit: 200 }),
@@ -957,6 +976,7 @@ export default function HomePage() {
           setMarketCandles([]);
           setMarketPublicTrades([]);
           setMarketComments([]);
+          setMarketInsightsError(getErrorMessage(err));
         }
       } finally {
         if (!cancelled) {
@@ -1350,6 +1370,7 @@ export default function HomePage() {
               priceCandles={marketCandles}
               publicTrades={marketPublicTrades}
               insightsLoading={marketInsightsLoading}
+              insightsError={marketInsightsError}
             />
           </main>
           <BottomMenu

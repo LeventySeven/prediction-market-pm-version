@@ -39,6 +39,7 @@ interface MarketPageProps {
   priceCandles?: PriceCandle[];
   publicTrades?: PublicTrade[];
   insightsLoading?: boolean;
+  insightsError?: string | null;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -60,6 +61,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   priceCandles = [],
   publicTrades = [],
   insightsLoading = false,
+  insightsError = null,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
@@ -739,6 +741,16 @@ const MarketPage: React.FC<MarketPageProps> = ({
             {/* Comments Section */}
             {activeTab === 'COMMENTS' && (
               <div className="space-y-8">
+                {insightsError ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 px-4 py-3 text-xs text-zinc-400">
+                    {getErrorMessage(
+                      insightsError,
+                      'Не удалось загрузить комментарии',
+                      'Failed to load comments',
+                      lang
+                    )}
+                  </div>
+                ) : null}
                 {/* Input */}
                 {!replyTo && (
                   <div className="flex gap-4">
