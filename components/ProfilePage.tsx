@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
-import type { Bet, Trade, User, UserCommentSummary } from '../types';
+import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
 
 type ProfilePageProps = {
   user: User | null;
@@ -17,6 +17,7 @@ type ProfilePageProps = {
   bets: Bet[];
   soldTrades: Trade[];
   comments: UserCommentSummary[];
+  bookmarks: Market[];
   onMarketClick: (marketId: string) => void;
 };
 
@@ -159,6 +160,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   bets,
   soldTrades,
   comments,
+  bookmarks,
   onMarketClick,
 }) => {
   if (!user) {
@@ -191,6 +193,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
   const [isEditing, setIsEditing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'BETS' | 'COMMENTS' | 'BOOKMARKS'>('BETS');
   const [nameDraft, setNameDraft] = useState(displayName);
   const [avatarMode, setAvatarMode] = useState<'unchanged' | 'upload' | 'import_telegram' | 'clear'>('unchanged');
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -198,7 +201,6 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'BETS' | 'COMMENTS'>('BETS');
 
   useEffect(() => {
     if (!avatarFile) {
@@ -570,6 +572,15 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
         >
           {lang === 'RU' ? 'Комментарии' : 'Comments'}
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('BOOKMARKS')}
+          className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === 'BOOKMARKS' ? 'border-white text-white' : 'border-transparent text-zinc-500 hover:text-white'
+          }`}
+        >
+          {lang === 'RU' ? 'Закладки' : 'Bookmarks'}
+        </button>
       </div>
 
       {/* Transactions (bet history) */}
@@ -816,6 +827,45 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           <span className="inline-flex items-center gap-1">
                             {lang === 'RU' ? 'Лайки' : 'Likes'}: {c.likesCount}
                           </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'BOOKMARKS' && (
+          <div>
+            <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3 px-1">
+              {lang === 'RU' ? 'Ваши закладки' : 'Your bookmarks'}
+            </h2>
+            {bookmarks.length === 0 ? (
+              <div className="text-sm text-zinc-500 px-1">
+                {lang === 'RU' ? 'Пока нет закладок' : 'No bookmarks yet'}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {bookmarks.map((m) => {
+                  const title = (lang === 'RU' ? m.titleRu : m.titleEn) || m.title;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
+                      onClick={() => onMarketClick(m.id)}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
+                          <div className="mt-1 text-xs text-zinc-500">
+                            <span className="uppercase tracking-wider text-[10px]">{lang === 'RU' ? 'Событие' : 'Event'}</span>
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="text-sm font-mono font-semibold text-zinc-100">{Math.round(m.chance)}%</div>
                         </div>
                       </div>
                     </button>

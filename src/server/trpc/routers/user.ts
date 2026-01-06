@@ -485,10 +485,10 @@ export const userRouter = router({
     )
     .output(leaderboardUsersSchema)
     .query(async ({ ctx, input }) => {
-      const { supabaseService } = ctx;
+      const { supabase } = ctx;
       const limit = input?.limit ?? 25;
 
-      const { data, error } = await supabaseService
+      const { data, error } = await supabase
         .from("leaderboard_public")
         .select("user_id, name, username, avatar_url, balance_minor, pnl_minor, bet_count, referrals, rank")
         .order("rank", { ascending: true })

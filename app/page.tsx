@@ -20,6 +20,7 @@ import { priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsi
 import { marketCommentsSchema } from "@/src/schemas/comments";
 import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
+import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 
 // VCOIN decimals for display
@@ -100,11 +101,13 @@ export default function HomePage() {
   };
   const [currentView, setCurrentView] = useState<ViewType>("EVENTS");
   type EventsPanelPage = "FEED" | "CATALOG";
-  const [eventsPanelPage, setEventsPanelPage] = useState<EventsPanelPage>("CATALOG");
+  const [eventsPanelPage, setEventsPanelPage] = useState<EventsPanelPage>("FEED");
   const eventsSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [myPositions, setMyPositions] = useState<Position[]>([]);
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
+  type MarketBookmark = { marketId: string; createdAt: string };
+  const [myBookmarks, setMyBookmarks] = useState<MarketBookmark[]>([]);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<string | null>(null);
   const [betConfirm, setBetConfirm] = useState<{
     open: boolean;
@@ -463,13 +466,15 @@ export default function HomePage() {
   const loadMyBets = useCallback(async () => {
     if (!user) return;
     try {
-      const [positionsRaw, tradesRaw] = await Promise.all([
+      const [positionsRaw, tradesRaw, bookmarksRaw] = await Promise.all([
         trpcClient.market.myPositions.query(),
         trpcClient.market.myTrades.query(),
+        trpcClient.market.myBookmarks.query(),
       ]);
 
       const positionsParsed = positionsSchema.parse(positionsRaw);
       const tradesParsed = tradesSchema.parse(tradesRaw);
+      const bookmarksParsed = marketBookmarksSchema.parse(bookmarksRaw);
 
       const positions: Position[] = positionsParsed.map((p) => ({
         marketId: requireValue(p.marketId, "POSITION_MARKET_ID_MISSING"),
@@ -507,6 +512,7 @@ export default function HomePage() {
 
       setMyPositions(positions);
       setMyTrades(trades);
+      setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
     } catch (err) {
       console.error("Failed to load positions/trades", err);
     }
@@ -631,6 +637,7 @@ export default function HomePage() {
     if (!user) {
       setMyPositions([]);
       setMyTrades([]);
+      setMyBookmarks([]);
       return;
     }
     void loadMyBets();
@@ -786,6 +793,11 @@ export default function HomePage() {
       return targetTitle.toLowerCase().includes(q);
     });
   }, [markets, searchQuery, lang]);
+
+  const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
+  const bookmarkedMarkets = useMemo(() => {
+    return markets.filter((m) => bookmarkedMarketIds.has(m.id));
+  }, [markets, bookmarkedMarketIds]);
 
   const selectedMarket = useMemo(
     () => markets.find((market) => market.id === selectedMarketId),
@@ -998,6 +1010,35 @@ export default function HomePage() {
       if (!user) {
         setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
         openAuth("SIGN_UP");
+      }
+    },
+    [openAuth, user]
+  );
+
+  const handleSetBookmarked = useCallback(
+    async (marketId: string, bookmarked: boolean) => {
+      if (!user) {
+        openAuth("SIGN_UP");
+        return;
+      }
+
+      let previous: { marketId: string; createdAt: string }[] | null = null;
+      const nowIso = new Date().toISOString();
+      setMyBookmarks((curr) => {
+        previous = curr;
+        if (bookmarked) {
+          if (curr.some((b) => b.marketId === marketId)) return curr;
+          return [{ marketId, createdAt: nowIso }, ...curr];
+        }
+        return curr.filter((b) => b.marketId !== marketId);
+      });
+
+      try {
+        await trpcClient.market.setBookmark.mutate({ marketId, bookmarked });
+      } catch (err) {
+        console.error("setBookmark failed", err);
+        if (previous) setMyBookmarks(previous);
+        throw err;
       }
     },
     [openAuth, user]
@@ -1229,7 +1270,7 @@ export default function HomePage() {
                 {/* Events pages switcher (Feed / Catalog) */}
                 <div className="px-4 pt-3 pb-2">
                   <div
-                    className="mx-auto w-24 flex gap-2"
+                    className="mx-auto w-56 flex gap-3"
                     role="tablist"
                     aria-label={lang === "RU" ? "Разделы событий" : "Event sections"}
                   >
@@ -1244,6 +1285,9 @@ export default function HomePage() {
                           eventsPanelPage === "FEED" ? "bg-[rgba(245,68,166,1)]" : "bg-white/10"
                         }`}
                       />
+                      <div className={`mt-1 text-[10px] font-bold uppercase tracking-widest ${eventsPanelPage === "FEED" ? "text-[rgba(245,68,166,1)]" : "text-zinc-600"}`}>
+                        {lang === "RU" ? "Лента" : "Feed"}
+                      </div>
                     </button>
                     <button
                       type="button"
@@ -1256,12 +1300,42 @@ export default function HomePage() {
                           eventsPanelPage === "CATALOG" ? "bg-[rgba(245,68,166,1)]" : "bg-white/10"
                         }`}
                       />
+                      <div className={`mt-1 text-[10px] font-bold uppercase tracking-widest ${eventsPanelPage === "CATALOG" ? "text-[rgba(245,68,166,1)]" : "text-zinc-600"}`}>
+                        {lang === "RU" ? "Каталог" : "Catalog"}
+                      </div>
                     </button>
                   </div>
                 </div>
 
                 {eventsPanelPage === "FEED" ? (
                   <>
+                    {user && bookmarkedMarkets.length > 0 && (
+                      <>
+                        <div className="px-4 pb-2">
+                          <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                            {lang === "RU" ? "Закладки" : "Bookmarks"}
+                          </div>
+                        </div>
+                        <div className="px-4 pt-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                            {bookmarkedMarkets.map((market) => (
+                              <MarketCard
+                                key={`bm-${market.id}`}
+                                market={market}
+                                bookmarked
+                                onSetBookmarked={handleSetBookmarked}
+                                onClick={() => {
+                                  setMarketBetIntent(null);
+                                  setSelectedMarketId(market.id);
+                                }}
+                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                lang={lang}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
                     <div className="px-4 pb-2">
                       <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
                         {lang === "RU" ? "Рекомендовано" : "Recommended"}
@@ -1274,18 +1348,22 @@ export default function HomePage() {
                         </div>
                       ) : feedMarkets.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
-                          {feedMarkets.map((market) => (
-                            <MarketCard
-                              key={market.id}
-                              market={market}
-                              onClick={() => {
-                                setMarketBetIntent(null);
-                                setSelectedMarketId(market.id);
-                              }}
-                              onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                              lang={lang}
-                            />
-                          ))}
+                          {feedMarkets
+                            .filter((m) => !bookmarkedMarketIds.has(m.id))
+                            .map((market) => (
+                              <MarketCard
+                                key={market.id}
+                                market={market}
+                                bookmarked={bookmarkedMarketIds.has(market.id)}
+                                onSetBookmarked={handleSetBookmarked}
+                                onClick={() => {
+                                  setMarketBetIntent(null);
+                                  setSelectedMarketId(market.id);
+                                }}
+                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                lang={lang}
+                              />
+                            ))}
                         </div>
                       ) : (
                         <div className="text-center py-20 text-zinc-500 px-4">
@@ -1360,6 +1438,8 @@ export default function HomePage() {
                             <MarketCard
                               key={market.id}
                               market={market}
+                              bookmarked={bookmarkedMarketIds.has(market.id)}
+                              onSetBookmarked={handleSetBookmarked}
                               onClick={() => {
                                 // Always clear bet intent when clicking card normally to ensure we start at top
                                 setMarketBetIntent(null);
@@ -1407,6 +1487,7 @@ export default function HomePage() {
                 bets={legacyBets}
                 soldTrades={soldTrades}
                 comments={myComments}
+                bookmarks={bookmarkedMarkets}
                 onMarketClick={(marketId) => {
                   setMarketBetIntent(null); // Clear bet intent when clicking from profile
                   setSelectedMarketId(marketId);

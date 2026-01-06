@@ -199,6 +199,27 @@ export interface Database {
           { foreignKeyName: "market_comment_likes_user_id_fkey"; columns: ["user_id"]; referencedRelation: "users"; referencedColumns: ["id"] }
         ];
       };
+      market_bookmarks: {
+        Row: {
+          user_id: string;
+          market_id: string;
+          created_at: string;
+        };
+        Insert: {
+          user_id: string;
+          market_id: string;
+          created_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          market_id?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "market_bookmarks_user_id_fkey"; columns: ["user_id"]; referencedRelation: "users"; referencedColumns: ["id"] },
+          { foreignKeyName: "market_bookmarks_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] }
+        ];
+      };
       market_categories: {
         Row: {
           id: string;
@@ -497,6 +518,16 @@ export interface Database {
       };
     };
     Views: {
+      users_public: {
+        Row: {
+          id: string;
+          username: string;
+          display_name: string | null;
+          avatar_url: string | null;
+          telegram_photo_url: string | null;
+        };
+        Relationships: [];
+      };
       trades_public: {
         Row: {
           id: string;

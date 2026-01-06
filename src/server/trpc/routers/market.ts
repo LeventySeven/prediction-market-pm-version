@@ -37,6 +37,7 @@ type ResolveMarketResult = Database["public"]["Functions"]["resolve_market_servi
 type MarketCommentPublicRow = Database["public"]["Views"]["market_comments_public"]["Row"];
 type MarketCommentInsert = Database["public"]["Tables"]["market_comments"]["Insert"];
 type MarketCommentLikeRow = Database["public"]["Tables"]["market_comment_likes"]["Row"];
+type MarketBookmarkRow = Database["public"]["Tables"]["market_bookmarks"]["Row"];
 type MarketCategoryRow = Database["public"]["Tables"]["market_categories"]["Row"];
 
 const deriveVolumeMajor = (amm: AmmStateRow | null, feeBps?: number | null) => {
@@ -184,6 +185,11 @@ const marketCategoryOutput = z.object({
   id: z.string(),
   labelRu: z.string(),
   labelEn: z.string(),
+});
+
+const marketBookmarkOutput = z.object({
+  marketId: z.string(),
+  createdAt: z.string(),
 });
 
 export const marketRouter = router({
@@ -619,6 +625,80 @@ export const marketRouter = router({
     }),
 
   /**
+   * Get user's bookmarked markets (IDs)
+   */
+  myBookmarks: publicProcedure
+    .output(z.array(marketBookmarkOutput))
+    .query(async ({ ctx }) => {
+      const { supabase, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data, error } = await supabase
+        .from("market_bookmarks")
+        .select("market_id, created_at")
+        .eq("user_id", authUser.id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      }
+
+      const rows = (data ?? []) as Pick<MarketBookmarkRow, "market_id" | "created_at">[];
+      return rows.map((r) => ({
+        marketId: r.market_id,
+        createdAt: new Date(r.created_at).toISOString(),
+      }));
+    }),
+
+  /**
+   * Set/unset a bookmark on a market
+   */
+  setBookmark: publicProcedure
+    .input(z.object({ marketId: z.string().uuid(), bookmarked: z.boolean() }))
+    .output(z.object({ marketId: z.string(), bookmarked: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const { supabase, supabaseService, authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const exists = await supabaseService
+        .from("markets")
+        .select("id")
+        .eq("id", input.marketId)
+        .maybeSingle();
+
+      if (exists.error || !exists.data) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+      }
+
+      if (input.bookmarked) {
+        const ins = await supabase
+          .from("market_bookmarks")
+          .insert({ user_id: authUser.id, market_id: input.marketId } as Database["public"]["Tables"]["market_bookmarks"]["Insert"]);
+        if (ins.error) {
+          const msg = String(ins.error.message ?? "");
+          if (!msg.toLowerCase().includes("duplicate")) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: msg });
+          }
+        }
+      } else {
+        const del = await supabase
+          .from("market_bookmarks")
+          .delete()
+          .eq("user_id", authUser.id)
+          .eq("market_id", input.marketId);
+        if (del.error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: del.error.message });
+        }
+      }
+
+      return { marketId: input.marketId, bookmarked: input.bookmarked };
+    }),
+
+  /**
    * Get wallet balance for current user
    */
   myWalletBalance: publicProcedure
@@ -792,8 +872,8 @@ export const marketRouter = router({
     )
     .output(z.array(marketCommentOutput))
     .query(async ({ ctx, input }) => {
-      const { supabaseService, supabase, authUser } = ctx;
-      const { data, error } = await supabaseService
+      const { supabase, authUser } = ctx;
+      const { data, error } = await supabase
         .from("market_comments_public")
         .select("id, market_id, user_id, parent_id, body, created_at, author_name, author_username, author_avatar_url, likes_count")
         .eq("market_id", input.marketId)
