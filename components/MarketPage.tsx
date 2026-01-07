@@ -516,8 +516,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('YES')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'YES'
-                        ? 'bg-black ring-1 ring-inset ring-[rgba(245,68,166,1)] text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]'
-                        : 'text-[rgba(245,68,166,0.75)] hover:text-white hover:bg-zinc-900/40'
+                        ? 'bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.20)]'
+                        : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
@@ -526,8 +526,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     onClick={() => setTradeType('NO')}
                     className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
                       tradeType === 'NO'
-                        ? 'bg-black ring-1 ring-inset ring-[rgba(245,68,166,1)] text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]'
-                        : 'text-[rgba(245,68,166,0.75)] hover:text-white hover:bg-zinc-900/40'
+                        ? 'bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.20)]'
+                        : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
                     }`}
                   >
                     {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}

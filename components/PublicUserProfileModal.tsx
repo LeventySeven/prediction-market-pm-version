@@ -310,7 +310,7 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
                                 <Zap size={12} /> {when}
                               </span>
                               <span className="text-zinc-700">•</span>
-                              <span className="inline-flex items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-black px-2 py-0.5 text-[10px] font-bold text-[rgba(245,68,166,1)]">
+                              <span className="inline-flex items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] px-2 py-0.5 text-[10px] font-bold text-white">
                                 {sideLabel}
                               </span>
                             </div>
