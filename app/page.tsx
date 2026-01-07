@@ -1352,6 +1352,13 @@ export default function HomePage() {
     }
   })();
 
+  const [profileResetNonce, setProfileResetNonce] = useState(0);
+  useEffect(() => {
+    if (currentView === "PROFILE") {
+      setProfileResetNonce((n) => n + 1);
+    }
+  }, [currentView]);
+
   return (
     <div className="tg-scroll bg-black text-zinc-100 font-sans">
       {selectedMarket ? (
@@ -1564,8 +1571,8 @@ export default function HomePage() {
                           onClick={() => setActiveCategoryId("all")}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             activeCategoryId === "all"
-                              ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
-                              : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
+                              ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
+                              : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
                           }`}
                         >
                           {lang === "RU" ? "Все" : "All"}
@@ -1580,8 +1587,8 @@ export default function HomePage() {
                               onClick={() => setActiveCategoryId(c.id)}
                               className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
-                                  ? "border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)]"
-                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700"
+                                  ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
+                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
                               }`}
                             >
                               {label}
@@ -1629,6 +1636,7 @@ export default function HomePage() {
                 {/* PROFILE */}
                 <div className="w-1/4">
                   <ProfilePage
+                    key={`profile-${user?.id ?? "anon"}-${profileResetNonce}`}
                     user={user}
                     lang={lang}
                     onLogin={() => openAuth("SIGN_IN")}
