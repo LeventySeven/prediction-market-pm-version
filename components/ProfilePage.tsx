@@ -574,7 +574,10 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
               onLogin();
               return;
             }
-            onLoadBets?.();
+            // Only reload if tab is changing (not already on BETS tab)
+            if (activeTab !== 'BETS') {
+              onLoadBets?.();
+            }
             setActiveTab('BETS');
           }}
           className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 ${

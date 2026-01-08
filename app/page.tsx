@@ -122,6 +122,7 @@ export default function HomePage() {
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
   const [myBetsLoading, setMyBetsLoading] = useState(false);
   const [myBetsError, setMyBetsError] = useState<string | null>(null);
+  const myBetsLoadingRef = useRef(false);
   const [myCommentsLoading, setMyCommentsLoading] = useState(false);
   const [myCommentsError, setMyCommentsError] = useState<string | null>(null);
   type MarketBookmark = { marketId: string; createdAt: string };
@@ -507,6 +508,9 @@ export default function HomePage() {
    */
   const loadMyBets = useCallback(async () => {
     if (!user) return;
+    // Prevent concurrent loads - if already loading, skip
+    if (myBetsLoadingRef.current) return;
+    myBetsLoadingRef.current = true;
     setMyBetsLoading(true);
     setMyBetsError(null);
     try {
@@ -568,9 +572,10 @@ export default function HomePage() {
       }
     }
     finally {
+      myBetsLoadingRef.current = false;
       setMyBetsLoading(false);
     }
-  }, [user, lang, getErrorMessage]);
+  }, [user, lang]);
 
   // NOTE: wallet_transactions loading was removed from the UI (wallet now focuses on bets + PnL).
 
