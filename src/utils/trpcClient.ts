@@ -15,8 +15,14 @@ export const trpcClient = createTRPCProxyClient<AppRouter>({
     httpBatchLink({
       url: `${getBaseUrl()}/api/trpc`,
       // Ensure auth cookies are always sent (important for WebViews / cross-origin edge cases).
-      fetch(url, options) {
-        return fetch(url, { ...options, credentials: "include" });
+      fetch(url, options = {}) {
+        return fetch(url, {
+          ...options,
+          credentials: "include",
+          headers: {
+            ...options.headers,
+          },
+        });
       },
     }),
   ],

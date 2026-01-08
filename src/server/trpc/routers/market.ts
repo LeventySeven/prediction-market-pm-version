@@ -388,15 +388,31 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabase, supabaseService, authUser, cookies } = ctx;
       const { marketId, side, amount } = input;
 
       if (!authUser) {
+        // Log for debugging
+        const hasAuthToken = Boolean(cookies?.auth_token);
+        const hasSbAccessToken = Boolean(cookies?.sb_access_token);
+        console.warn("[placeBet] authUser is null", { hasAuthToken, hasSbAccessToken, cookiesKeys: cookies ? Object.keys(cookies) : [] });
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
+      // Ensure we have a Supabase session for the RPC call (it uses auth.uid() internally).
+      // If the user client doesn't have a session, try to refresh it or use service client with user_id override.
+      // For now, try the user client first. If it fails with NOT_AUTHENTICATED, we'll handle it below.
+      let client = supabase as SupabaseDbClient;
+      const hasSbSession = Boolean(cookies?.sb_access_token);
+      
+      if (!hasSbSession) {
+        // No Supabase session cookie - the RPC will fail with NOT_AUTHENTICATED.
+        // This shouldn't happen if login worked correctly, but log it for debugging.
+        console.warn("[placeBet] No Supabase session cookie found", { userId: authUser.id });
+      }
+
       // Call the RPC - it uses auth.uid() internally, no user_id passed
-      const { data, error } = await (supabase as SupabaseDbClient).rpc("place_bet_tx", {
+      const { data, error } = await client.rpc("place_bet_tx", {
         p_market_id: marketId,
         p_side: side,
         p_amount: amount,
@@ -405,6 +421,10 @@ export const marketRouter = router({
       if (error) {
         // Map common DB errors to user-friendly messages
         const msg = (error.message || "").toUpperCase();
+        if (msg.includes("NOT_AUTHENTICATED") || msg.includes("UNAUTHORIZED")) {
+          console.error("[placeBet] Supabase RPC auth error", { error: error.message, userId: authUser.id, hasSbSession });
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated - please log in again" });
+        }
         if (msg.includes("INSUFFICIENT_BALANCE")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "INSUFFICIENT_BALANCE" });
         }

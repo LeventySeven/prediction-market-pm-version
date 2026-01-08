@@ -44,8 +44,33 @@ export const createContext = async (opts: { req: Request }) => {
         username: payload.username,
         isAdmin: Boolean(payload.isAdmin),
       };
-    } catch {
+    } catch (err) {
+      // Log JWT verification failures for debugging
+      const cookieHeader = opts.req.headers.get("cookie") || "";
+      const hasCookieHeader = cookieHeader.length > 0;
+      console.warn("[createContext] JWT verification failed", { 
+        hasCookieHeader, 
+        cookieHeaderLength: cookieHeader.length,
+        cookieKeys: Object.keys(cookies),
+        hasAuthToken: Boolean(token),
+        error: err instanceof Error ? err.message : String(err)
+      });
       authUser = null;
+    }
+  } else {
+    // Log when auth_token cookie is missing
+    const method = opts.req.method;
+    const url = new URL(opts.req.url);
+    const isMutation = method === "POST" && url.pathname.includes("/api/trpc");
+    if (isMutation) {
+      const cookieHeader = opts.req.headers.get("cookie") || "";
+      console.warn("[createContext] auth_token cookie missing for mutation", {
+        method,
+        pathname: url.pathname,
+        hasCookieHeader: cookieHeader.length > 0,
+        cookieKeys: Object.keys(cookies),
+        cookieHeaderSample: cookieHeader.substring(0, 200),
+      });
     }
   }
 
