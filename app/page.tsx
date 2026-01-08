@@ -154,7 +154,6 @@ export default function HomePage() {
     avatarUrl: string | null;
     telegramPhotoUrl: string | null;
   };
-  type PublicProfileVote = { marketId: string; outcome: "YES" | "NO"; lastBetAt: string; isActive: boolean };
   type PublicProfileComment = {
     id: string;
     marketId: string;
@@ -163,23 +162,12 @@ export default function HomePage() {
     createdAt: string;
     likesCount: number;
   };
-  type PublicProfileTx = {
-    id: string;
-    kind: string;
-    amountMajor: number;
-    marketId: string | null;
-    marketTitleRu: string | null;
-    marketTitleEn: string | null;
-    createdAt: string;
-  };
   const [publicProfileOpen, setPublicProfileOpen] = useState(false);
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
   const [publicProfileError, setPublicProfileError] = useState<string | null>(null);
   const [publicProfileUser, setPublicProfileUser] = useState<PublicProfileUser | null>(null);
   const [publicProfilePnl, setPublicProfilePnl] = useState(0);
-  const [publicProfileVotes, setPublicProfileVotes] = useState<PublicProfileVote[]>([]);
   const [publicProfileComments, setPublicProfileComments] = useState<PublicProfileComment[]>([]);
-  const [publicProfileTxs, setPublicProfileTxs] = useState<PublicProfileTx[]>([]);
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
   const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
   const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
@@ -1158,17 +1146,13 @@ export default function HomePage() {
       setPublicProfileError(null);
       setPublicProfileUser(null);
       setPublicProfilePnl(0);
-      setPublicProfileVotes([]);
       setPublicProfileComments([]);
-      setPublicProfileTxs([]);
 
       try {
-        const [u, stats, votes, comments, txs] = await Promise.all([
+        const [u, stats, comments] = await Promise.all([
           trpcClient.user.publicUser.query({ userId }),
           trpcClient.user.publicUserStats.query({ userId }),
-          trpcClient.user.publicUserVotes.query({ userId, limit: 100 }),
           trpcClient.user.publicUserComments.query({ userId, limit: 50 }),
-          trpcClient.user.publicUserTransactions.query({ userId, limit: 100 }),
         ]);
 
         setPublicProfileUser({
@@ -1179,14 +1163,6 @@ export default function HomePage() {
           telegramPhotoUrl: u.telegramPhotoUrl ?? null,
         });
         setPublicProfilePnl(Number(stats.pnlMajor ?? 0));
-        setPublicProfileVotes(
-          (votes ?? []).map((v) => ({
-            marketId: requireValue(v.marketId, "PUBLIC_VOTE_MARKET_ID_MISSING"),
-            outcome: requireValue(v.outcome, "PUBLIC_VOTE_OUTCOME_MISSING"),
-            lastBetAt: requireValue(v.lastBetAt, "PUBLIC_VOTE_TIME_MISSING"),
-            isActive: Boolean((v as { isActive?: boolean }).isActive),
-          }))
-        );
         setPublicProfileComments(
           (comments ?? []).map((c) => ({
             id: requireValue(c.id, "PUBLIC_COMMENT_ID_MISSING"),
@@ -1195,17 +1171,6 @@ export default function HomePage() {
             body: requireValue(c.body, "PUBLIC_COMMENT_BODY_MISSING"),
             createdAt: requireValue(c.createdAt, "PUBLIC_COMMENT_CREATED_MISSING"),
             likesCount: Number(c.likesCount ?? 0),
-          }))
-        );
-        setPublicProfileTxs(
-          (txs ?? []).map((t) => ({
-            id: requireValue(t.id, "PUBLIC_TX_ID_MISSING"),
-            kind: requireValue(t.kind, "PUBLIC_TX_KIND_MISSING"),
-            amountMajor: Number(requireValue(t.amountMajor, "PUBLIC_TX_AMOUNT_MISSING")),
-            marketId: t.marketId ?? null,
-            marketTitleRu: t.marketTitleRu ?? null,
-            marketTitleEn: t.marketTitleEn ?? null,
-            createdAt: requireValue(t.createdAt, "PUBLIC_TX_CREATED_MISSING"),
           }))
         );
       } catch (err) {
@@ -1736,9 +1701,7 @@ export default function HomePage() {
         error={publicProfileError}
         user={publicProfileUser}
         pnlMajor={publicProfilePnl}
-        votes={publicProfileVotes}
         comments={publicProfileComments}
-        transactions={publicProfileTxs}
         markets={markets}
         onMarketClick={(marketId) => {
           closePublicProfile();

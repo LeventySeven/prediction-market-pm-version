@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { X, MessageCircle, Zap, ArrowDownLeft, ArrowUpRight } from "lucide-react";
+import { X, MessageCircle } from "lucide-react";
 import type { Market } from "../types";
 
 type PublicUser = {
@@ -10,7 +10,6 @@ type PublicUser = {
   telegramPhotoUrl: string | null;
 };
 
-type PublicVote = { marketId: string; outcome: "YES" | "NO"; lastBetAt: string; isActive: boolean };
 type PublicComment = {
   id: string;
   marketId: string;
@@ -18,16 +17,6 @@ type PublicComment = {
   body: string;
   createdAt: string;
   likesCount: number;
-};
-
-type PublicTx = {
-  id: string;
-  kind: string;
-  amountMajor: number;
-  marketId: string | null;
-  marketTitleRu: string | null;
-  marketTitleEn: string | null;
-  createdAt: string;
 };
 
 type PublicUserProfileModalProps = {
@@ -38,9 +27,7 @@ type PublicUserProfileModalProps = {
   error: string | null;
   user: PublicUser | null;
   pnlMajor: number;
-  votes: PublicVote[];
   comments: PublicComment[];
-  transactions: PublicTx[];
   markets: Market[];
   onMarketClick: (marketId: string) => void;
 };
@@ -130,13 +117,10 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
   error,
   user,
   pnlMajor,
-  votes,
   comments,
-  transactions,
   markets,
   onMarketClick,
 }) => {
-  const [tab, setTab] = useState<"BETS" | "COMMENTS" | "TXS">("BETS");
 
   const marketById = useMemo(() => new Map(markets.map((m) => [m.id, m])), [markets]);
   const displayName = user ? (user.displayName ?? user.username) : "";
@@ -216,230 +200,56 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-zinc-900 flex">
-            <button
-              type="button"
-              onClick={() => setTab("BETS")}
-              className={`flex-1 px-4 py-3 text-sm font-semibold transition-colors border-b-2 ${
-                tab === "BETS" ? "border-white text-white" : "border-transparent text-zinc-500 hover:text-white"
-              }`}
-            >
-              {lang === "RU" ? "Ставки" : "Bets"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("COMMENTS")}
-              className={`flex-1 px-4 py-3 text-sm font-semibold transition-colors border-b-2 ${
-                tab === "COMMENTS" ? "border-white text-white" : "border-transparent text-zinc-500 hover:text-white"
-              }`}
-            >
-              {lang === "RU" ? "Комментарии" : "Comments"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("TXS")}
-              className={`flex-1 px-4 py-3 text-sm font-semibold transition-colors border-b-2 ${
-                tab === "TXS" ? "border-white text-white" : "border-transparent text-zinc-500 hover:text-white"
-              }`}
-            >
-              {lang === "RU" ? "Транзакции" : "Transactions"}
-            </button>
-          </div>
-
           <div className="p-5">
             {loading ? (
               <div className="py-10 text-center text-zinc-500 text-sm">{lang === "RU" ? "Загрузка..." : "Loading..."}</div>
             ) : error ? (
               <div className="py-10 text-center text-zinc-500 text-sm">{error}</div>
-            ) : tab === "BETS" ? (
-              <div className="space-y-6">
-              {votes.length === 0 ? (
-                <div className="text-sm text-zinc-500">{lang === "RU" ? "Пока нет ставок" : "No bets yet"}</div>
-              ) : (
-                (() => {
-                  const ongoing = votes.filter((v) => {
-                    const m = marketById.get(v.marketId);
-                    const isResolved = Boolean(m && (m.state === "resolved" || m.outcome));
-                    // Ongoing means: market not resolved AND user still has an active position (not sold out).
-                    return !isResolved && v.isActive;
-                  });
-                  // Completed includes resolved markets AND sold-out positions for unresolved markets (matches ProfilePage).
-                  const completed = votes.filter((v) => {
-                    const m = marketById.get(v.marketId);
-                    const isResolved = Boolean(m && (m.state === "resolved" || m.outcome));
-                    return isResolved || !v.isActive;
-                  });
-
-                  const renderVote = (v: PublicVote) => {
-                    const m = marketById.get(v.marketId);
-                    const title = m ? ((lang === "RU" ? m.titleRu : m.titleEn) || m.title) : v.marketId;
-                    const sideLabel = v.outcome === "YES" ? (lang === "RU" ? "ДА" : "YES") : (lang === "RU" ? "НЕТ" : "NO");
-                    const when = new Date(v.lastBetAt).toLocaleDateString(lang === "RU" ? "ru-RU" : "en-US", {
-                      year: "numeric",
-                      month: "short",
+            ) : (
+              <div className="space-y-3">
+                {comments.length === 0 ? (
+                  <div className="text-sm text-zinc-500">{lang === "RU" ? "Пока нет комментариев" : "No comments yet"}</div>
+                ) : (
+                  comments.map((c) => {
+                    const m = marketById.get(c.marketId);
+                    const title = m ? ((lang === "RU" ? m.titleRu : m.titleEn) || m.title) : c.marketId;
+                    const when = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
                       day: "2-digit",
+                      month: "short",
+                      hour: "2-digit",
+                      minute: "2-digit",
                     });
-                    const isCompleted = Boolean(m && (m.state === "resolved" || m.outcome));
-                    const marketOutcome = m?.outcome ?? null;
-                    const won = isCompleted && marketOutcome ? marketOutcome === v.outcome : null;
-                    const statusLabel = !isCompleted
-                      ? v.isActive
-                        ? (lang === "RU" ? "Текущая" : "Ongoing")
-                        : (lang === "RU" ? "Продано" : "Sold")
-                      : won
-                      ? (lang === "RU" ? "ВЫИГРЫШ" : "WON")
-                      : (lang === "RU" ? "ПОТЕРЯ" : "LOST");
-
                     return (
                       <button
-                        key={`${v.marketId}-${v.outcome}`}
+                        key={c.id}
                         type="button"
                         className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
-                        onClick={() => onMarketClick(v.marketId)}
+                        onClick={() => onMarketClick(c.marketId)}
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
                             <div className="mt-1 text-xs text-zinc-500 flex items-center gap-2">
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                                <Zap size={12} /> {when}
+                              <span className="inline-flex items-center gap-1">
+                                <MessageCircle size={12} /> {when}
                               </span>
-                              <span className="text-zinc-700">•</span>
-                              <span className="inline-flex items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] px-2 py-0.5 text-[10px] font-bold text-white">
-                                {sideLabel}
-                              </span>
+                              {c.parentId ? (
+                                <>
+                                  <span className="text-zinc-700">•</span>
+                                  <span className="text-[10px] uppercase tracking-wider text-zinc-400">
+                                    {lang === "RU" ? "Ответ" : "Reply"}
+                                  </span>
+                                </>
+                              ) : null}
                             </div>
+                            <div className="mt-2 text-sm text-zinc-300 line-clamp-3">{c.body}</div>
                           </div>
-                          <div className="text-right flex-shrink-0">
-                            {m ? <div className="font-mono text-sm font-semibold text-zinc-100">{Math.round(m.chance)}%</div> : null}
-                            <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">{statusLabel}</div>
-                          </div>
+                          <div className="text-xs text-zinc-500 flex-shrink-0">{lang === "RU" ? "Лайки" : "Likes"}: {c.likesCount}</div>
                         </div>
                       </button>
                     );
-                  };
-
-                  return (
-                    <>
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-1">
-                          {lang === "RU" ? "Текущие" : "Ongoing"}
-                        </div>
-                        {ongoing.length === 0 ? (
-                          <div className="text-sm text-zinc-500 px-1">{lang === "RU" ? "Нет активных ставок" : "No active bets"}</div>
-                        ) : (
-                          <div className="space-y-3">{ongoing.map(renderVote)}</div>
-                        )}
-                      </div>
-
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-1">
-                          {lang === "RU" ? "Завершенные" : "Completed"}
-                        </div>
-                        {completed.length === 0 ? (
-                          <div className="text-sm text-zinc-500 px-1">{lang === "RU" ? "Нет завершенных ставок" : "No completed bets"}</div>
-                        ) : (
-                          <div className="space-y-3">{completed.map(renderVote)}</div>
-                        )}
-                      </div>
-                    </>
-                  );
-                })()
-              )}
-              </div>
-            ) : tab === "COMMENTS" ? (
-              <div className="space-y-3">
-              {comments.length === 0 ? (
-                <div className="text-sm text-zinc-500">{lang === "RU" ? "Пока нет комментариев" : "No comments yet"}</div>
-              ) : (
-                comments.map((c) => {
-                  const m = marketById.get(c.marketId);
-                  const title = m ? ((lang === "RU" ? m.titleRu : m.titleEn) || m.title) : c.marketId;
-                  const when = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
-                    day: "2-digit",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  });
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
-                      onClick={() => onMarketClick(c.marketId)}
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
-                          <div className="mt-1 text-xs text-zinc-500 flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1">
-                              <MessageCircle size={12} /> {when}
-                            </span>
-                            {c.parentId ? (
-                              <>
-                                <span className="text-zinc-700">•</span>
-                                <span className="text-[10px] uppercase tracking-wider text-zinc-400">
-                                  {lang === "RU" ? "Ответ" : "Reply"}
-                                </span>
-                              </>
-                            ) : null}
-                          </div>
-                          <div className="mt-2 text-sm text-zinc-300 line-clamp-3">{c.body}</div>
-                        </div>
-                        <div className="text-xs text-zinc-500 flex-shrink-0">{lang === "RU" ? "Лайки" : "Likes"}: {c.likesCount}</div>
-                      </div>
-                    </button>
-                  );
-                })
-              )}
-              </div>
-            ) : (
-              <div className="space-y-3">
-              {transactions.length === 0 ? (
-                <div className="text-sm text-zinc-500">{lang === "RU" ? "Пока нет транзакций" : "No transactions yet"}</div>
-              ) : (
-                transactions.map((t) => {
-                  const title =
-                    t.marketId
-                      ? ((lang === "RU" ? t.marketTitleRu : t.marketTitleEn) || t.marketId)
-                      : (lang === "RU" ? "Система" : "System");
-                  const when = new Date(t.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
-                    day: "2-digit",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  });
-                  const amt = t.amountMajor;
-                  const positive = amt >= 0;
-                  const icon = positive ? <ArrowDownLeft size={12} /> : <ArrowUpRight size={12} />;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
-                      onClick={() => {
-                        if (t.marketId) onMarketClick(t.marketId);
-                      }}
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-zinc-100 truncate">{title}</div>
-                          <div className="mt-1 text-xs text-zinc-500 flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1">
-                              {icon} {t.kind}
-                            </span>
-                            <span className="text-zinc-700">•</span>
-                            <span className="uppercase tracking-wider text-[10px]">{when}</span>
-                          </div>
-                        </div>
-                        <div className={`text-right flex-shrink-0 font-mono text-sm font-semibold ${positive ? "text-[rgba(245,68,166,1)]" : "text-[rgba(245,68,166,1)]"}`}>
-                          {formatSignedMoney(amt)}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })
-              )}
+                  })
+                )}
               </div>
             )}
           </div>
