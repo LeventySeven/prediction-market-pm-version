@@ -1393,7 +1393,7 @@ export default function HomePage() {
             lang={lang}
             onToggleLang={handleToggleLang}
           />
-          <main className="pb-24">
+          <main className="pb-32 pb-safe">
             <MarketPage
               market={selectedMarket}
               user={user}
@@ -1467,7 +1467,7 @@ export default function HomePage() {
           />
 
           <main
-            className="mx-auto w-full max-w-7xl pb-24"
+            className="mx-auto w-full max-w-7xl pb-32 pb-safe"
             onTouchStart={handleShellTouchStart}
             onTouchEnd={handleShellTouchEnd}
           >
@@ -1501,7 +1501,7 @@ export default function HomePage() {
                           </div>
                         </div>
                         <div className="px-4 pt-2">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
                             {bookmarkedMarkets.map((market) => (
                               <MarketCard
                                 key={`bm-${market.id}`}
@@ -1532,7 +1532,7 @@ export default function HomePage() {
                           {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
                         </div>
                       ) : feedMarkets.length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
                           {feedMarkets
                             .filter((m) => !bookmarkedMarketIds.has(m.id))
                             .map((market) => (
@@ -1621,7 +1621,7 @@ export default function HomePage() {
                           {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
                         </div>
                       ) : filteredMarkets.length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
                           {filteredMarkets.map((market) => (
                             <MarketCard
                               key={market.id}

@@ -34,6 +34,68 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* Ensure smooth scrolling on mobile */
+  scroll-behavior: smooth;
+}
+
+/* Safe area utilities for iOS notches and home indicators */
+/* These utilities ADD safe area padding on top of existing padding */
+@supports (padding: max(0px)) {
+  .pb-safe {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+  
+  /* For containers that need extra bottom padding (fixed menu + safe area) */
+  .pb-32.pb-safe {
+    padding-bottom: calc(8rem + env(safe-area-inset-bottom));
+  }
+  
+  .pt-safe {
+    padding-top: calc(0px + env(safe-area-inset-top));
+  }
+  
+  .pl-safe {
+    padding-left: calc(0px + env(safe-area-inset-left));
+  }
+  
+  .pr-safe {
+    padding-right: calc(0px + env(safe-area-inset-right));
+  }
+  
+  .px-safe {
+    padding-left: calc(0px + env(safe-area-inset-left));
+    padding-right: calc(0px + env(safe-area-inset-right));
+  }
+  
+  .py-safe {
+    padding-top: calc(0px + env(safe-area-inset-top));
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+}
+
+/* Fallback for browsers without safe-area support */
+@supports not (padding: max(0px)) {
+  .pb-safe {
+    padding-bottom: 1rem;
+  }
+  
+  .pb-32.pb-safe {
+    padding-bottom: 8rem;
+  }
+  
+  .pt-safe {
+    padding-top: 0px;
+  }
+  
+  .pl-safe, .pr-safe, .px-safe {
+    padding-left: 0px;
+    padding-right: 0px;
+  }
+  
+  .py-safe {
+    padding-top: 0px;
+    padding-bottom: 1rem;
+  }
 }
 
 @keyframes trophyGlow {

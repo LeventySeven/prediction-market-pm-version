@@ -33,7 +33,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-3 pb-4">
         {users.map((user) => (
             <div 
                 key={user.id}

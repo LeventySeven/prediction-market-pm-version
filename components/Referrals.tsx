@@ -88,7 +88,7 @@ const Referrals: React.FC<ReferralsProps> = ({ user, onLogin, lang, onCreateRefe
   };
 
   return (
-    <div className="max-w-xl mx-auto animate-in fade-in duration-300">
+    <div className="max-w-xl mx-auto pb-4 animate-in fade-in duration-300">
       <div className="border border-zinc-900 bg-black rounded-2xl p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">

@@ -32,7 +32,7 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
   );
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300">
+    <div className="max-w-2xl mx-auto px-4 py-6 pb-32 pb-safe animate-in fade-in duration-300">
       <div className="mb-4 flex items-center gap-2 border border-zinc-900 bg-black rounded-full p-1">
         <button
           type="button"

@@ -276,7 +276,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
 }) => {
   if (!user) {
     return (
-      <div className="max-w-xl mx-auto px-4 py-10 pb-24">
+      <div className="max-w-xl mx-auto px-4 py-10 pb-32 pb-safe">
         <div className="border border-zinc-900 bg-black rounded-2xl p-6 text-center">
           <div className="mx-auto h-14 w-14 rounded-full border border-zinc-900 bg-zinc-950/40 flex items-center justify-center text-zinc-400">
             <UserIcon size={22} />
@@ -367,7 +367,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   }, [soldTrades]);
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-6 pb-24 animate-in fade-in duration-300">
+    <div className="max-w-xl mx-auto px-4 py-6 pb-32 pb-safe animate-in fade-in duration-300">
       {/* Profile header */}
       <div
         className="relative overflow-hidden border border-zinc-900 bg-black rounded-2xl p-5"
