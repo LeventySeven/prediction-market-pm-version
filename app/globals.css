@@ -83,3 +83,23 @@ body {
   background: #444444;
 }
 
+/* Solana Wallet Adapter Modal Overrides - ensure modal is above all other elements */
+.wallet-adapter-modal-overlay {
+  z-index: 9999 !important;
+  background-color: rgba(0, 0, 0, 0.8) !important;
+  position: fixed !important;
+  inset: 0 !important;
+}
+
+.wallet-adapter-modal {
+  z-index: 10000 !important;
+}
+
+.wallet-adapter-modal-container {
+  z-index: 10001 !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  z-index: 10002 !important;
+}
+

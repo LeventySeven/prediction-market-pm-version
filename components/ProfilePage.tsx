@@ -130,11 +130,19 @@ const sampleAvatarHue = async (src: string): Promise<number | null> => {
 };
 
 const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
-  const { wallet, publicKey, disconnect, connecting } = useWallet();
-  const { setVisible } = useWalletModal();
+  const { wallet, publicKey, disconnect, connecting, wallets: availableWallets } = useWallet();
+  const { visible, setVisible } = useWalletModal();
 
   const handleConnectClick = () => {
-    setVisible(true);
+    try {
+      // Log for debugging in development
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Opening wallet modal. Available wallets:', availableWallets.map(w => w.adapter.name));
+      }
+      setVisible(true);
+    } catch (error) {
+      console.error('Failed to open wallet modal:', error);
+    }
   };
 
   const handleDisconnectClick = async () => {

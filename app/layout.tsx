@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
+import "@solana/wallet-adapter-react-ui/styles.css";
 import { SolanaProvider } from "@/components/SolanaProvider";
 
 const inter = Inter({

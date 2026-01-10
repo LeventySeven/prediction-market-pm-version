@@ -613,14 +613,23 @@ export default function HomePage() {
     void loadUser();
   }, [refreshUser, handleTelegramLogin]);
 
-  const loadMarkets = useCallback(async () => {
+  const loadMarkets = useCallback(async (force = false) => {
+    // Prevent duplicate loads if already loading (unless forced)
+    if (loadingMarkets && !force) return;
+    
     setLoadingMarkets(true);
     setMarketsError(null);
     setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
     try {
+      // Load markets with limit to improve performance
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
+        limit: 200, // Limit to 200 markets initially for better performance
+        offset: 0,
       });
+      
+      // Update last load time
+      lastMarketsLoadRef.current = Date.now();
 
       const mapped: Market[] = response?.map((m) => {
         const title = lang === "RU" ? m.titleRu : m.titleEn;
@@ -658,12 +667,15 @@ export default function HomePage() {
       setMarketsError(
         lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets."
       );
-      setMarkets([]);
+      // Only clear markets on error if we're forcing a reload, otherwise keep existing data
+      if (force) {
+        setMarkets([]);
+      }
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [lang]);
+  }, [lang, loadingMarkets]);
 
   const loadMarketCategories = useCallback(async () => {
     setLoadingMarketCategories(true);
@@ -728,12 +740,17 @@ export default function HomePage() {
     void loadMyBets();
   }, [user, loadMyBets]);
 
+  // Load markets on initial mount only
+  const marketsLoadedRef = useRef(false);
   useEffect(() => {
-    void loadMarkets();
+    if (!marketsLoadedRef.current && markets.length === 0 && !loadingMarkets) {
+      marketsLoadedRef.current = true;
+      void loadMarkets();
+    }
     if (marketCategories.length === 0 && !loadingMarketCategories) {
       void loadMarketCategories();
     }
-  }, [loadMarkets, loadMarketCategories, marketCategories.length, loadingMarketCategories]);
+  }, [loadMarkets, loadMarketCategories, markets.length, loadingMarkets, marketCategories.length, loadingMarketCategories]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -889,6 +906,10 @@ export default function HomePage() {
     [selectedMarketId, markets]
   );
 
+  // Track last markets load time to avoid too-frequent refreshes
+  const lastMarketsLoadRef = useRef<number>(0);
+  const MARKETS_REFRESH_INTERVAL = 30000; // 30 seconds minimum between refreshes
+
   const goToView = useCallback(
     (view: ViewType) => {
       setMarketBetIntent(null);
@@ -896,11 +917,17 @@ export default function HomePage() {
       if (view === "FRIENDS") {
         void loadLeaderboard();
       } else if (view === "FEED" || view === "CATALOG") {
-        // Refresh markets when returning to feed or catalog to show updated percentages
-        void loadMarkets();
+        // Only refresh markets if they're empty or it's been more than 30 seconds since last load
+        // This prevents unnecessary reloads when quickly switching between FEED and CATALOG
+        const now = Date.now();
+        const timeSinceLastLoad = now - lastMarketsLoadRef.current;
+        if (markets.length === 0 || (timeSinceLastLoad > MARKETS_REFRESH_INTERVAL && !loadingMarkets)) {
+          lastMarketsLoadRef.current = now;
+          void loadMarkets(true); // Force reload
+        }
       }
     },
-    [loadLeaderboard, loadMarkets]
+    [loadLeaderboard, loadMarkets, markets.length, loadingMarkets]
   );
 
   const handleShellTouchStart = useCallback((e: TouchEvent<HTMLDivElement>) => {

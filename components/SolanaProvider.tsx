@@ -12,9 +12,7 @@ import {
   PhantomWalletAdapter,
   SolflareWalletAdapter,
   TorusWalletAdapter,
-  LedgerWalletAdapter,
 } from "@solana/wallet-adapter-wallets";
-import "@solana/wallet-adapter-react-ui/styles.css";
 
 interface SolanaProviderProps {
   children: ReactNode;
@@ -26,27 +24,22 @@ export const SolanaProvider: FC<SolanaProviderProps> = ({ children }) => {
 
   // You can also provide a custom RPC endpoint
   const endpoint = useMemo(() => {
-    // Use a more reliable RPC endpoint
     return clusterApiUrl(network);
-    // Alternative: use a custom RPC endpoint
-    // return 'https://api.devnet.solana.com';
   }, [network]);
 
-  // Configure wallets - memoize to prevent unnecessary re-renders
-  // According to Solana Wallet Adapter docs, wallets should be created once and memoized
+  // Configure wallets - according to official Solana documentation
+  // Wallet adapters are safe to create immediately and will detect browser extensions
+  // They check for window.phantom, window.solflare on instantiation and when connecting
   const wallets = useMemo(
     () => [
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
       new TorusWalletAdapter(),
-      // LedgerWalletAdapter requires additional setup, so it's commented out by default
-      // new LedgerWalletAdapter(),
     ],
-    [] // Empty deps - wallets don't need to be recreated on network change
+    [] // Create once - adapters handle extension detection internally
   );
 
   // Check if we're in a Telegram environment
-  // In Telegram Mini Apps, autoConnect may not work well with browser extensions
   const isTelegram = typeof window !== 'undefined' && window.Telegram?.WebApp;
 
   return (
@@ -56,13 +49,14 @@ export const SolanaProvider: FC<SolanaProviderProps> = ({ children }) => {
         autoConnect={!isTelegram}
         localStorageKey="solana-wallet-adapter"
         onError={(error) => {
-          // Only log errors in development
           if (process.env.NODE_ENV === 'development') {
             console.error('Solana Wallet Adapter Error:', error);
           }
         }}
       >
-        <WalletModalProvider>{children}</WalletModalProvider>
+        <WalletModalProvider>
+          {children}
+        </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
   );
