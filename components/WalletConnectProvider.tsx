@@ -1,6 +1,6 @@
 'use client';
 
-import React, { FC, ReactNode, useMemo, useState, useEffect } from "react";
+import React, { FC, ReactNode, useMemo, useRef } from "react";
 import { createAppKit } from "@reown/appkit/react";
 import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
 import { WagmiProvider } from "wagmi";
@@ -26,60 +26,69 @@ const PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '';
 
 const networks = [mainnet, arbitrum, base, polygon];
 
-// Initialize AppKit at module level (client-side only)
-// This ensures createAppKit is called before any components using hooks render
-let wagmiAdapterInstance: WagmiAdapter | null = null;
-
-if (typeof window !== 'undefined' && PROJECT_ID) {
-  try {
-    // Create Wagmi adapter
-    wagmiAdapterInstance = new WagmiAdapter({
-      projectId: PROJECT_ID,
-      networks,
-      ssr: false,
-    });
-
-    // Initialize AppKit (only once, globally, at module load)
-    // This must be called before any hooks like useAppKit are used
-    createAppKit({
-      adapters: [wagmiAdapterInstance],
-      networks,
-      projectId: PROJECT_ID,
-      metadata: {
-        name: 'Yalla Market',
-        description: 'Prediction market demo',
-        url: window.location.origin,
-        icons: [],
-      },
-      features: {
-        analytics: false,
-        email: false,
-        socials: [],
-      },
-      themeMode: 'dark',
-    } as any); // Type assertion to work around version compatibility issues
-  } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      console.error('Failed to initialize WalletConnect AppKit:', error);
-    }
-    wagmiAdapterInstance = null;
-  }
-}
+// Global singleton to ensure createAppKit is only called once
+let appKitInitialized = false;
+let globalWagmiAdapter: WagmiAdapter | null = null;
 
 export const WalletConnectProvider: FC<WalletConnectProviderProps> = ({ children }) => {
-  const [mounted, setMounted] = useState(false);
+  const initRef = useRef(false);
 
-  // Use the module-level adapter instance
+  // Initialize AppKit synchronously on first render (client-side only)
+  // This MUST run before any children render to ensure createAppKit is called first
   const wagmiAdapter = useMemo(() => {
-    return wagmiAdapterInstance;
+    // Only initialize once
+    if (initRef.current || appKitInitialized) {
+      return globalWagmiAdapter;
+    }
+
+    if (typeof window === 'undefined' || !PROJECT_ID) {
+      return null;
+    }
+
+    try {
+      // Create Wagmi adapter
+      const adapter = new WagmiAdapter({
+        projectId: PROJECT_ID,
+        networks,
+        ssr: false,
+      });
+
+      // Initialize AppKit (only once, globally, synchronously)
+      // This MUST be called before any hooks like useAppKit are used
+      createAppKit({
+        adapters: [adapter],
+        networks,
+        projectId: PROJECT_ID,
+        metadata: {
+          name: 'Yalla Market',
+          description: 'Prediction market demo',
+          url: window.location.origin,
+          icons: [],
+        },
+        features: {
+          analytics: false,
+          email: false,
+          socials: [],
+        },
+        themeMode: 'dark',
+      } as any); // Type assertion to work around version compatibility issues
+
+      // Mark as initialized
+      initRef.current = true;
+      appKitInitialized = true;
+      globalWagmiAdapter = adapter;
+
+      return adapter;
+    } catch (error) {
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Failed to initialize WalletConnect AppKit:', error);
+      }
+      return null;
+    }
   }, []);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Don't render providers if not mounted or no project ID or adapter
-  if (!mounted || !wagmiAdapter) {
+  // Don't render providers if no adapter
+  if (!wagmiAdapter) {
     return <>{children}</>;
   }
 
