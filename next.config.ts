@@ -10,7 +10,11 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  webpack: (config) => {
+    config.externals.push('pino-pretty', 'lokijs', 'encoding');
+    return config;
+  },
+  transpilePackages: ['@reown/appkit', '@reown/appkit-adapter-wagmi'],
 };
 
 export default nextConfig;
-

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
-import ClientWalletConnectProvider from "@/components/ClientWalletConnectProvider";
+import { Providers } from "./providers";
 
 const inter = Inter({
   subsets: ["latin", "cyrillic"],
@@ -25,9 +25,7 @@ export default function RootLayout({
       <body className={`${inter.variable} bg-[#0a0a0a] text-white`}>
         {/* Telegram Mini App SDK: provides window.Telegram.WebApp + initData parsing */}
         <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
-        <ClientWalletConnectProvider>
-          {children}
-        </ClientWalletConnectProvider>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
