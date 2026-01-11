@@ -641,7 +641,7 @@ export default function HomePage() {
           categoryId: m.categoryId ?? null,
           categoryLabelRu: m.categoryLabelRu ?? null,
           categoryLabelEn: m.categoryLabelEn ?? null,
-          imageUrl: buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
+          imageUrl: (m as { imageUrl?: string }).imageUrl?.trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
           volume: `$${m.volume.toFixed(2)}`,
           closesAt: m.closesAt,
           expiresAt: m.expiresAt,

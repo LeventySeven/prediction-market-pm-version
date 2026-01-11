@@ -185,6 +185,7 @@ const marketOutput = z.object({
   titleRu: z.string(),
   titleEn: z.string(),
   description: z.string().nullable(),
+  imageUrl: z.string(),
   state: z.string(),
   closesAt: z.string(),
   expiresAt: z.string(),
