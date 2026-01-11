@@ -77,6 +77,7 @@ const mapMarketRow = (
     titleRu: row.title_rus ?? row.title_eng,
     titleEn: row.title_eng,
     description: row.description,
+    imageUrl: row.image_url ?? "",
     state: row.state,
     closesAt: new Date(row.closes_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(),
@@ -244,7 +245,7 @@ export const marketRouter = router({
       let query = supabase
         .from("markets")
         .select(`
-          id, title_rus, title_eng, description, state, closes_at, expires_at, created_by,
+          id, title_rus, title_eng, description, image_url, state, closes_at, expires_at, created_by,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
@@ -319,7 +320,7 @@ export const marketRouter = router({
       const { data, error } = await supabase
         .from("markets")
         .select(`
-          id, title_rus, title_eng, description, state, closes_at, expires_at, created_by,
+          id, title_rus, title_eng, description, image_url, state, closes_at, expires_at, created_by,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
@@ -1272,11 +1273,12 @@ export const marketRouter = router({
   createMarket: publicProcedure
     .input(
       z.object({
-        titleEn: z.string().min(3),
-        description: z.string().optional().nullable(),
+        titleEn: z.string().min(3), // Allow any characters including special characters
+        description: z.string().optional().nullable(), // Allow any characters including special characters
         closesAt: z.string().optional().nullable(),
-        expiresAt: z.string(),
+        expiresAt: z.string(), // Accepts datetime-local format (YYYY-MM-DDTHH:MM)
         categoryId: z.string().min(1),
+        imageUrl: z.string().optional().nullable(), // Optional image URL from Supabase storage
       })
     )
     .output(
@@ -1333,6 +1335,7 @@ export const marketRouter = router({
           title_rus: null, // Optional field - focusing on English audience
           title_eng: titleEnTrimmed,
           description: input.description?.trim() || null,
+          image_url: input.imageUrl?.trim() || null,
           state: "open",
           closes_at: new Date(closesAtMs).toISOString(),
           expires_at: new Date(expiresAtMs).toISOString(),

@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { X, Clock, Info, Sparkles, HelpCircle } from "lucide-react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
+import { X, Clock, Info, Sparkles, HelpCircle, Image } from "lucide-react";
 import Button from "./Button";
 
 type MarketCategory = { id?: string; labelRu?: string; labelEn?: string };
@@ -17,6 +17,7 @@ type AdminMarketModalProps = {
     closesAt?: string | null;
     expiresAt: string;
     categoryId: string;
+    imageUrl?: string | null;
   }) => Promise<void>;
 };
 
@@ -33,11 +34,25 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
   const [description, setDescription] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [categoryId, setCategoryId] = useState<string>("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [validationOpen, setValidationOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!imageFile) {
+      setImagePreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(imageFile);
+    setImagePreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [imageFile]);
 
   const t = (ru: string, en: string) => (lang === "RU" ? ru : en);
 
@@ -93,13 +108,28 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
   if (!isOpen) return null;
 
-  type ErrorLike = string | Error | { message?: string } | null | undefined;
+  type ErrorLike = string | Error | { message?: string; data?: { zodError?: unknown } } | null | undefined;
 
-  const getErrorMessage = (error: ErrorLike) => {
+  const getErrorMessage = (error: ErrorLike): string => {
     if (typeof error === "string") return error;
     if (error instanceof Error) return error.message;
-    if (error && typeof error === "object" && typeof (error as { message?: string }).message === "string") {
-      return String((error as { message?: string }).message);
+    if (error && typeof error === "object") {
+      if ("message" in error && typeof error.message === "string") {
+        return error.message;
+      }
+      // Check for Zod validation errors in tRPC error structure
+      if ("data" in error && error.data && typeof error.data === "object" && "zodError" in error.data) {
+        const zodError = error.data.zodError;
+        if (zodError && typeof zodError === "object" && "issues" in zodError && Array.isArray(zodError.issues)) {
+          const issues = zodError.issues as Array<{ message?: string; path?: unknown[] }>;
+          if (issues.length > 0) {
+            const firstIssue = issues[0];
+            if (firstIssue.message) {
+              return firstIssue.message;
+            }
+          }
+        }
+      }
     }
     return t("Не удалось создать рынок", "Failed to create market");
   };
@@ -112,18 +142,39 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
     setError(null);
     setLoading(true);
     try {
+      let finalImageUrl: string | null = imageUrl;
+
+      // Upload image if a file was selected
+      if (imageFile) {
+        const formData = new FormData();
+        formData.append("file", imageFile);
+        const uploadResp = await fetch("/api/market-image/upload", {
+          method: "POST",
+          body: formData,
+        });
+        const uploadData = (await uploadResp.json()) as { imageUrl?: string; error?: string };
+        if (!uploadResp.ok || !uploadData.imageUrl) {
+          throw new Error(uploadData.error || "UPLOAD_FAILED");
+        }
+        finalImageUrl = uploadData.imageUrl;
+      }
+
       await onCreate({
         titleEn: titleEn.trim(),
         description: description.trim() || null,
         expiresAt,
         categoryId,
+        imageUrl: finalImageUrl,
       });
       setTitleEn("");
       setDescription("");
       setExpiresAt("");
       setCategoryId("");
+      setImageFile(null);
+      setImageUrl(null);
       onClose();
     } catch (error) {
+      console.error('Market creation error:', error);
       setError(getErrorMessage(error));
     } finally {
       setLoading(false);
@@ -180,6 +231,48 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                 placeholder={t("Условия разрешения события...", "Resolution criteria...")}
                 className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-white focus:border-zinc-700 focus:outline-none"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-white mb-2">{t("Изображение", "Image")}</label>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  setImageFile(file);
+                  setImageUrl(null); // Clear URL when file is selected
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={loading}
+                className="w-full h-11 rounded-xl bg-zinc-950/40 border border-zinc-900 px-3 text-left text-sm text-zinc-100 hover:border-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <Image size={16} />
+                <span>{t("Загрузить изображение", "Upload image")}</span>
+              </button>
+              {imageFile && (
+                <div className="mt-2 text-xs text-zinc-500">
+                  {t("Выбран файл:", "Selected file:")} {imageFile.name}
+                </div>
+              )}
+              {imagePreviewUrl && (
+                <div className="mt-3 rounded-xl overflow-hidden border border-zinc-900 bg-zinc-950/40">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imagePreviewUrl}
+                    alt={t("Превью изображения", "Image preview")}
+                    className="w-full h-auto max-h-48 object-cover"
+                  />
+                </div>
+              )}
+              <p className="mt-2 text-xs text-zinc-500">
+                {t("Опционально: загрузите изображение для рынка", "Optional: upload an image for the market")}
+              </p>
             </div>
 
             <div>

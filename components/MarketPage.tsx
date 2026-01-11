@@ -449,6 +449,18 @@ const MarketPage: React.FC<MarketPageProps> = ({
             </button>
           </div>
 
+          {/* Market Image */}
+          {market.imageUrl && (
+            <div className="rounded-2xl border border-zinc-900 bg-black overflow-hidden">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img 
+                src={market.imageUrl} 
+                alt={localizedTitle}
+                className="w-full h-auto max-h-64 object-cover"
+              />
+            </div>
+          )}
+
           {/* Chart */}
           <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[380px] relative">
             <div className="flex items-baseline gap-4 mb-8">

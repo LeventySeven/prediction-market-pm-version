@@ -253,6 +253,7 @@ export interface Database {
           title_rus: string | null;
           title_eng: string;
           description: string | null;
+          image_url: string | null;
           state: MarketState;
           closes_at: string;
           expires_at: string;
@@ -272,6 +273,7 @@ export interface Database {
           title_rus?: string | null;
           title_eng: string;
           description?: string | null;
+          image_url?: string | null;
           state?: MarketState;
           closes_at: string;
           expires_at: string;
@@ -291,6 +293,7 @@ export interface Database {
           title_rus?: string;
           title_eng?: string;
           description?: string | null;
+          image_url?: string | null;
           state?: MarketState;
           closes_at?: string;
           expires_at?: string;
