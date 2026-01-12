@@ -150,6 +150,8 @@ export default function HomePage() {
   const [marketComments, setMarketComments] = useState<MarketComment[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
   const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
+  const [marketCommentsError, setMarketCommentsError] = useState<string | null>(null);
+  const [marketActivityError, setMarketActivityError] = useState<string | null>(null);
   const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
@@ -214,6 +216,16 @@ export default function HomePage() {
     return undefined;
   };
 
+  const isAuthErrorMessage = (msg?: string) => {
+    const upper = String(msg ?? "").toUpperCase();
+    return (
+      upper.includes("UNAUTHORIZED") ||
+      upper.includes("NOT AUTHENTICATED") ||
+      upper.includes("NOT_AUTHENTICATED") ||
+      (upper.includes("JWT") && upper.includes("EXPIRED"))
+    );
+  };
+
   const formatBetError = (msg?: string) => {
     if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
     const upper = msg.toUpperCase();
@@ -248,6 +260,18 @@ export default function HomePage() {
     }
     return msg;
   };
+
+  const maybeRequireRelogin = useCallback(
+    (err: unknown) => {
+      const msg = getErrorMessage(err as ErrorLike);
+      if (isAuthErrorMessage(msg)) {
+        setShowReloginWarning(true);
+        return true;
+      }
+      return false;
+    },
+    []
+  );
 
   const loadLeaderboard = useCallback(async () => {
     setLoadingLeaderboard(true);
@@ -949,6 +973,8 @@ export default function HomePage() {
       setMarketComments([]);
       setMarketInsightsLoading(false);
       setMarketInsightsError(null);
+      setMarketCommentsError(null);
+      setMarketActivityError(null);
       return;
     }
 
@@ -957,72 +983,93 @@ export default function HomePage() {
     const fetchInsights = async () => {
       setMarketInsightsLoading(true);
       setMarketInsightsError(null);
+      setMarketCommentsError(null);
+      setMarketActivityError(null);
       try {
-        const [candlesRaw, tradesRaw, commentsRaw] = await Promise.all([
+        // Fetch independently so one failing endpoint doesn't wipe the others.
+        const [candlesRes, tradesRes, commentsRes] = await Promise.allSettled([
           trpcClient.market.getPriceCandles.query({ marketId: selectedMarketId, limit: 200 }),
           trpcClient.market.getPublicTrades.query({ marketId: selectedMarketId, limit: 50 }),
           trpcClient.market.getMarketComments.query({ marketId: selectedMarketId, limit: 50 }),
         ]);
+
         if (cancelled) return;
-        const candlesParsed = priceCandlesSchema.parse(candlesRaw);
-        const tradesParsed = publicTradesSchema.parse(tradesRaw);
-        const commentsParsed = marketCommentsSchema.parse(commentsRaw);
 
-        const candles: PriceCandle[] = candlesParsed.map((c) => ({
-          bucket: requireValue(c.bucket, "CANDLE_BUCKET_MISSING"),
-          open: requireValue(c.open, "CANDLE_OPEN_MISSING"),
-          high: requireValue(c.high, "CANDLE_HIGH_MISSING"),
-          low: requireValue(c.low, "CANDLE_LOW_MISSING"),
-          close: requireValue(c.close, "CANDLE_CLOSE_MISSING"),
-          volume: requireValue(c.volume, "CANDLE_VOLUME_MISSING"),
-          tradesCount: requireValue(c.tradesCount, "CANDLE_TRADES_COUNT_MISSING"),
-        }));
+        // Candles (chart)
+        if (candlesRes.status === "fulfilled") {
+          const candlesParsed = priceCandlesSchema.parse(candlesRes.value);
+          const candles: PriceCandle[] = candlesParsed.map((c) => ({
+            bucket: requireValue(c.bucket, "CANDLE_BUCKET_MISSING"),
+            open: requireValue(c.open, "CANDLE_OPEN_MISSING"),
+            high: requireValue(c.high, "CANDLE_HIGH_MISSING"),
+            low: requireValue(c.low, "CANDLE_LOW_MISSING"),
+            close: requireValue(c.close, "CANDLE_CLOSE_MISSING"),
+            volume: requireValue(c.volume, "CANDLE_VOLUME_MISSING"),
+            tradesCount: requireValue(c.tradesCount, "CANDLE_TRADES_COUNT_MISSING"),
+          }));
+          setMarketCandles(candles);
+        } else {
+          console.error("Failed to load price candles", candlesRes.reason);
+          // keep previous candles for this market (or empty if first load)
+        }
 
-        const trades: PublicTrade[] = tradesParsed.map((t) => ({
-          id: requireValue(t.id, "PUBLIC_TRADE_ID_MISSING"),
-          marketId: requireValue(t.marketId, "PUBLIC_TRADE_MARKET_ID_MISSING"),
-          action: requireValue(t.action, "PUBLIC_TRADE_ACTION_MISSING"),
-          outcome: requireValue(t.outcome, "PUBLIC_TRADE_OUTCOME_MISSING"),
-          collateralGross: requireValue(t.collateralGross, "PUBLIC_TRADE_GROSS_MISSING"),
-          sharesDelta: requireValue(t.sharesDelta, "PUBLIC_TRADE_SHARES_MISSING"),
-          priceBefore: requireValue(t.priceBefore, "PUBLIC_TRADE_PRICE_BEFORE_MISSING"),
-          priceAfter: requireValue(t.priceAfter, "PUBLIC_TRADE_PRICE_AFTER_MISSING"),
-          createdAt: requireValue(t.createdAt, "PUBLIC_TRADE_CREATED_AT_MISSING"),
-        }));
+        // Trades (activity)
+        if (tradesRes.status === "fulfilled") {
+          const tradesParsed = publicTradesSchema.parse(tradesRes.value);
+          const trades: PublicTrade[] = tradesParsed.map((t) => ({
+            id: requireValue(t.id, "PUBLIC_TRADE_ID_MISSING"),
+            marketId: requireValue(t.marketId, "PUBLIC_TRADE_MARKET_ID_MISSING"),
+            action: requireValue(t.action, "PUBLIC_TRADE_ACTION_MISSING"),
+            outcome: requireValue(t.outcome, "PUBLIC_TRADE_OUTCOME_MISSING"),
+            collateralGross: requireValue(t.collateralGross, "PUBLIC_TRADE_GROSS_MISSING"),
+            sharesDelta: requireValue(t.sharesDelta, "PUBLIC_TRADE_SHARES_MISSING"),
+            priceBefore: requireValue(t.priceBefore, "PUBLIC_TRADE_PRICE_BEFORE_MISSING"),
+            priceAfter: requireValue(t.priceAfter, "PUBLIC_TRADE_PRICE_AFTER_MISSING"),
+            createdAt: requireValue(t.createdAt, "PUBLIC_TRADE_CREATED_AT_MISSING"),
+          }));
+          setMarketPublicTrades(trades);
+        } else {
+          console.error("Failed to load public trades", tradesRes.reason);
+          maybeRequireRelogin(tradesRes.reason);
+          setMarketActivityError(getErrorMessage(tradesRes.reason));
+        }
 
-        const uiComments: MarketComment[] = commentsParsed.map((c) => {
-          const userLabel = c.authorUsername ? `${c.authorName} (@${c.authorUsername})` : c.authorName;
-          const avatar = c.authorAvatarUrl || buildInitialsAvatarDataUrl(c.authorName, { bg: "#333333", fg: "#ffffff" });
-          const timestamp = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
-            day: "2-digit",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit",
+        // Comments
+        if (commentsRes.status === "fulfilled") {
+          const commentsParsed = marketCommentsSchema.parse(commentsRes.value);
+          const uiComments: MarketComment[] = commentsParsed.map((c) => {
+            const userLabel = c.authorUsername ? `${c.authorName} (@${c.authorUsername})` : c.authorName;
+            const avatar = c.authorAvatarUrl || buildInitialsAvatarDataUrl(c.authorName, { bg: "#333333", fg: "#ffffff" });
+            const timestamp = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
+              day: "2-digit",
+              month: "short",
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            return {
+              id: c.id,
+              userId: c.userId,
+              username: c.authorUsername ?? null,
+              user: userLabel,
+              avatar,
+              text: c.body,
+              createdAt: c.createdAt,
+              timestamp,
+              likes: c.likesCount ?? 0,
+              likedByMe: c.likedByMe ?? false,
+              parentId: c.parentId ?? null,
+            };
           });
-          return {
-            id: c.id,
-            userId: c.userId,
-            username: c.authorUsername ?? null,
-            user: userLabel,
-            avatar,
-            text: c.body,
-            createdAt: c.createdAt,
-            timestamp,
-            likes: c.likesCount ?? 0,
-            likedByMe: c.likedByMe ?? false,
-            parentId: c.parentId ?? null,
-          };
-        });
-
-        setMarketCandles(candles);
-        setMarketPublicTrades(trades);
-        setMarketComments(uiComments);
+          setMarketComments(uiComments);
+        } else {
+          console.error("Failed to load market comments", commentsRes.reason);
+          maybeRequireRelogin(commentsRes.reason);
+          setMarketCommentsError(getErrorMessage(commentsRes.reason));
+        }
       } catch (err) {
         console.error("Failed to load market insights", err);
         if (!cancelled) {
-          setMarketCandles([]);
-          setMarketPublicTrades([]);
-          setMarketComments([]);
+          maybeRequireRelogin(err);
           setMarketInsightsError(getErrorMessage(err));
         }
       } finally {
@@ -1302,11 +1349,17 @@ export default function HomePage() {
 
   const handlePostMarketComment = useCallback(
     async (params: { marketId: string; text: string; parentId?: string | null }) => {
-      const created = await trpcClient.market.postMarketComment.mutate({
-        marketId: params.marketId,
-        body: params.text,
-        parentId: params.parentId ?? null,
-      });
+      let created: unknown;
+      try {
+        created = await trpcClient.market.postMarketComment.mutate({
+          marketId: params.marketId,
+          body: params.text,
+          parentId: params.parentId ?? null,
+        });
+      } catch (err) {
+        maybeRequireRelogin(err);
+        throw err;
+      }
       const parsed = marketCommentsSchema.parse([created])[0];
       const userLabel = parsed.authorUsername ? `${parsed.authorName} (@${parsed.authorUsername})` : parsed.authorName;
       const avatar = parsed.authorAvatarUrl || buildInitialsAvatarDataUrl(parsed.authorName, { bg: "#333333", fg: "#ffffff" });
@@ -1331,7 +1384,7 @@ export default function HomePage() {
       };
       setMarketComments((prev) => [ui, ...prev]);
     },
-    [lang]
+    [lang, maybeRequireRelogin]
   );
 
   const handleToggleMarketCommentLike = useCallback(async (commentId: string) => {
@@ -1355,6 +1408,7 @@ export default function HomePage() {
       );
     } catch (err) {
       console.error("toggleMarketCommentLike failed", err);
+      maybeRequireRelogin(err);
       if (previous) {
         setMarketComments((prev) =>
           prev.map((c) => (c.id === commentId ? { ...c, likes: previous.likes, likedByMe: previous.likedByMe } : c))
@@ -1362,7 +1416,7 @@ export default function HomePage() {
       }
       throw err;
     }
-  }, []);
+  }, [maybeRequireRelogin]);
 
   const shellViewIndex = (() => {
     switch (currentView) {
@@ -1438,6 +1492,8 @@ export default function HomePage() {
               publicTrades={marketPublicTrades}
               insightsLoading={marketInsightsLoading}
               insightsError={marketInsightsError}
+              commentsError={marketCommentsError}
+              activityError={marketActivityError}
             />
           </main>
           <BottomMenu

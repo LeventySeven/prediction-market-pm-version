@@ -42,6 +42,8 @@ interface MarketPageProps {
   publicTrades?: PublicTrade[];
   insightsLoading?: boolean;
   insightsError?: string | null;
+  commentsError?: string | null;
+  activityError?: string | null;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -66,9 +68,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
   publicTrades = [],
   insightsLoading = false,
   insightsError = null,
+  commentsError = null,
+  activityError = null,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
+  const [commentSendError, setCommentSendError] = useState<string | null>(null);
   const [tradeType, setTradeType] = useState<'YES' | 'NO'>('YES');
   const [amount, setAmount] = useState('');
   const [timeLeft, setTimeLeft] = useState('');
@@ -188,15 +193,21 @@ const MarketPage: React.FC<MarketPageProps> = ({
   })();
   const isExpired = isResolved || tradingClosed;
 
-  const handlePostComment = () => {
+  const handlePostComment = async () => {
     if (!commentText.trim()) return;
     if (!user) {
       onLogin();
       return;
     }
     const text = commentText.trim();
+    setCommentSendError(null);
     setCommentText('');
-    void onPostComment({ marketId: market.id, text, parentId: replyTo?.id ?? null });
+    try {
+      await onPostComment({ marketId: market.id, text, parentId: replyTo?.id ?? null });
+    } catch (err) {
+      console.error("postMarketComment failed", err);
+      setCommentSendError(getErrorMessage(err, 'Не удалось отправить комментарий', 'Failed to post comment', lang));
+    }
     setReplyTo(null);
   };
 
@@ -821,10 +832,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
             {/* Comments Section */}
             {activeTab === 'COMMENTS' && (
               <div className="space-y-8">
-                {insightsError ? (
+                {commentsError ? (
                   <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 px-4 py-3 text-xs text-zinc-400">
                     {getErrorMessage(
-                      insightsError,
+                      commentsError,
                       'Не удалось загрузить комментарии',
                       'Failed to load comments',
                       lang
@@ -858,6 +869,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       </div>
                     </div>
                   </div>
+                )}
+
+                {commentSendError && (
+                  <div className="text-xs text-[rgba(245,68,166,1)]">{commentSendError}</div>
                 )}
 
                 {/* List */}
@@ -1005,6 +1020,16 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     {lang === 'RU' ? 'Загрузка активности...' : 'Loading activity...'}
                   </p>
                 )}
+                {!insightsLoading && activityError ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 px-4 py-3 text-xs text-zinc-400">
+                    {getErrorMessage(
+                      activityError,
+                      'Не удалось загрузить активность',
+                      'Failed to load activity',
+                      lang
+                    )}
+                  </div>
+                ) : null}
                 {!insightsLoading && publicTrades.length === 0 && (
                   <p className="text-sm text-neutral-500">
                     {lang === 'RU' ? 'Сделок пока нет' : 'No trades yet'}

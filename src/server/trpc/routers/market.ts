@@ -999,7 +999,7 @@ export const marketRouter = router({
     )
     .output(z.array(marketCommentOutput))
     .query(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabase, supabaseService, authUser } = ctx;
       const { data, error } = await supabase
         .from("market_comments_public")
         .select("id, market_id, user_id, parent_id, body, created_at, author_name, author_username, author_avatar_url, likes_count")
@@ -1019,7 +1019,8 @@ export const marketRouter = router({
       let likedSet = new Set<string>();
       if (authUser && rows.length > 0) {
         const ids = rows.map((r) => r.id);
-        const liked = await supabase
+        // Use service client so this doesn't depend on a Supabase session cookie in WebViews.
+        const liked = await supabaseService
           .from("market_comment_likes")
           .select("comment_id")
           .eq("user_id", authUser.id)
@@ -1059,13 +1060,13 @@ export const marketRouter = router({
     )
     .output(marketCommentOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
       if (input.parentId) {
-        const { data: parent, error: parentErr } = await supabase
+        const { data: parent, error: parentErr } = await supabaseService
           .from("market_comments")
           .select("id, market_id")
           .eq("id", input.parentId)
@@ -1088,7 +1089,8 @@ export const marketRouter = router({
         parent_id: input.parentId ?? null,
       };
 
-      const inserted = await supabase
+      // Use service client (we authenticate via JWT cookie, not Supabase session cookie).
+      const inserted = await supabaseService
         .from("market_comments")
         .insert(payload)
         .select("id")
@@ -1101,7 +1103,6 @@ export const marketRouter = router({
         });
       }
 
-      const { supabaseService } = ctx;
       const { data: row, error } = await supabaseService
         .from("market_comments_public")
         .select("id, market_id, user_id, parent_id, body, created_at, author_name, author_username, author_avatar_url, likes_count")
@@ -1145,7 +1146,7 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, supabaseService, authUser } = ctx;
+      const { supabaseService, authUser } = ctx;
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
@@ -1160,7 +1161,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Comment not found" });
       }
 
-      const current = await supabase
+      const current = await supabaseService
         .from("market_comment_likes")
         .select("comment_id")
         .eq("comment_id", input.commentId)
@@ -1170,7 +1171,7 @@ export const marketRouter = router({
       const alreadyLiked = Boolean(current.data);
 
       if (alreadyLiked) {
-        const del = await supabase
+        const del = await supabaseService
           .from("market_comment_likes")
           .delete()
           .eq("comment_id", input.commentId)
@@ -1179,7 +1180,7 @@ export const marketRouter = router({
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: del.error.message });
         }
       } else {
-        const ins = await supabase
+        const ins = await supabaseService
           .from("market_comment_likes")
           .insert({ comment_id: input.commentId, user_id: authUser.id } as Database["public"]["Tables"]["market_comment_likes"]["Insert"]);
         if (ins.error) {
