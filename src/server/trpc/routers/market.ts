@@ -949,9 +949,11 @@ export const marketRouter = router({
       )
     )
     .query(async ({ ctx, input }) => {
-      const { supabase } = ctx;
+      // Use service client to bypass RLS on underlying `trades` table.
+      // This endpoint returns a privacy-safe public feed (no user identities), so it's safe to do so.
+      const { supabaseService } = ctx;
 
-      let query = supabase
+      let query = supabaseService
         .from("trades_public")
         .select("id, market_id, action, outcome, collateral_gross_minor, shares_delta, price_before, price_after, created_at")
         .order("created_at", { ascending: false })
