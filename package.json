@@ -17,6 +17,7 @@
     "contracts:compile": "hardhat compile",
     "contracts:test": "hardhat test",
     "contracts:deploy:local": "hardhat run scripts/deploy/deploy-local.cjs --network localhost",
+    "contracts:deploy:amoy": "hardhat run scripts/deploy/deploy-amoy.cjs --network amoy",
     "contracts:deploy:sepolia": "hardhat run scripts/deploy/deploy-sepolia.cjs --network sepolia",
     "contracts:node": "hardhat node",
     "contracts:node:kill": "bash scripts/kill-hardhat-node.sh",

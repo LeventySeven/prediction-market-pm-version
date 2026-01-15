@@ -16,6 +16,15 @@ module.exports = {
   networks: {
     hardhat: { chainId: 31337 },
     localhost: { url: "http://127.0.0.1:8545", chainId: 31337 },
+    amoy: {
+      url:
+        process.env.ALCHEMY_POLYGON_AMOY_URL ||
+        process.env.POLYGON_AMOY_RPC_URL ||
+        `https://polygon-amoy.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY || ""}` ||
+        "https://rpc-amoy.polygon.technology", // Public RPC fallback
+      chainId: 80002,
+      accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
+    },
     sepolia: {
       url:
         process.env.ALCHEMY_SEPOLIA_URL ||

@@ -228,7 +228,9 @@ const WalletConnectSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
     setFundsError(null);
     try {
       const prep = await trpcClient.wallet.prepareDeposit.mutate({ assetCode: 'USDC', amount });
-      const approveHash = await walletClient.sendTransaction({
+      // Viem/Wagmi types can require extra fields (e.g. `kzg`) depending on version.
+      // Keep runtime-correct transaction shape and avoid blocking builds on upstream typing changes.
+      const approveHash = await (walletClient as any).sendTransaction({
         account: walletClient.account!,
         to: prep.approveTx.to as `0x${string}`,
         data: prep.approveTx.data as Hex,
@@ -236,7 +238,7 @@ const WalletConnectSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
       });
       await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
-      const depositHash = await walletClient.sendTransaction({
+      const depositHash = await (walletClient as any).sendTransaction({
         account: walletClient.account!,
         to: prep.depositTx.to as `0x${string}`,
         data: prep.depositTx.data as Hex,
@@ -269,7 +271,7 @@ const WalletConnectSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
     setFundsError(null);
     try {
       const prep = await trpcClient.wallet.prepareWithdraw.mutate({ assetCode: 'USDC', amount });
-      const withdrawHash = await walletClient.sendTransaction({
+      const withdrawHash = await (walletClient as any).sendTransaction({
         account: walletClient.account!,
         to: prep.withdrawTx.to as `0x${string}`,
         data: prep.withdrawTx.data as Hex,

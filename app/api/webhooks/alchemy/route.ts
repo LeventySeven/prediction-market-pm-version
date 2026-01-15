@@ -40,6 +40,8 @@ function networkToChainId(network: string | undefined): number | null {
   const n = network.toUpperCase();
   // Common Alchemy formats for Notify "Address Activity" webhooks.
   if (n.includes("SEPOLIA")) return 11155111;
+  // Polygon Amoy (Alchemy commonly uses POLYGON_AMOY / MATIC_AMOY style identifiers)
+  if (n.includes("AMOY")) return 80002;
   if (n === "ETH_MAINNET" || n === "ETHEREUM_MAINNET" || n === "ETH_MAINNET_GOERLI_DEPRECATED") return 1;
   if (n.includes("MAINNET")) return 1;
   return null;
@@ -47,6 +49,7 @@ function networkToChainId(network: string | undefined): number | null {
 
 function getVaultAddressForChain(chainId: number): string {
   if (chainId === 11155111) return process.env.NEXT_PUBLIC_VAULT_ADDRESS_SEPOLIA || "";
+  if (chainId === 80002) return process.env.NEXT_PUBLIC_VAULT_ADDRESS_AMOY || "";
   if (chainId === 1) return process.env.NEXT_PUBLIC_VAULT_ADDRESS_MAINNET || "";
   return "";
 }
@@ -56,6 +59,13 @@ function tokenToAssetCode(chainId: number, tokenAddress: string): "USDC" | "USDT
   if (chainId === 11155111) {
     const usdc = (process.env.NEXT_PUBLIC_USDC_ADDRESS_SEPOLIA || "").toLowerCase();
     const usdt = (process.env.NEXT_PUBLIC_USDT_ADDRESS_SEPOLIA || "").toLowerCase();
+    if (usdc && addr === usdc) return "USDC";
+    if (usdt && addr === usdt) return "USDT";
+    return null;
+  }
+  if (chainId === 80002) {
+    const usdc = (process.env.NEXT_PUBLIC_USDC_ADDRESS_AMOY || "").toLowerCase();
+    const usdt = (process.env.NEXT_PUBLIC_USDT_ADDRESS_AMOY || "").toLowerCase();
     if (usdc && addr === usdc) return "USDC";
     if (usdt && addr === usdt) return "USDT";
     return null;

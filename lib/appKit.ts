@@ -1,5 +1,6 @@
 import { createAppKit } from '@reown/appkit/react';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+import { polygonAmoy } from 'viem/chains';
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '';
 
@@ -14,17 +15,20 @@ const metadata = {
   icons: [],
 };
 
-// Local-only for now:
-// - Default to local Hardhat chain (31337) for development/testing.
+// Local + Testnet:
+// - Hardhat (31337) for local dev
+// - Polygon Amoy (80002) for testnet
 // NOTE: Many wallets require you to add the local RPC manually (MetaMask: "Add network" -> localhost:8545).
+const localRpcUrl = process.env.NEXT_PUBLIC_LOCAL_RPC_URL || 'http://127.0.0.1:8545';
+
 const hardhatLocal = {
   id: 31337,
   name: 'Hardhat (Local)',
   network: 'hardhat',
   nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
   rpcUrls: {
-    default: { http: ['http://127.0.0.1:8545'] },
-    public: { http: ['http://127.0.0.1:8545'] },
+    default: { http: [localRpcUrl] },
+    public: { http: [localRpcUrl] },
   },
   blockExplorers: {
     default: { name: 'Local', url: '' },
@@ -32,7 +36,21 @@ const hardhatLocal = {
   testnet: true,
 };
 
-const networks = [hardhatLocal];
+// Optional: provide a dedicated public RPC for Amoy (helps wagmi `publicClient` reads).
+// Avoid exposing private Alchemy keys here; use a public endpoint.
+const amoyRpcUrl = process.env.NEXT_PUBLIC_POLYGON_AMOY_RPC_URL || '';
+const polygonAmoyNetwork = amoyRpcUrl
+  ? ({
+      ...polygonAmoy,
+      rpcUrls: {
+        ...polygonAmoy.rpcUrls,
+        default: { http: [amoyRpcUrl] },
+        public: { http: [amoyRpcUrl] },
+      },
+    } as typeof polygonAmoy)
+  : polygonAmoy;
+
+const networks = [hardhatLocal, polygonAmoyNetwork];
 
 const wagmiAdapter = new WagmiAdapter({
   ssr: false,
