@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/types/database";
+import type { JsonValue } from "@/src/types/database";
 
 export const runtime = "nodejs";
 
-type AnyObj = Record<string, unknown>;
+type AnyObj = Record<string, JsonValue>;
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -52,8 +53,12 @@ export async function POST(req: Request) {
     }
   }
 
-  const body = (await req.json().catch(() => null)) as unknown;
-  const events: AnyObj[] = Array.isArray(body) ? (body as AnyObj[]) : body && typeof body === "object" ? [body as AnyObj] : [];
+  const body = (await req.json().catch(() => null)) as JsonValue | null;
+  const events: AnyObj[] = Array.isArray(body)
+    ? (body as AnyObj[])
+    : body && typeof body === "object"
+      ? [body as AnyObj]
+      : [];
 
   const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
   const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -105,9 +110,8 @@ export async function POST(req: Request) {
     }
 
     // Upsert into on_chain_transactions as confirmed.
-    // NOTE: tx_type is unknown until we standardize webhook payload mapping. Store it as 'deposit' for now.
-    await supabase.from("on_chain_transactions").upsert(
-      {
+    // NOTE: tx_type isn't standardized yet for webhook payload mapping. Store it as 'deposit' for now.
+    const row: Database["public"]["Tables"]["on_chain_transactions"]["Insert"] = {
         user_id: userId,
         solana_cluster: cluster,
         tx_sig: txSig,
@@ -123,10 +127,9 @@ export async function POST(req: Request) {
         block_number: null,
         block_timestamp: null,
         error_message: null,
-        metadata: e as unknown as Record<string, unknown>,
-      } as any,
-      { onConflict: "solana_cluster,tx_sig" }
-    );
+        metadata: e,
+      };
+    await supabase.from("on_chain_transactions").upsert(row, { onConflict: "solana_cluster,tx_sig" });
 
     processed += 1;
   }

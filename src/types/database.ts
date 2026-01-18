@@ -7,6 +7,15 @@ export type TradeAction = "buy" | "sell";
 export type WalletTxKind = "deposit" | "withdraw" | "trade" | "payout" | "referral" | "fee";
 export type RewardStatus = "pending" | "paid" | "reversed";
 
+// JSON-compatible value (useful for metadata blobs).
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: JsonValue }
+  | JsonValue[];
+
 // WalletConnect/On-chain types
 export type OnChainTxStatus = "pending" | "confirmed" | "failed";
 export type OnChainTxType = "deposit" | "bet" | "sell" | "claim" | "withdraw" | "approve";
@@ -587,7 +596,7 @@ export interface Database {
           block_number: number | null;
           block_timestamp: string | null;
           error_message: string | null;
-          metadata: Record<string, unknown>;
+          metadata: JsonValue;
           created_at: string;
           confirmed_at: string | null;
           updated_at: string;
@@ -609,7 +618,7 @@ export interface Database {
           block_number?: number | null;
           block_timestamp?: string | null;
           error_message?: string | null;
-          metadata?: Record<string, unknown>;
+          metadata?: JsonValue;
           created_at?: string;
           confirmed_at?: string | null;
           updated_at?: string;
@@ -631,7 +640,7 @@ export interface Database {
           block_number?: number | null;
           block_timestamp?: string | null;
           error_message?: string | null;
-          metadata?: Record<string, unknown>;
+          metadata?: JsonValue;
           created_at?: string;
           confirmed_at?: string | null;
           updated_at?: string;

@@ -108,7 +108,13 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
   if (!isOpen) return null;
 
-  type ErrorLike = string | Error | { message?: string; data?: { zodError?: unknown } } | null | undefined;
+  type ZodIssueLike = { message?: string; path?: Array<string | number> };
+  type ErrorLike =
+    | string
+    | Error
+    | { message?: string; data?: { zodError?: { issues?: ZodIssueLike[] } } }
+    | null
+    | undefined;
 
   const getErrorMessage = (error: ErrorLike): string => {
     if (typeof error === "string") return error;
@@ -121,7 +127,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       if ("data" in error && error.data && typeof error.data === "object" && "zodError" in error.data) {
         const zodError = error.data.zodError;
         if (zodError && typeof zodError === "object" && "issues" in zodError && Array.isArray(zodError.issues)) {
-          const issues = zodError.issues as Array<{ message?: string; path?: unknown[] }>;
+          const issues = (zodError.issues ?? []) as ZodIssueLike[];
           if (issues.length > 0) {
             const firstIssue = issues[0];
             if (firstIssue.message) {

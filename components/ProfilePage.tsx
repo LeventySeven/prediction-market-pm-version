@@ -159,7 +159,7 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
           </div>
         </div>
 
-        <div className="shrink-0">
+        <div className="shrink-0 relative">
           <button
             type="button"
             onClick={() => setWalletModalOpen(true)}
@@ -167,6 +167,12 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
           >
             {connected ? (lang === 'RU' ? 'Сменить' : 'Change') : (lang === 'RU' ? 'Подключить' : 'Connect')}
           </button>
+
+          <SolanaWalletConnectModal
+            open={walletModalOpen}
+            onClose={() => setWalletModalOpen(false)}
+            title={lang === 'RU' ? 'Подключить Solana кошелёк' : 'Connect Solana wallet'}
+          />
         </div>
       </div>
 
@@ -175,12 +181,6 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
           ? 'USDC-депозиты/вывод и ончейн-рынки будут подключены после деплоя программы на Solana.'
           : 'USDC deposits/withdrawals and on-chain markets will be enabled after the Solana program is deployed.'}
       </div>
-
-      <SolanaWalletConnectModal
-        open={walletModalOpen}
-        onClose={() => setWalletModalOpen(false)}
-        title={lang === 'RU' ? 'Подключить Solana кошелёк' : 'Connect Solana wallet'}
-      />
     </div>
   );
 };

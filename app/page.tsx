@@ -75,7 +75,13 @@ export default function HomePage() {
   const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const connectedWalletAddress = publicKey ? publicKey.toBase58() : null;
-  const solanaCluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet").toLowerCase();
+  type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
+  const normalizeSolanaCluster = (value: string): SolanaCluster => {
+    const v = value.trim().toLowerCase();
+    if (v === "devnet" || v === "testnet" || v === "mainnet-beta") return v;
+    return "devnet";
+  };
+  const solanaCluster: SolanaCluster = normalizeSolanaCluster(process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet");
 
   // Keep DB wallet link in sync with actual connected wallet/chain.
   const walletSyncInFlight = useRef(false);
@@ -86,8 +92,8 @@ export default function HomePage() {
 
     // Solana pubkeys are base58 (case-sensitive) - do NOT lowercase them
     const walletPubkey = connectedWalletAddress ?? null;
-    const dbPubkey = (user as any).solanaWalletAddress ? String((user as any).solanaWalletAddress) : null;
-    const dbCluster = (user as any).solanaCluster ? String((user as any).solanaCluster).toLowerCase() : null;
+    const dbPubkey = user.solanaWalletAddress ? String(user.solanaWalletAddress) : null;
+    const dbCluster = user.solanaCluster ? String(user.solanaCluster).toLowerCase() : null;
 
     const syncKey = `${user.id}:${walletPubkey ?? "none"}:${solanaCluster}:${isWalletConnected ? "1" : "0"}`;
     if (walletSyncInFlight.current) return;
@@ -140,19 +146,19 @@ export default function HomePage() {
             const linked = await trpcClient.user.linkWallet.mutate({
               solanaWalletAddress: walletPubkey,
               solanaCluster,
-            } as any);
+            });
             setUser((prev) =>
               prev
                 ? {
                     ...prev,
-                    solanaWalletAddress: (linked as any).solanaWalletAddress ?? walletPubkey,
-                    solanaCluster: (linked as any).solanaCluster ?? solanaCluster,
-                    solanaWalletConnectedAt: (linked as any).solanaWalletConnectedAt ?? null,
+                    solanaWalletAddress: linked.solanaWalletAddress ?? walletPubkey,
+                    solanaCluster: linked.solanaCluster ?? solanaCluster,
+                    solanaWalletConnectedAt: linked.solanaWalletConnectedAt ?? null,
                   }
                 : prev
             );
           } else if (needsChainUpdate) {
-            await trpcClient.user.updateWalletChain.mutate({ solanaCluster } as any);
+            await trpcClient.user.updateWalletChain.mutate({ solanaCluster });
             setUser((prev) => (prev ? { ...prev, solanaCluster } : prev));
           }
         } catch (err) {
@@ -356,8 +362,8 @@ export default function HomePage() {
   };
 
   const maybeRequireRelogin = useCallback(
-    (err: unknown) => {
-      const msg = getErrorMessage(err as ErrorLike);
+    (err: ErrorLike) => {
+      const msg = getErrorMessage(err);
       if (isAuthErrorMessage(msg)) {
         setShowReloginWarning(true);
         return true;
@@ -1013,6 +1019,10 @@ export default function HomePage() {
 
   const goToView = useCallback(
     (view: ViewType) => {
+      // UX: when switching tabs (bottom nav or swipe), always start at the top.
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      }
       setMarketBetIntent(null);
       setCurrentView(view);
       if (view === "FRIENDS") {
@@ -1486,7 +1496,7 @@ export default function HomePage() {
 
   const handlePostMarketComment = useCallback(
     async (params: { marketId: string; text: string; parentId?: string | null }) => {
-      let created: unknown;
+      let created: Awaited<ReturnType<typeof trpcClient.market.postMarketComment.mutate>>;
       try {
         created = await trpcClient.market.postMarketComment.mutate({
           marketId: params.marketId,

@@ -13,7 +13,11 @@ type Props = {
 
 const PRIORITY: string[] = ['Phantom', 'Solflare', 'WalletConnect'];
 
-export default function SolanaWalletConnectModal({ open, onClose, title = 'Connect wallet' }: Props) {
+export default function SolanaWalletConnectModal({
+  open,
+  onClose,
+  title = 'Connect wallet',
+}: Props) {
   const { wallets, select, connect, connecting } = useWallet();
   const [error, setError] = useState<string | null>(null);
 
@@ -40,22 +44,30 @@ export default function SolanaWalletConnectModal({ open, onClose, title = 'Conne
     onClose();
     // `select()` updates context state; `connect()` needs to run after that update lands.
     setTimeout(() => {
-      connect().catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+      connect().catch((e) => {
+        if (e instanceof Error) {
+          setError(e.message);
+        } else if (typeof e === 'string') {
+          setError(e);
+        } else {
+          setError('Wallet connection failed');
+        }
       });
     }, 0);
   };
 
   return (
-    <div className="fixed inset-0 z-[100]">
+    <>
       <button
         type="button"
-        className="absolute inset-0 bg-black/70"
+        className="fixed inset-0 z-40 bg-black/60"
         onClick={onClose}
         aria-label="Close wallet modal"
       />
 
-      <div className="absolute inset-x-0 top-16 mx-auto w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-zinc-900 bg-black shadow-2xl">
+      <div
+        className="absolute right-0 top-full mt-2 z-50 w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-zinc-900 bg-black shadow-2xl"
+      >
         <div className="flex items-center justify-between gap-3 p-4 border-b border-zinc-900">
           <div className="min-w-0">
             <div className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{title}</div>
@@ -110,7 +122,7 @@ export default function SolanaWalletConnectModal({ open, onClose, title = 'Conne
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 

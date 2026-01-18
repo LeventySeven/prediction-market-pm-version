@@ -855,9 +855,11 @@ export const userRouter = router({
       }
 
       return {
-        solanaWalletAddress: String((updated as any).solana_wallet_address),
-        solanaCluster: normalizeSolanaCluster(String((updated as any).solana_cluster)),
-        solanaWalletConnectedAt: new Date(String((updated as any).solana_wallet_connected_at)).toISOString(),
+        solanaWalletAddress: String((updated as { solana_wallet_address?: string | null }).solana_wallet_address),
+        solanaCluster: normalizeSolanaCluster(String((updated as { solana_cluster?: string | null }).solana_cluster)),
+        solanaWalletConnectedAt: new Date(
+          String((updated as { solana_wallet_connected_at?: string | null }).solana_wallet_connected_at)
+        ).toISOString(),
       };
     }),
 
@@ -952,7 +954,7 @@ export const userRouter = router({
         });
       }
 
-      if (!(user as any).solana_wallet_address) {
+      if (!(user as { solana_wallet_address?: string | null }).solana_wallet_address) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "NO_WALLET_LINKED" });
       }
 
