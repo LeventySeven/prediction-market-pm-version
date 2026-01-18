@@ -13,6 +13,13 @@ function getEnv(name: string): string {
   return v;
 }
 
+function getJsonContentLength(req: Request): number | null {
+  const raw = req.headers.get("content-length");
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function extractTxSig(payload: AnyObj): string | null {
   // Common Helius payloads include `signature` or `transactionSignature` or nested.
   const direct = payload["signature"] ?? payload["transactionSignature"] ?? payload["txSig"] ?? payload["tx_sig"];
@@ -43,14 +50,24 @@ function extractMarketPda(payload: AnyObj): string | null {
 }
 
 export async function POST(req: Request) {
-  // Minimal-risk verification until the exact Helius signature header is configured:
-  // require a shared secret header we can rotate.
+  // Fail-closed: never accept webhook traffic unless a secret is configured.
   const configured = process.env.HELIUS_WEBHOOK_SECRET;
-  if (configured && configured.length > 0) {
-    const got = req.headers.get("x-webhook-secret") || "";
-    if (got !== configured) {
-      return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
-    }
+  if (!configured || configured.length === 0) {
+    return NextResponse.json({ ok: false, error: "WEBHOOK_NOT_CONFIGURED" }, { status: 500 });
+  }
+  const got = req.headers.get("x-webhook-secret") || "";
+  if (got !== configured) {
+    return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
+  }
+
+  // Minimal abuse protection (cheap early rejects).
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+  if (!ct.includes("application/json")) {
+    return NextResponse.json({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, { status: 415 });
+  }
+  const len = getJsonContentLength(req);
+  if (typeof len === "number" && len > 2_000_000) {
+    return NextResponse.json({ ok: false, error: "PAYLOAD_TOO_LARGE" }, { status: 413 });
   }
 
   const body = (await req.json().catch(() => null)) as JsonValue | null;

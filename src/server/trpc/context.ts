@@ -1,18 +1,9 @@
 import { createSupabaseUserClient, getSupabaseServiceClient } from "../supabase/client";
 import { verifyAuthToken } from "../auth/jwt";
+import { parseCookies } from "../http/cookies";
 import type { inferAsyncReturnType } from "@trpc/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../../types/database";
-
-function parseCookies(req: Request) {
-  const cookieHeader = req.headers.get("cookie") || "";
-  return Object.fromEntries(
-    cookieHeader.split(";").map((c) => {
-      const [k, ...v] = c.trim().split("=");
-      return [k, v.join("=")];
-    })
-  );
-}
 
 export const createContext = async (opts: { req: Request }) => {
   const responseHeaders: Record<string, string | string[]> = {};
@@ -69,7 +60,6 @@ export const createContext = async (opts: { req: Request }) => {
         pathname: url.pathname,
         hasCookieHeader: cookieHeader.length > 0,
         cookieKeys: Object.keys(cookies),
-        cookieHeaderSample: cookieHeader.substring(0, 200),
       });
     }
   }

@@ -59,7 +59,7 @@ export default function ConnectSolanaWalletButton({
   selectLabel = 'Select Wallet',
   connectingLabel = 'Connecting ...',
 }: Props) {
-  const { setVisible } = useWalletModal();
+  const { setVisible, visible } = useWalletModal();
   const { wallet, connected, connecting, connect } = useWallet();
   const [error, setError] = useState<string | null>(null);
   const [pendingConnect, setPendingConnect] = useState(false);
@@ -91,7 +91,11 @@ export default function ConnectSolanaWalletButton({
       setPendingConnect(false);
       return;
     }
-    if (!wallet) return; // wait for selection
+    if (!wallet) {
+      // User closed the modal without selecting a wallet.
+      if (!visible) setPendingConnect(false);
+      return;
+    } // wait for selection
 
     // In Telegram webviews, Phantom typically isn't "Installed" (no injection).
     // When Phantom is selected but not detected, open the dapp in Phantom in-wallet browser.
@@ -111,7 +115,9 @@ export default function ConnectSolanaWalletButton({
         }
         setError(toErrorMessage(e as ConnectError));
       });
-  }, [pendingConnect, connected, wallet, connect, setVisible]);
+  }, [pendingConnect, connected, wallet, visible, connect, setVisible]);
+
+  const displayLabel = pendingConnect && !wallet ? selectLabel : label;
 
   return (
     <div className="inline-flex flex-col items-end gap-1">
@@ -121,7 +127,7 @@ export default function ConnectSolanaWalletButton({
         disabled={connecting || pendingConnect}
         className={className}
       >
-        {pendingConnect ? selectLabel : label}
+        {displayLabel}
       </button>
       {error ? <div className="text-[11px] text-red-300 max-w-[220px] text-right">{error}</div> : null}
     </div>

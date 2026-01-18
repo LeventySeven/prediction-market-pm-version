@@ -1,20 +1,11 @@
 import { getSupabaseServiceClient } from "@/src/server/supabase/client";
 import { verifyAuthToken } from "@/src/server/auth/jwt";
+import { parseCookies } from "@/src/server/http/cookies";
 import { randomBytes } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const revalidate = 0;
-
-function parseCookies(req: Request) {
-  const cookieHeader = req.headers.get("cookie") || "";
-  return Object.fromEntries(
-    cookieHeader.split(";").map((c) => {
-      const [k, ...v] = c.trim().split("=");
-      return [k, v.join("=")];
-    })
-  );
-}
 
 export async function POST(req: Request) {
   const cookies = parseCookies(req);
@@ -36,7 +27,9 @@ export async function POST(req: Request) {
     return Response.json({ error: "MISSING_FILE" }, { status: 400 });
   }
 
-  if (!file.type.startsWith("image/")) {
+  // Keep uploads simple + safe: allow common raster formats only (no SVG).
+  const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+  if (!allowedTypes.has(file.type)) {
     return Response.json({ error: "INVALID_FILE_TYPE" }, { status: 400 });
   }
 
