@@ -7,11 +7,12 @@ interface MarketCardProps {
   market: Market;
   onClick?: () => void;
   onQuickBet?: (side: 'YES' | 'NO') => void;
+  onToggleBookmark?: (params: { marketId: string; bookmarked: boolean }) => void;
   bookmarked?: boolean;
   lang?: 'RU' | 'EN';
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, lang = 'EN' }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, onToggleBookmark, bookmarked = false, lang = 'EN' }) => {
   const localizedTitle =
     lang === 'RU'
       ? market.titleRu ?? market.titleEn ?? market.title
@@ -41,6 +42,8 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
     ? (lang === 'RU' ? 'Завершено' : 'Resolved')
     : (deadline ? formatTimeRemaining(deadline, 'hours', lang) : '—');
 
+  const hasBookmarkAction = Boolean(onToggleBookmark);
+
   return (
     <div 
         onClick={() => onClick?.()}
@@ -52,14 +55,30 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
               NEW
           </div>
       )}
-      {bookmarked && (
-        <div className="absolute top-3 right-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border border-[rgba(245,68,166,1)] bg-black/70 text-[rgba(245,68,166,1)]">
-          <Bookmark size={14} />
-        </div>
+      {hasBookmarkAction && (
+        <button
+          type="button"
+          data-swipe-ignore="true"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleBookmark?.({ marketId: market.id, bookmarked: !bookmarked });
+          }}
+          className={`absolute top-3 right-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border transition-colors transition-transform active:scale-95 ${
+            bookmarked
+              ? 'border-[rgba(245,68,166,1)] bg-black/70 text-[rgba(245,68,166,1)]'
+              : 'border-zinc-900 bg-zinc-950/40 text-zinc-400 hover:text-white hover:bg-zinc-950/60 hover:border-zinc-700'
+          }`}
+          aria-label={lang === 'RU' ? (bookmarked ? 'Убрать из закладок' : 'Добавить в закладки') : (bookmarked ? 'Remove bookmark' : 'Add bookmark')}
+          aria-pressed={bookmarked}
+          title={lang === 'RU' ? (bookmarked ? 'Убрать из закладок' : 'Добавить в закладки') : (bookmarked ? 'Remove bookmark' : 'Add bookmark')}
+        >
+          <Bookmark size={14} fill={bookmarked ? 'currentColor' : 'none'} />
+        </button>
       )}
       {isResolved && (
           <div
-            className={`absolute ${bookmarked ? "top-12 right-3" : "top-3 right-3"} border border-zinc-800 text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider text-zinc-200 bg-black/60`}
+            className={`absolute ${hasBookmarkAction ? "top-12 right-3" : "top-3 right-3"} border border-zinc-800 text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider text-zinc-200 bg-black/60`}
           >
               {lang === 'RU' ? `Исход: ${winningYes ? 'ДА' : 'НЕТ'}` : `Outcome: ${winningYes ? 'YES' : 'NO'}`}
           </div>

@@ -55,6 +55,7 @@ export default function HomePage() {
   const [showAuth, setShowAuth] = useState(false);
   const [authInitialMode, setAuthInitialMode] = useState<AuthMode>("SIGN_IN");
   const [showReloginWarning, setShowReloginWarning] = useState(false);
+  const [reloginRequired, setReloginRequired] = useState(false);
   type PostAuthAction =
     | { type: "OPEN_CREATE_MARKET" }
     | { type: "PLACE_BET"; marketId: string; side: "YES" | "NO"; amount: number; marketTitle: string }
@@ -71,6 +72,7 @@ export default function HomePage() {
     }
   });
   const [user, setUser] = useState<User | null>(null);
+  const reloginPromptShownRef = useRef(false);
   // Wallet state (Solana Wallet Adapter)
   const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet();
   const { connection } = useConnection();
@@ -195,6 +197,20 @@ export default function HomePage() {
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
   const telegramAutoLoginAttemptedRef = useRef(false);
+
+  // If auth expires while the UI still thinks we have a user, prompt re-login as soon as they enter a market.
+  useEffect(() => {
+    if (!selectedMarketId) return;
+    if (!user) return;
+    if (reloginRequired) return;
+    void (async () => {
+      const me = await refreshUser();
+      if (!me) {
+        triggerRelogin();
+        setUser(null);
+      }
+    })();
+  }, [selectedMarketId, user, reloginRequired, refreshUser, triggerRelogin]);
 
   const getTelegramInitDataFromUrl = () => {
     if (typeof window === "undefined") return null;
@@ -327,12 +343,26 @@ export default function HomePage() {
     );
   };
 
+  const triggerRelogin = useCallback(() => {
+    setReloginRequired(true);
+    // Only show the warning modal once until auth succeeds again.
+    if (!reloginPromptShownRef.current) {
+      reloginPromptShownRef.current = true;
+      setShowReloginWarning(true);
+    }
+  }, []);
+
+  const clearRelogin = useCallback(() => {
+    setReloginRequired(false);
+    reloginPromptShownRef.current = false;
+  }, []);
+
   const formatBetError = (msg?: string) => {
     if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
     const upper = msg.toUpperCase();
     // Check for authentication errors first
     if (upper.includes("UNAUTHORIZED") || upper.includes("NOT AUTHENTICATED") || upper.includes("NOT_AUTHENTICATED")) {
-      setShowReloginWarning(true);
+      triggerRelogin();
       return lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.";
     }
     if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
@@ -366,12 +396,12 @@ export default function HomePage() {
     (err: ErrorLike) => {
       const msg = getErrorMessage(err);
       if (isAuthErrorMessage(msg)) {
-        setShowReloginWarning(true);
+        triggerRelogin();
         return true;
       }
       return false;
     },
-    []
+    [triggerRelogin]
   );
 
   const loadLeaderboard = useCallback(async () => {
@@ -438,6 +468,7 @@ export default function HomePage() {
       displayName: payload.displayName,
       referralCode: pendingReferralCode ?? undefined,
     });
+    clearRelogin();
     setUser({
       id: String(me.user.id),
       email: me.user.email,
@@ -470,6 +501,7 @@ export default function HomePage() {
       emailOrUsername: payload.emailOrUsername,
       password: payload.password,
     });
+    clearRelogin();
     setUser({
       id: String(me.user.id),
       email: me.user.email,
@@ -489,6 +521,7 @@ export default function HomePage() {
 
   const handleTelegramLogin = useCallback(async (initData: string) => {
     const res = await trpcClient.auth.telegramLogin.mutate({ initData });
+    clearRelogin();
     setUser({
       id: String(res.user.id),
       email: res.user.email,
@@ -504,12 +537,13 @@ export default function HomePage() {
       referralCommissionRate: res.user.referralCommissionRate,
       referralEnabled: res.user.referralEnabled,
     });
-  }, []);
+  }, [clearRelogin]);
 
   const refreshUser = useCallback(async () => {
     try {
       const me = await trpcClient.auth.me.query();
       if (me) {
+        clearRelogin();
         setUser({
           id: String(me.id),
           email: me.email,
@@ -531,7 +565,7 @@ export default function HomePage() {
       console.error("Failed to refresh session user", err);
     }
     return null;
-  }, []);
+  }, [clearRelogin]);
 
   const handleUpdateDisplayName = useCallback(
     async (nextDisplayName: string) => {
@@ -701,7 +735,8 @@ export default function HomePage() {
       console.error("Failed to load positions/trades", { error: errorMsg, err, userId: user?.id });
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
-        setShowReloginWarning(true);
+        triggerRelogin();
+        setUser(null);
         setMyBetsError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
       } else {
         setMyBetsError(lang === "RU" ? "Не удалось загрузить ставки." : "Failed to load bets.");
@@ -837,7 +872,8 @@ export default function HomePage() {
       const errorMsg = getErrorMessage(err);
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
-        setShowReloginWarning(true);
+        triggerRelogin();
+        setUser(null);
         setMyCommentsError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
       } else {
         setMyCommentsError(lang === "RU" ? "Не удалось загрузить комментарии." : "Failed to load comments.");
@@ -998,15 +1034,43 @@ export default function HomePage() {
     [activeCategoryId, searchQuery, markets, lang]
   );
 
-  // Events "Feed" page - for now this is just a market list (recommendations/bookmarks come later).
+  // Feed: markets where the user currently has bets (positions).
+  const myBetMarketIds = useMemo(() => {
+    // NOTE: positions are per-outcome; dedupe by marketId.
+    return new Set(
+      myPositions
+        .filter((p) => Number(p.shares ?? 0) > 0)
+        .map((p) => String(p.marketId))
+    );
+  }, [myPositions]);
+
   const feedMarkets = useMemo(() => {
+    if (!user) return [];
     const q = searchQuery.trim().toLowerCase();
-    return markets.filter((market) => {
-      const targetTitle = (lang === "RU" ? market.titleRu : market.titleEn) ?? market.title;
-      if (!q) return true;
-      return targetTitle.toLowerCase().includes(q);
+    const base = markets.filter((m) => myBetMarketIds.has(m.id));
+    const filtered = !q
+      ? base
+      : base.filter((market) => {
+          const targetTitle = (lang === "RU" ? market.titleRu : market.titleEn) ?? market.title;
+          return targetTitle.toLowerCase().includes(q);
+        });
+
+    // Open markets first, then soonest closing/ending.
+    const sortTs = (iso?: string | null) => {
+      if (!iso) return Number.POSITIVE_INFINITY;
+      const t = Date.parse(iso);
+      return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+    };
+
+    return [...filtered].sort((a, b) => {
+      const aClosed = a.state === "resolved";
+      const bClosed = b.state === "resolved";
+      if (aClosed !== bClosed) return aClosed ? 1 : -1;
+      const at = sortTs(a.closesAt ?? a.expiresAt);
+      const bt = sortTs(b.closesAt ?? b.expiresAt);
+      return at - bt;
     });
-  }, [markets, searchQuery, lang]);
+  }, [user, markets, myBetMarketIds, searchQuery, lang]);
 
   const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
   const bookmarkedMarkets = useMemo(() => {
@@ -1256,7 +1320,8 @@ export default function HomePage() {
       // Verify auth is still valid before placing bet (in case cookies expired or weren't set)
       const authCheck = await refreshUser();
       if (!authCheck) {
-        setShowReloginWarning(true);
+        triggerRelogin();
+        setUser(null);
         setBetConfirm({
           open: true,
           marketTitle,
@@ -1753,6 +1818,7 @@ export default function HomePage() {
                                 key={`bm-${market.id}`}
                                 market={market}
                                 bookmarked
+                                onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                                 onClick={() => {
                                   setMarketBetIntent(null);
                                   setSelectedMarketId(market.id);
@@ -1768,7 +1834,7 @@ export default function HomePage() {
 
                     <div className="px-4 pt-3 pb-2">
                       <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                        {lang === "RU" ? "Рекомендовано" : "Recommended"}
+                        {lang === "RU" ? "Мои ставки" : "My bets"}
                       </div>
                     </div>
 
@@ -1777,15 +1843,22 @@ export default function HomePage() {
                         <div className="text-center py-10 text-zinc-500">
                           {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
                         </div>
+                      ) : !user ? (
+                        <div className="text-center py-20 text-zinc-500 px-4">
+                          <p className="text-lg mb-2">{lang === "RU" ? "Войдите, чтобы увидеть ваши ставки" : "Log in to see your bets"}</p>
+                          <p className="text-sm">
+                            {lang === "RU" ? "Каталог доступен без входа." : "The catalog is available without logging in."}
+                          </p>
+                        </div>
                       ) : feedMarkets.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
                           {feedMarkets
-                            .filter((m) => !bookmarkedMarketIds.has(m.id))
                             .map((market) => (
                               <MarketCard
                                 key={market.id}
                                 market={market}
                                 bookmarked={bookmarkedMarketIds.has(market.id)}
+                                onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                                 onClick={() => {
                                   setMarketBetIntent(null);
                                   setSelectedMarketId(market.id);
@@ -1801,8 +1874,10 @@ export default function HomePage() {
                         </div>
                       ) : (
                         <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
-                          <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
+                          <p className="text-lg mb-2">{lang === "RU" ? "У вас пока нет ставок" : "No bets yet"}</p>
+                          <p className="text-sm">
+                            {lang === "RU" ? "Откройте рынок в каталоге, чтобы сделать ставку." : "Open a market in the catalog to place a bet."}
+                          </p>
                         </div>
                       )}
                     </div>
@@ -1873,6 +1948,7 @@ export default function HomePage() {
                               key={market.id}
                               market={market}
                               bookmarked={bookmarkedMarketIds.has(market.id)}
+                              onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                               onClick={() => {
                                 setMarketBetIntent(null);
                                 setSelectedMarketId(market.id);
@@ -2033,23 +2109,15 @@ export default function HomePage() {
                 ? "По соображениям безопасности необходимо войти в систему снова. Пожалуйста, войдите в свой аккаунт."
                 : "For security reasons, you need to log in again. Please sign in to your account."}
             </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowReloginWarning(false)}
-                className="flex-1 px-4 py-2.5 text-sm font-medium text-zinc-400 hover:text-white border border-zinc-800 rounded-lg hover:border-zinc-700 transition-colors"
-              >
-                {lang === "RU" ? "Отмена" : "Cancel"}
-              </button>
-              <button
-                onClick={() => {
-                  setShowReloginWarning(false);
-                  openAuth("SIGN_IN");
-                }}
-                className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.9)] rounded-lg transition-colors"
-              >
-                {lang === "RU" ? "Войти" : "Sign In"}
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                setShowReloginWarning(false);
+                openAuth("SIGN_IN");
+              }}
+              className="w-full px-4 py-2.5 text-sm font-semibold text-black bg-[rgba(190,255,29,1)] hover:bg-[rgba(190,255,29,0.90)] rounded-lg transition-colors"
+            >
+              {lang === "RU" ? "ОК" : "OK"}
+            </button>
           </div>
         </div>
       )}
