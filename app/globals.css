@@ -21,6 +21,7 @@ body {
   height: 100%;
   overflow: hidden; /* prevent iOS Telegram bounce scrolling the body */
   overscroll-behavior: none;
+  touch-action: pan-x pan-y; /* reduce accidental pinch-zoom while keeping scroll */
 }
 
 body {

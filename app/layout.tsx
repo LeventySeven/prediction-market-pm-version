@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { Viewport } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
@@ -13,6 +14,14 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Yalla Market",
   description: "Prediction market demo for Telegram mini app",
+};
+
+// Disable zoom (pinch + double-tap) for a more stable Telegram mini-app UX.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({

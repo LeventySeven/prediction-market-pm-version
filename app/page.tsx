@@ -241,6 +241,7 @@ export default function HomePage() {
     amount: number;
     newBalance?: number;
     errorMessage?: string | null;
+    isLoading?: boolean;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   type MarketBetIntent = { marketId: string; side: "YES" | "NO"; nonce: number } | null;
   const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
@@ -1220,6 +1221,17 @@ export default function HomePage() {
     marketTitle: string;
   }) => {
     try {
+      // Open the modal immediately so UX is snappy; we’ll flip it to success/error when done.
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side,
+        amount,
+        newBalance: undefined,
+        errorMessage: null,
+        isLoading: true,
+      });
+
       if (!user) {
         openAuth("SIGN_IN");
         setBetConfirm({
@@ -1229,6 +1241,7 @@ export default function HomePage() {
           amount,
           newBalance: undefined,
           errorMessage: lang === "RU" ? "Войдите, чтобы сделать ставку." : "Please log in to place a bet.",
+          isLoading: false,
         });
         return;
       }
@@ -1251,6 +1264,7 @@ export default function HomePage() {
           amount,
           newBalance: undefined,
           errorMessage: lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.",
+          isLoading: false,
         });
         return;
       }
@@ -1268,6 +1282,7 @@ export default function HomePage() {
             lang === "RU"
               ? "Ончейн рынки (USDC/USDT) временно недоступны: переносим их на Solana."
               : "On-chain USDC/USDT markets are temporarily unavailable while migrating to Solana.",
+          isLoading: false,
         });
         return;
       }
@@ -1294,6 +1309,7 @@ export default function HomePage() {
         amount,
         newBalance: newBalanceMajor,
         errorMessage: null,
+        isLoading: false,
       });
     } catch (err) {
       console.error("placeBet failed", err);
@@ -1308,6 +1324,7 @@ export default function HomePage() {
         amount,
         newBalance: user?.balance,
         errorMessage: friendly,
+        isLoading: false,
       });
     }
   };
@@ -1955,6 +1972,7 @@ export default function HomePage() {
         amount={betConfirm.amount}
         newBalance={betConfirm.newBalance}
         errorMessage={betConfirm.errorMessage}
+        isLoading={Boolean(betConfirm.isLoading)}
       />
       <PublicUserProfileModal
         isOpen={publicProfileOpen}

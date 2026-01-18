@@ -12,6 +12,7 @@ export type BetConfirmModalProps = {
   amount: number;
   newBalance?: number;
   errorMessage?: string | null;
+  isLoading?: boolean;
 };
 
 export const BetConfirmModal: React.FC<BetConfirmModalProps> = ({
@@ -22,6 +23,7 @@ export const BetConfirmModal: React.FC<BetConfirmModalProps> = ({
   amount,
   newBalance,
   errorMessage,
+  isLoading = false,
 }) => {
   if (!isOpen) return null;
 
@@ -38,8 +40,15 @@ export const BetConfirmModal: React.FC<BetConfirmModalProps> = ({
         >
           <X size={22} />
         </button>
-        <h2 className="text-xl font-bold text-white mb-3">{isError ? 'Bet not accepted' : 'Bet placed'}</h2>
-        {isError ? (
+        <h2 className="text-xl font-bold text-white mb-3">
+          {isLoading ? 'Placing bet…' : isError ? 'Bet not accepted' : 'Bet placed'}
+        </h2>
+        {isLoading ? (
+          <div className="py-8 flex flex-col items-center justify-center">
+            <div className="h-10 w-10 rounded-full border-2 border-zinc-800 border-t-[rgba(245,68,166,1)] animate-spin" />
+            <div className="mt-3 text-sm text-zinc-400">Waiting for confirmation</div>
+          </div>
+        ) : isError ? (
           <p className="text-sm text-red-300 mb-4">{errorMessage}</p>
         ) : (
           <>
@@ -72,9 +81,11 @@ export const BetConfirmModal: React.FC<BetConfirmModalProps> = ({
             </div>
           </>
         )}
-        <div className="mt-6 flex justify-end">
-          <Button onClick={onClose}>OK</Button>
-        </div>
+        {!isLoading && (
+          <div className="mt-6 flex justify-end">
+            <Button onClick={onClose}>OK</Button>
+          </div>
+        )}
       </div>
     </div>
   );
