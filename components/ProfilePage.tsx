@@ -790,7 +790,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           </div>
                           <div className="text-right flex-shrink-0">
                             <div className="text-sm font-mono font-semibold text-zinc-100">{formatMoney(currentValue)}</div>
-                            <div className={`mt-0.5 text-[11px] font-mono ${pnlPositive ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'}`}>
+                            <div
+                              className={`mt-0.5 text-[11px] font-mono ${
+                                pnlPositive ? 'text-[rgba(190,255,29,1)]' : 'text-[rgba(245,68,166,1)]'
+                              }`}
+                            >
                               {formatSignedMoney(pnl)} ({pnlPositive ? '+' : '-'}
                               {formatPct(Math.abs(pnlPct))})
                             </div>
