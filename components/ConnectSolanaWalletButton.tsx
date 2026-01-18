@@ -60,7 +60,7 @@ export default function ConnectSolanaWalletButton({
   connectingLabel = 'Connecting ...',
 }: Props) {
   const { setVisible, visible } = useWalletModal();
-  const { wallet, connected, connecting, connect } = useWallet();
+  const { wallet, connected, connecting, connect, select } = useWallet();
   const [error, setError] = useState<string | null>(null);
   const [pendingConnect, setPendingConnect] = useState(false);
 
@@ -81,8 +81,11 @@ export default function ConnectSolanaWalletButton({
 
     // Always show the wallet selection modal first (UX preference).
     setPendingConnect(true);
+    // Clear any previously-selected wallet so we don't immediately redirect/connect
+    // before the user actually picks one in the modal (Telegram-first UX).
+    select(null);
     setVisible(true);
-  }, [connected, setVisible]);
+  }, [connected, select, setVisible]);
 
   // After the user selects a wallet in the modal, immediately proceed to connect/deeplink.
   useEffect(() => {

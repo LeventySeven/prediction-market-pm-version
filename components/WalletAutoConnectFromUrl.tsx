@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import type { WalletName } from '@solana/wallet-adapter-base';
 
@@ -20,9 +20,11 @@ function removeParamFromUrl() {
 
 export default function WalletAutoConnectFromUrl() {
   const { connected, wallet, select, connect } = useWallet();
+  const attemptedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (attemptedRef.current) return;
     if (connected) {
       removeParamFromUrl();
       return;
@@ -38,15 +40,19 @@ export default function WalletAutoConnectFromUrl() {
 
     // Currently only used for Phantom browse deep link.
     if (flag === 'phantom') {
+      // Prevent repeated connect attempts that can make the wallet prompt feel "stuck".
+      attemptedRef.current = true;
+      // Remove the param immediately so refreshes/back navigation don't re-trigger.
+      removeParamFromUrl();
+
       if (!wallet || wallet.adapter.name !== 'Phantom') {
         select(WALLET_PHANTOM);
       }
       // Connect on next tick so `select()` can apply.
       setTimeout(() => {
         connect()
-          .then(() => removeParamFromUrl())
           .catch(() => {
-            // Keep the param; user may retry manually.
+            // User can retry via the UI; don't loop here.
           });
       }, 0);
     }
