@@ -5,7 +5,7 @@ import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2,
 import Button from './Button';
 import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import SolanaWalletConnectModal from './SolanaWalletConnectModal';
 
 type ProfilePageProps = {
   user: User | null;
@@ -133,6 +133,7 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
   const { publicKey, connected } = useWallet();
   const pubkey = publicKey ? publicKey.toBase58() : null;
   const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || 'devnet').toLowerCase();
+  const [walletModalOpen, setWalletModalOpen] = useState(false);
 
   const truncate = (v: string) => `${v.slice(0, 6)}...${v.slice(-4)}`;
 
@@ -159,7 +160,13 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
         </div>
 
         <div className="shrink-0">
-          <WalletMultiButton className="!h-9 !px-4 !rounded-full !bg-[rgba(245,68,166,1)] !text-black hover:!bg-[rgba(245,68,166,0.90)]" />
+          <button
+            type="button"
+            onClick={() => setWalletModalOpen(true)}
+            className="h-9 px-4 rounded-full bg-[rgba(245,68,166,1)] text-black hover:bg-[rgba(245,68,166,0.90)] font-semibold text-sm"
+          >
+            {connected ? (lang === 'RU' ? 'Сменить' : 'Change') : (lang === 'RU' ? 'Подключить' : 'Connect')}
+          </button>
         </div>
       </div>
 
@@ -168,6 +175,12 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
           ? 'USDC-депозиты/вывод и ончейн-рынки будут подключены после деплоя программы на Solana.'
           : 'USDC deposits/withdrawals and on-chain markets will be enabled after the Solana program is deployed.'}
       </div>
+
+      <SolanaWalletConnectModal
+        open={walletModalOpen}
+        onClose={() => setWalletModalOpen(false)}
+        title={lang === 'RU' ? 'Подключить Solana кошелёк' : 'Connect Solana wallet'}
+      />
     </div>
   );
 };

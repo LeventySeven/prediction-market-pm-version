@@ -4,9 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
+import { WalletAdapterNetwork, type Adapter } from '@solana/wallet-adapter-base';
 import { clusterApiUrl } from '@solana/web3.js';
-import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
+import { PhantomWalletAdapter, SolflareWalletAdapter, WalletConnectWalletAdapter } from '@solana/wallet-adapter-wallets';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,7 +37,32 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return clusterApiUrl(network);
   }, [network]);
 
-  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
+  const wallets = useMemo(() => {
+    const list: Adapter[] = [new PhantomWalletAdapter(), new SolflareWalletAdapter({ network })];
+
+    const wcProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+    if (wcProjectId && wcProjectId.trim().length > 0) {
+      // WalletConnect adapter only supports Mainnet/Devnet (treat Testnet as Devnet).
+      const wcNetwork = network === WalletAdapterNetwork.Mainnet ? WalletAdapterNetwork.Mainnet : WalletAdapterNetwork.Devnet;
+      const appUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      list.push(
+        new WalletConnectWalletAdapter({
+          network: wcNetwork,
+          options: {
+            projectId: wcProjectId.trim(),
+            metadata: {
+              name: 'Yalla Market',
+              description: 'Prediction market',
+              url: appUrl,
+              icons: [`${appUrl}/pink.svg`],
+            },
+          },
+        })
+      );
+    }
+
+    return list;
+  }, [network]);
 
   return (
     <ConnectionProvider endpoint={endpoint}>

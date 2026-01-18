@@ -14,28 +14,6 @@ interface HeaderProps {
   onLogoClick?: () => void;
 }
 
-// Exact logo from ylogo2.svg
-const YallaIcon = ({ size = 24, className = '' }: { size?: number; className?: string }) => (
-  <svg
-    width={size}
-    height={size * (554 / 297)}
-    viewBox="0 0 297 554"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-  >
-    <g clipPath="url(#clip0_579_11)">
-      <path d="M0 491.137L108.931 425.633V423.309L0 357.515V296.077L148.727 387.725L297.455 294.625V357.079L189.25 423.309V425.633L297.455 491.863V554.026L148.727 460.055L0 552.864V491.137Z" fill="currentColor"/>
-      <circle cx="148.5" cy="148.5" r="125" stroke="currentColor" strokeWidth="47"/>
-    </g>
-    <defs>
-      <clipPath id="clip0_579_11">
-        <rect width="297" height="554" fill="white"/>
-      </clipPath>
-    </defs>
-  </svg>
-);
-
 const Header: React.FC<HeaderProps> = ({
   searchQuery,
   onSearchChange,
@@ -63,9 +41,12 @@ const Header: React.FC<HeaderProps> = ({
           role={onLogoClick ? 'button' : undefined}
           aria-label={onLogoClick ? t.home : undefined}
         >
-          <div className="text-white flex items-center" style={{ height: '0.875rem' }}>
-            <YallaIcon size={14} />
-          </div>
+          <img
+            src="/white.svg"
+            alt="Logo"
+            className="h-4 w-auto block"
+            draggable={false}
+          />
           <div>
             <h1 className="text-sm font-bold tracking-tight text-white leading-none uppercase transition-colors">
               YALLA MARKET
