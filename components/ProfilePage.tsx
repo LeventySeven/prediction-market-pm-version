@@ -5,7 +5,7 @@ import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2,
 import Button from './Button';
 import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
 import { useWallet } from '@solana/wallet-adapter-react';
-import SolanaWalletConnectModal from './SolanaWalletConnectModal';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 
 type ProfilePageProps = {
   user: User | null;
@@ -131,9 +131,9 @@ const sampleAvatarHue = async (src: string): Promise<number | null> => {
 
 const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
   const { publicKey, connected } = useWallet();
+  const { setVisible } = useWalletModal();
   const pubkey = publicKey ? publicKey.toBase58() : null;
   const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || 'devnet').toLowerCase();
-  const [walletModalOpen, setWalletModalOpen] = useState(false);
 
   const truncate = (v: string) => `${v.slice(0, 6)}...${v.slice(-4)}`;
 
@@ -162,17 +162,11 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
         <div className="shrink-0 relative">
           <button
             type="button"
-            onClick={() => setWalletModalOpen(true)}
+            onClick={() => setVisible(true)}
             className="h-9 px-4 rounded-full bg-[rgba(245,68,166,1)] text-black hover:bg-[rgba(245,68,166,0.90)] font-semibold text-sm"
           >
             {connected ? (lang === 'RU' ? 'Сменить' : 'Change') : (lang === 'RU' ? 'Подключить' : 'Connect')}
           </button>
-
-          <SolanaWalletConnectModal
-            open={walletModalOpen}
-            onClose={() => setWalletModalOpen(false)}
-            title={lang === 'RU' ? 'Подключить Solana кошелёк' : 'Connect Solana wallet'}
-          />
         </div>
       </div>
 

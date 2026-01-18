@@ -6,7 +6,13 @@ import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { WalletAdapterNetwork, type Adapter } from '@solana/wallet-adapter-base';
 import { clusterApiUrl } from '@solana/web3.js';
-import { PhantomWalletAdapter, SolflareWalletAdapter, WalletConnectWalletAdapter } from '@solana/wallet-adapter-wallets';
+import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
+import {
+  SolanaMobileWalletAdapter,
+  createDefaultAddressSelector,
+  createDefaultAuthorizationResultCache,
+  createDefaultWalletNotFoundHandler,
+} from '@solana-mobile/wallet-adapter-mobile';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,28 +44,30 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, [network]);
 
   const wallets = useMemo(() => {
-    const list: Adapter[] = [new PhantomWalletAdapter(), new SolflareWalletAdapter({ network })];
+    // Mobile deep linking (Anza docs): Solana Mobile Wallet Adapter opens installed wallets.
+    // On desktop it stays available but is typically unused.
+    const appUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.APP_URL ||
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
 
-    const wcProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
-    if (wcProjectId && wcProjectId.trim().length > 0) {
-      // WalletConnect adapter only supports Mainnet/Devnet (treat Testnet as Devnet).
-      const wcNetwork = network === WalletAdapterNetwork.Mainnet ? WalletAdapterNetwork.Mainnet : WalletAdapterNetwork.Devnet;
-      const appUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-      list.push(
-        new WalletConnectWalletAdapter({
-          network: wcNetwork,
-          options: {
-            projectId: wcProjectId.trim(),
-            metadata: {
-              name: 'Yalla Market',
-              description: 'Prediction market',
-              url: appUrl,
-              icons: [`${appUrl}/pink.svg`],
-            },
-          },
-        })
-      );
-    }
+    // MWA adapter only supports Mainnet/Devnet (treat Testnet as Devnet).
+    const mwaCluster = network === WalletAdapterNetwork.Mainnet ? WalletAdapterNetwork.Mainnet : WalletAdapterNetwork.Devnet;
+    const list: Adapter[] = [
+      new SolanaMobileWalletAdapter({
+        addressSelector: createDefaultAddressSelector(),
+        appIdentity: {
+          name: 'Yalla Market',
+          uri: appUrl,
+          icon: '/pink.svg',
+        },
+        authorizationResultCache: createDefaultAuthorizationResultCache(),
+        cluster: mwaCluster,
+        onWalletNotFound: createDefaultWalletNotFoundHandler(),
+      }),
+      new PhantomWalletAdapter(),
+      new SolflareWalletAdapter({ network }),
+    ];
 
     return list;
   }, [network]);
