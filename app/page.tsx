@@ -198,20 +198,6 @@ export default function HomePage() {
   const [loadingUser, setLoadingUser] = useState(false);
   const telegramAutoLoginAttemptedRef = useRef(false);
 
-  // If auth expires while the UI still thinks we have a user, prompt re-login as soon as they enter a market.
-  useEffect(() => {
-    if (!selectedMarketId) return;
-    if (!user) return;
-    if (reloginRequired) return;
-    void (async () => {
-      const me = await refreshUser();
-      if (!me) {
-        triggerRelogin();
-        setUser(null);
-      }
-    })();
-  }, [selectedMarketId, user, reloginRequired, refreshUser, triggerRelogin]);
-
   const getTelegramInitDataFromUrl = () => {
     if (typeof window === "undefined") return null;
     try {
@@ -566,6 +552,20 @@ export default function HomePage() {
     }
     return null;
   }, [clearRelogin]);
+
+  // If auth expires while the UI still thinks we have a user, prompt re-login as soon as they enter a market.
+  useEffect(() => {
+    if (!selectedMarketId) return;
+    if (!user) return;
+    if (reloginRequired) return;
+    void (async () => {
+      const me = await refreshUser();
+      if (!me) {
+        triggerRelogin();
+        setUser(null);
+      }
+    })();
+  }, [selectedMarketId, user, reloginRequired, refreshUser, triggerRelogin]);
 
   const handleUpdateDisplayName = useCallback(
     async (nextDisplayName: string) => {
