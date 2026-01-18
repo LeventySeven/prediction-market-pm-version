@@ -61,8 +61,10 @@ cache/
 artifacts/
 typechain-types/
 src/types/contracts/
-deployments/*.json
-!deployments/.gitkeep
+# deployments/*.json - Allow tracking deployment addresses (they're public on-chain)
+# But ignore any files with private keys
+deployments/*-keypair.json
+deployments/*_private*.json
 hardhat.config.local.*
 hardhat.config.*.local.*
 
