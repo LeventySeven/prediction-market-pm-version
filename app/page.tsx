@@ -394,7 +394,7 @@ export default function HomePage() {
     setLoadingLeaderboard(true);
     setLeaderboardError(null);
     try {
-      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 25 });
+      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 100 });
       const users: LeaderboardUser[] = leaderboardUsersSchema.parse(usersRaw);
       setLeaderboardUsers(users);
     } catch (err) {
@@ -1818,7 +1818,6 @@ export default function HomePage() {
                                 key={`bm-${market.id}`}
                                 market={market}
                                 bookmarked
-                                onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                                 onClick={() => {
                                   setMarketBetIntent(null);
                                   setSelectedMarketId(market.id);
@@ -1858,7 +1857,6 @@ export default function HomePage() {
                                 key={market.id}
                                 market={market}
                                 bookmarked={bookmarkedMarketIds.has(market.id)}
-                                onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                                 onClick={() => {
                                   setMarketBetIntent(null);
                                   setSelectedMarketId(market.id);
@@ -1948,7 +1946,6 @@ export default function HomePage() {
                               key={market.id}
                               market={market}
                               bookmarked={bookmarkedMarketIds.has(market.id)}
-                              onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
                               onClick={() => {
                                 setMarketBetIntent(null);
                                 setSelectedMarketId(market.id);
