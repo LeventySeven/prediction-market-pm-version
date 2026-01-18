@@ -228,30 +228,9 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   onLoadBets,
   onLoadComments,
 }) => {
-  if (!user) {
-    return (
-      <div className="max-w-xl mx-auto px-4 py-10 pb-32 pb-safe">
-        <div className="border border-zinc-900 bg-black rounded-2xl p-6 text-center">
-          <div className="mx-auto h-14 w-14 rounded-full border border-zinc-900 bg-zinc-950/40 flex items-center justify-center text-zinc-400">
-            <UserIcon size={22} />
-          </div>
-          <h2 className="mt-4 text-lg font-semibold text-zinc-100">
-            {lang === 'RU' ? 'Профиль недоступен' : 'Profile locked'}
-          </h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            {lang === 'RU' ? 'Войдите, чтобы увидеть профиль' : 'Log in to view your profile'}
-          </p>
-          <div className="mt-6 flex justify-center">
-            <Button onClick={onLogin}>{lang === 'RU' ? 'Войти' : 'Log in'}</Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const displayName = user.name ?? user.username ?? (lang === 'RU' ? 'Пользователь' : 'User');
-  const handle = user.username ? `@${user.username}` : null;
-  const joined = formatDate(user.createdAt, lang);
+  const displayName = user?.name ?? user?.username ?? (lang === 'RU' ? 'Пользователь' : 'User');
+  const handle = user?.username ? `@${user.username}` : null;
+  const joined = formatDate(user?.createdAt, lang);
   const pnlIsPositive = (pnlMajor ?? 0) >= 0;
   const isTelegramPlaceholderEmail = (email?: string) =>
     Boolean(email && email.trim().toLowerCase().endsWith('@telegram.local'));
@@ -287,9 +266,9 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const formatPct = (value: number) => `${value.toFixed(1)}%`;
   const formatSignedMoney = (value: number) => `${value >= 0 ? '+' : '-'}$${Math.abs(value).toFixed(2)}`;
 
-  const accentSeed = String(user.avatarUrl ?? user.telegramPhotoUrl ?? user.id ?? displayName);
+  const accentSeed = String(user?.avatarUrl ?? user?.telegramPhotoUrl ?? user?.id ?? displayName);
   const [accent, setAccent] = useState(() => accentPairFromSeed(accentSeed));
-  const avatarForAccent = avatarPreviewUrl ?? user.avatar ?? null;
+  const avatarForAccent = avatarPreviewUrl ?? user?.avatar ?? null;
 
   useEffect(() => {
     const src = typeof avatarForAccent === "string" && avatarForAccent.trim().length > 0 ? avatarForAccent : null;
@@ -321,6 +300,27 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
     const series = values.length > 1 ? values : [0, 0];
     return buildSparklinePath(series);
   }, [soldTrades]);
+
+  if (!user) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-10 pb-32 pb-safe">
+        <div className="border border-zinc-900 bg-black rounded-2xl p-6 text-center">
+          <div className="mx-auto h-14 w-14 rounded-full border border-zinc-900 bg-zinc-950/40 flex items-center justify-center text-zinc-400">
+            <UserIcon size={22} />
+          </div>
+          <h2 className="mt-4 text-lg font-semibold text-zinc-100">
+            {lang === 'RU' ? 'Профиль недоступен' : 'Profile locked'}
+          </h2>
+          <p className="mt-1 text-sm text-zinc-500">
+            {lang === 'RU' ? 'Войдите, чтобы увидеть профиль' : 'Log in to view your profile'}
+          </p>
+          <div className="mt-6 flex justify-center">
+            <Button onClick={onLogin}>{lang === 'RU' ? 'Войти' : 'Log in'}</Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-xl mx-auto px-4 py-6 pb-32 pb-safe animate-in fade-in duration-300">
@@ -728,11 +728,18 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                     const canSell = Boolean(onSellPosition && shares > 0);
                     const rowKey = `${b.marketId}:${b.side}`;
                     return (
-                      <button
+                      <div
                         key={b.id}
-                        type="button"
-                        className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors"
+                        role="button"
+                        tabIndex={0}
+                        className="w-full text-left border border-zinc-900 bg-black rounded-2xl p-4 hover:bg-zinc-950/40 transition-colors cursor-pointer"
                         onClick={() => onMarketClick(b.marketId)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            onMarketClick(b.marketId);
+                          }
+                        }}
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div className="min-w-0">
@@ -795,7 +802,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                             </div>
                           </div>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
