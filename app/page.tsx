@@ -1145,6 +1145,7 @@ export default function HomePage() {
         setTimeout(scrollToTop, 0);
       }
       setMarketBetIntent(null);
+      setCatalogFiltersOpen(false);
       setCurrentView(view);
       if (view === "FRIENDS") {
         void loadLeaderboard();
@@ -1925,92 +1926,6 @@ export default function HomePage() {
                       </div>
                     </div>
 
-                    {catalogFiltersOpen && (
-                      <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" data-swipe-ignore="true">
-                        <div
-                          className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-                          onClick={() => setCatalogFiltersOpen(false)}
-                        />
-                        <div className="relative w-full max-w-md rounded-2xl border border-zinc-900 bg-black p-5 shadow-2xl">
-                          <div className="flex items-center justify-between gap-3 mb-4">
-                            <div className="text-sm font-semibold text-zinc-100">
-                              {lang === "RU" ? "Фильтры каталога" : "Catalog filters"}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setCatalogFiltersOpen(false)}
-                              className="h-9 w-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
-                              aria-label={lang === "RU" ? "Закрыть" : "Close"}
-                            >
-                              <X size={16} />
-                            </button>
-                          </div>
-
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
-                            {lang === "RU" ? "Сортировка" : "Sort"}
-                          </div>
-
-                          <div role="radiogroup" className="space-y-2">
-                            {([
-                              {
-                                id: "ENDING_SOON" as const,
-                                labelRu: "Скоро закончится",
-                                labelEn: "Ending soon",
-                              },
-                              {
-                                id: "CREATED_DESC" as const,
-                                labelRu: "Сначала новые",
-                                labelEn: "Newest",
-                              },
-                              {
-                                id: "CREATED_ASC" as const,
-                                labelRu: "Сначала старые",
-                                labelEn: "Oldest",
-                              },
-                              {
-                                id: "VOLUME_DESC" as const,
-                                labelRu: "Объём ↓",
-                                labelEn: "Volume ↓",
-                              },
-                              {
-                                id: "VOLUME_ASC" as const,
-                                labelRu: "Объём ↑",
-                                labelEn: "Volume ↑",
-                              },
-                            ]).map((opt) => {
-                              const selected = catalogSort === opt.id;
-                              return (
-                                <button
-                                  key={opt.id}
-                                  type="button"
-                                  role="radio"
-                                  aria-checked={selected}
-                                  onClick={() => setCatalogSort(opt.id)}
-                                  className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                                    selected
-                                      ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
-                                      : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
-                                  }`}
-                                >
-                                  <div className="text-sm font-semibold">
-                                    {lang === "RU" ? opt.labelRu : opt.labelEn}
-                                  </div>
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => setCatalogFiltersOpen(false)}
-                            className="mt-4 w-full h-11 rounded-full bg-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.90)] text-white font-semibold transition-colors"
-                          >
-                            {lang === "RU" ? "Готово" : "Done"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
                     <div className="px-4 pt-3">
                       {loadingMarkets ? (
                         <div className="text-center py-10 text-zinc-500">
@@ -2171,6 +2086,71 @@ export default function HomePage() {
             }}
           />
         </>
+      )}
+
+      {/* Catalog filters modal (rendered outside swipe/transform container) */}
+      {catalogFiltersOpen && currentView === "CATALOG" && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" data-swipe-ignore="true">
+          <div
+            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            onClick={() => setCatalogFiltersOpen(false)}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-zinc-900 bg-black p-5 shadow-2xl">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="text-sm font-semibold text-zinc-100">
+                {lang === "RU" ? "Фильтры каталога" : "Catalog filters"}
+              </div>
+              <button
+                type="button"
+                onClick={() => setCatalogFiltersOpen(false)}
+                className="h-9 w-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
+                aria-label={lang === "RU" ? "Закрыть" : "Close"}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
+              {lang === "RU" ? "Сортировка" : "Sort"}
+            </div>
+
+            <div role="radiogroup" className="space-y-2">
+              {([
+                { id: "ENDING_SOON" as const, labelRu: "Скоро закончится", labelEn: "Ending soon" },
+                { id: "CREATED_DESC" as const, labelRu: "Сначала новые", labelEn: "Newest" },
+                { id: "CREATED_ASC" as const, labelRu: "Сначала старые", labelEn: "Oldest" },
+                { id: "VOLUME_DESC" as const, labelRu: "Объём ↓", labelEn: "Volume ↓" },
+                { id: "VOLUME_ASC" as const, labelRu: "Объём ↑", labelEn: "Volume ↑" },
+              ]).map((opt) => {
+                const selected = catalogSort === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setCatalogSort(opt.id)}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                      selected
+                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
+                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setCatalogFiltersOpen(false)}
+              className="mt-4 w-full h-11 rounded-full bg-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.90)] text-white font-semibold transition-colors"
+            >
+              {lang === "RU" ? "Готово" : "Done"}
+            </button>
+          </div>
+        </div>
       )}
 
       <OnboardingModal
