@@ -129,20 +129,6 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, lang
               <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-3">
                 {lang === "RU" ? "Доступ" : "Access"}
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  className="h-10 rounded-full border border-neutral-800 bg-zinc-950/40 hover:bg-zinc-950/70 hover:border-neutral-600 text-xs font-semibold text-white inline-flex items-center justify-center transition-colors transition-transform active:scale-[0.98]"
-                >
-                  {lang === "RU" ? "Приватно" : "Private"}
-                </button>
-                <button
-                  type="button"
-                  className="h-10 rounded-full border border-neutral-800 bg-zinc-950/40 hover:bg-zinc-950/70 hover:border-neutral-600 text-xs font-semibold text-white inline-flex items-center justify-center transition-colors transition-transform active:scale-[0.98]"
-                >
-                  {lang === "RU" ? "Публично" : "Public"}
-                </button>
-              </div>
               <div className="mt-3 text-xs text-neutral-500">
                 {lang === "RU" ? "Поделитесь с друзьями или откройте для всех." : "Share with friends or open to everyone."}
               </div>
