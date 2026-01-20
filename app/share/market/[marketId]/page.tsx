@@ -96,13 +96,9 @@ export default async function ShareMarketPage({ params }: PageProps) {
     <html>
       <head>
         <meta httpEquiv="refresh" content={`0; url=${target}`} />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `try { window.location.replace(${JSON.stringify(target)}); } catch { window.location.href = ${JSON.stringify(
-              target
-            )}; }`,
-          }}
-        />
+        <script>{`try { window.location.replace(${JSON.stringify(target)}); } catch { window.location.href = ${JSON.stringify(
+          target
+        )}; }`}</script>
       </head>
       <body style={{ background: "#000", color: "#fff", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
         <div style={{ padding: "24px", textAlign: "center" }}>
