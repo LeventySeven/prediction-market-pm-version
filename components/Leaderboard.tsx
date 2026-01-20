@@ -6,9 +6,10 @@ interface LeaderboardProps {
   users: LeaderboardUser[];
   onUserClick: (user: LeaderboardUser) => void;
   lang: 'RU' | 'EN';
+  sortBy: 'PNL' | 'BETS';
 }
 
-const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) => {
+const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang, sortBy }) => {
   const formatPnl = (value: number) =>
     `$${value.toLocaleString(undefined, {
       maximumFractionDigits: 3,
@@ -28,7 +29,9 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
             {lang === 'RU' ? 'Лидерборд' : 'Leaderboard'}
           </div>
           <div className="mt-1 text-[10px] text-neutral-500 uppercase tracking-wider">
-            {lang === 'RU' ? 'Топ трейдеров по прибыли' : 'Top Traders by Profit'}
+            {sortBy === 'BETS'
+              ? (lang === 'RU' ? 'Топ по количеству ставок' : 'Top by bets')
+              : (lang === 'RU' ? 'Топ по прибыли' : 'Top by profit')}
           </div>
         </div>
       </div>
@@ -58,15 +61,24 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang }) =
                     </p>
                 </div>
 
-                {/* PnL (numbers only, aligned) */}
-                <div
-                  className={`w-[140px] text-right font-mono font-bold tabular-nums ${
-                    (user.pnl || 0) >= 0 ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
-                  }`}
-                >
-                  {(user.pnl || 0) >= 0 ? '+' : ''}
-                  {formatPnl(user.pnl || 0)}
-                </div>
+                {/* Metric (right aligned) */}
+                {sortBy === 'BETS' ? (
+                  <div className="w-[140px] text-right font-mono font-bold tabular-nums text-zinc-100">
+                    {(user.betCount ?? 0).toLocaleString()}
+                    <div className="mt-0.5 text-[10px] uppercase tracking-wider text-zinc-500 font-sans">
+                      {lang === 'RU' ? 'ставок' : 'bets'}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={`w-[140px] text-right font-mono font-bold tabular-nums ${
+                      (user.pnl || 0) >= 0 ? 'text-[rgba(190,255,29,1)]' : 'text-[rgba(245,68,166,1)]'
+                    }`}
+                  >
+                    {(user.pnl || 0) >= 0 ? '+' : ''}
+                    {formatPnl(user.pnl || 0)}
+                  </div>
+                )}
             </div>
         ))}
       </div>

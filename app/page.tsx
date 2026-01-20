@@ -61,6 +61,8 @@ export default function HomePage() {
   type CatalogStatus = "ALL" | "ONGOING" | "ENDED";
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
+  type LeaderboardSort = "PNL" | "BETS";
+  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
   type PostAuthAction =
     | { type: "OPEN_CREATE_MARKET" }
     | { type: "PLACE_BET"; marketId: string; side: "YES" | "NO"; amount: number; marketTitle: string }
@@ -441,11 +443,11 @@ export default function HomePage() {
     [triggerRelogin]
   );
 
-  const loadLeaderboard = useCallback(async () => {
+  const loadLeaderboard = useCallback(async (sortBy: LeaderboardSort = leaderboardSort) => {
     setLoadingLeaderboard(true);
     setLeaderboardError(null);
     try {
-      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 100 });
+      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 100, sortBy });
       const users: LeaderboardUser[] = leaderboardUsersSchema.parse(usersRaw);
       setLeaderboardUsers(users);
     } catch (err) {
@@ -457,7 +459,7 @@ export default function HomePage() {
     } finally {
       setLoadingLeaderboard(false);
     }
-  }, [lang]);
+  }, [lang, leaderboardSort]);
 
   useEffect(() => {
     const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
@@ -1956,6 +1958,11 @@ export default function HomePage() {
                     onLogin={() => openAuth("SIGN_IN")}
                     onUserClick={(u) => void openPublicProfile(u.id)}
                     onCreateReferralLink={handleCreateReferralLink}
+                    leaderboardSort={leaderboardSort}
+                    onLeaderboardSortChange={(next) => {
+                      setLeaderboardSort(next);
+                      void loadLeaderboard(next);
+                    }}
                   />
                 </div>
 

@@ -18,9 +18,11 @@ type FriendsPageProps = {
     referralCommissionRate: number;
     referralEnabled: boolean;
   }>;
+  leaderboardSort: 'PNL' | 'BETS';
+  onLeaderboardSortChange: (sort: 'PNL' | 'BETS') => void;
 };
 
-const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers, leaderboardLoading, leaderboardError, onLogin, onUserClick, onCreateReferralLink }) => {
+const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers, leaderboardLoading, leaderboardError, onLogin, onUserClick, onCreateReferralLink, leaderboardSort, onLeaderboardSortChange }) => {
   const [tab, setTab] = useState<'LEADERBOARD' | 'REFERRALS'>('LEADERBOARD');
 
   const t = useMemo(
@@ -72,7 +74,33 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
             {lang === 'RU' ? 'Пока нет данных' : 'No data yet'}
           </div>
         ) : (
-          <Leaderboard users={leaderboardUsers} lang={lang} onUserClick={onUserClick} />
+          <>
+            <div className="mb-4 flex items-center gap-2 border border-zinc-900 bg-black rounded-full p-1">
+              <button
+                type="button"
+                onClick={() => onLeaderboardSortChange('PNL')}
+                className={`flex-1 rounded-full py-2 text-[11px] font-bold uppercase tracking-wider transition ${
+                  leaderboardSort === 'PNL'
+                    ? 'bg-zinc-950 text-white border border-zinc-800'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {lang === 'RU' ? 'PnL' : 'PnL'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onLeaderboardSortChange('BETS')}
+                className={`flex-1 rounded-full py-2 text-[11px] font-bold uppercase tracking-wider transition ${
+                  leaderboardSort === 'BETS'
+                    ? 'bg-zinc-950 text-white border border-zinc-800'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {lang === 'RU' ? 'Ставки' : 'Bets'}
+              </button>
+            </div>
+            <Leaderboard users={leaderboardUsers} lang={lang} onUserClick={onUserClick} sortBy={leaderboardSort} />
+          </>
         )
       ) : (
         <Referrals user={user} onLogin={onLogin} lang={lang} onCreateReferralLink={onCreateReferralLink} />

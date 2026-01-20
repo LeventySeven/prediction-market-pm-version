@@ -752,6 +752,7 @@ export const userRouter = router({
       z
         .object({
           limit: z.number().min(1).max(100).optional(),
+          sortBy: z.enum(["PNL", "BETS"]).optional(),
         })
         .optional()
     )
@@ -759,17 +760,22 @@ export const userRouter = router({
     .query(async ({ ctx, input }) => {
       const { supabase } = ctx;
       const limit = input?.limit ?? 25;
+      const sortBy = input?.sortBy ?? "PNL";
 
-      const { data, error } = await supabase
+      // Fetch more than we need so we can filter out 0 pnl / 0 bets users.
+      const fetchLimit = Math.min(500, Math.max(100, limit * 5));
+
+      let q = supabase
         .from("leaderboard_public")
         .select("user_id, name, username, avatar_url, balance_minor, pnl_minor, bet_count, referrals, rank")
-        .order("rank", { ascending: true })
-        // Defense-in-depth: keep ordering stable even if rank ties exist.
-        .order("pnl_minor", { ascending: false })
-        .order("bet_count", { ascending: false })
+        // Stable ordering based on requested sort.
+        .order(sortBy === "BETS" ? "bet_count" : "pnl_minor", { ascending: false })
+        .order(sortBy === "BETS" ? "pnl_minor" : "bet_count", { ascending: false })
         .order("balance_minor", { ascending: false })
         .order("user_id", { ascending: true })
-        .limit(limit);
+        .limit(fetchLimit);
+
+      const { data, error } = await q;
 
       if (error) {
         throw new TRPCError({
@@ -779,12 +785,21 @@ export const userRouter = router({
       }
 
       const rows = (data ?? []) as LeaderboardRow[];
-      return rows.map((r) => {
+
+      // Hide users with 0 pnl OR 0 bets (require both to be non-zero).
+      const filtered = rows.filter((r) => {
+        const pnlMinor = Number((r as { pnl_minor?: number | null }).pnl_minor ?? 0);
+        const betCount = Number((r as { bet_count?: number | null }).bet_count ?? 0);
+        return pnlMinor !== 0 && betCount !== 0;
+      });
+
+      return filtered.slice(0, limit).map((r, idx) => {
         const name = (r.name || r.username || "").trim() || "Trader";
         const avatar = r.avatar_url || buildInitialsAvatarDataUrl(name, { bg: "#111111", fg: "#ffffff" });
         return {
           id: r.user_id,
-          rank: Number(r.rank),
+          // Rank is based on current sort + filtering.
+          rank: idx + 1,
           name,
           username: r.username,
           avatar,
