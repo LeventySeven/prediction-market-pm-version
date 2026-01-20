@@ -58,6 +58,8 @@ export default function HomePage() {
   const [reloginRequired, setReloginRequired] = useState(false);
   type CatalogSort = "ENDING_SOON" | "CREATED_DESC" | "CREATED_ASC" | "VOLUME_DESC" | "VOLUME_ASC";
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
+  type CatalogStatus = "ALL" | "ONGOING" | "ENDED";
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
   type PostAuthAction =
     | { type: "OPEN_CREATE_MARKET" }
@@ -1056,28 +1058,65 @@ export default function HomePage() {
       return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
     };
 
-    const sorted = [...filteredMarkets];
-    switch (catalogSort) {
-      case "ENDING_SOON":
-        sorted.sort((a, b) => ts(a.closesAt ?? a.expiresAt) - ts(b.closesAt ?? b.expiresAt));
-        break;
-      case "CREATED_ASC":
-        sorted.sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
-        break;
-      case "CREATED_DESC":
-        sorted.sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
-        break;
-      case "VOLUME_ASC":
-        sorted.sort((a, b) => parseVol(a.volume) - parseVol(b.volume));
-        break;
-      case "VOLUME_DESC":
-        sorted.sort((a, b) => parseVol(b.volume) - parseVol(a.volume));
-        break;
-      default:
-        break;
+    const now = Date.now();
+    const endTs = (m: Market) => ts(m.expiresAt);
+    const isEnded = (m: Market) => {
+      if (m.state === "resolved" || Boolean(m.outcome)) return true;
+      const t = endTs(m);
+      return Number.isFinite(t) && t <= now;
+    };
+
+    // Apply status filter first.
+    const base =
+      catalogStatus === "ONGOING"
+        ? filteredMarkets.filter((m) => !isEnded(m))
+        : catalogStatus === "ENDED"
+        ? filteredMarkets.filter((m) => isEnded(m))
+        : filteredMarkets;
+
+    // If showing ALL, keep ongoing first and ended at bottom.
+    const ongoing = base.filter((m) => !isEnded(m));
+    const ended = base.filter((m) => isEnded(m));
+
+    const sortGroup = (arr: Market[]) => {
+      const sorted = [...arr];
+      switch (catalogSort) {
+        case "ENDING_SOON":
+          sorted.sort((a, b) => endTs(a) - endTs(b));
+          break;
+        case "CREATED_ASC":
+          sorted.sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+          break;
+        case "CREATED_DESC":
+          sorted.sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+          break;
+        case "VOLUME_ASC":
+          sorted.sort((a, b) => parseVol(a.volume) - parseVol(b.volume));
+          break;
+        case "VOLUME_DESC":
+          sorted.sort((a, b) => parseVol(b.volume) - parseVol(a.volume));
+          break;
+        default:
+          break;
+      }
+      return sorted;
+    };
+
+    // For ENDING_SOON, ended should always be at bottom (even when status=ALL).
+    // For other sorts, also keep ended at bottom when status=ALL for UX consistency.
+    if (catalogStatus === "ENDED") {
+      // Ended-only view: sort within ended group (descending end time for "ending soon" feels more natural)
+      const sortedEnded = [...ended].sort((a, b) => endTs(b) - endTs(a));
+      return catalogSort === "ENDING_SOON" ? sortedEnded : sortGroup(sortedEnded);
     }
-    return sorted;
-  }, [filteredMarkets, catalogSort]);
+
+    const sortedOngoing = sortGroup(ongoing);
+    const sortedEnded =
+      catalogSort === "ENDING_SOON"
+        ? [...ended].sort((a, b) => endTs(b) - endTs(a))
+        : sortGroup(ended);
+    return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
+  }, [filteredMarkets, catalogSort, catalogStatus]);
 
   // Feed: markets where the user currently has bets (positions).
   const myBetMarketIds = useMemo(() => {
@@ -2108,6 +2147,35 @@ export default function HomePage() {
               >
                 <X size={16} />
               </button>
+            </div>
+
+            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
+              {lang === "RU" ? "Статус" : "Status"}
+            </div>
+            <div role="radiogroup" className="space-y-2 mb-4">
+              {([
+                { id: "ALL" as const, labelRu: "Все", labelEn: "All" },
+                { id: "ONGOING" as const, labelRu: "Текущие", labelEn: "Ongoing" },
+                { id: "ENDED" as const, labelRu: "Завершённые", labelEn: "Ended" },
+              ]).map((opt) => {
+                const selected = catalogStatus === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setCatalogStatus(opt.id)}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                      selected
+                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
+                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
