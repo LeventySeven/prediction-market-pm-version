@@ -1112,7 +1112,7 @@ export default function HomePage() {
     };
 
     const now = Date.now();
-    const endTs = (m: Market) => ts(m.expiresAt);
+    const endTs = (m: Market) => ts(m.closesAt ?? m.expiresAt);
     const isEnded = (m: Market) => {
       if (m.state === "resolved" || Boolean(m.outcome)) return true;
       const t = endTs(m);
