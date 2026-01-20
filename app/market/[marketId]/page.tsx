@@ -48,14 +48,6 @@ const fetchMarketPreview = async (marketId: string) => {
   return { title, imageUrl };
 };
 
-const buildTelegramStartUrl = (marketId: string) => {
-  const bot = (process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "").replace(/^@/, "").trim();
-  const app = (process.env.NEXT_PUBLIC_TELEGRAM_MINIAPP_SHORTNAME || "").trim();
-  if (!bot || !app) return null;
-  const payload = `m_${marketId}`;
-  return `https://t.me/${encodeURIComponent(bot)}/${encodeURIComponent(app)}?startapp=${encodeURIComponent(payload)}`;
-};
-
 export const generateMetadata = async ({ params }: PageProps): Promise<Metadata> => {
   const { marketId } = await params;
   const baseUrl = await getBaseUrl();
@@ -89,41 +81,27 @@ export default async function MarketDeepLinkPage({ params }: PageProps) {
   const { marketId } = await params;
   const baseUrl = await getBaseUrl();
   const fallbackWeb = baseUrl ? `${baseUrl}/?marketId=${encodeURIComponent(marketId)}` : `/?marketId=${encodeURIComponent(marketId)}`;
-  const telegram = isUuid(marketId) ? buildTelegramStartUrl(marketId) : null;
 
   // Important for previews:
   // - We return HTML (not a server redirect) so chat robots can read OG tags.
   // - Redirect uses JS only; robots typically don't execute it.
-  const target = telegram ?? fallbackWeb;
+  const target = fallbackWeb;
 
   return (
     <html>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function () {
-                try {
-                  var marketId = ${JSON.stringify(marketId)};
-                  if (marketId) {
-                    try { localStorage.setItem("pending_market_id", marketId); } catch (e) {}
-                  }
-                  var url = ${JSON.stringify(target)};
-                  // Attempt to open Telegram mini app (if configured). Fallback to web after short delay.
-                  if (url && url.indexOf("https://t.me/") === 0) {
-                    try { window.location.href = url; } catch (e) {}
-                    setTimeout(function () {
-                      try { window.location.replace(${JSON.stringify(fallbackWeb)}); } catch (e) { window.location.href = ${JSON.stringify(fallbackWeb)}; }
-                    }, 900);
-                    return;
-                  }
-                  // If Telegram deep link isn't configured, go straight to web.
-                  try { window.location.replace(${JSON.stringify(fallbackWeb)}); } catch (e) { window.location.href = ${JSON.stringify(fallbackWeb)}; }
-                } catch (e) {}
-              })();
-            `,
-          }}
-        />
+        <script>{`
+          (function () {
+            try {
+              var marketId = ${JSON.stringify(marketId)};
+              if (marketId) {
+                try { localStorage.setItem("pending_market_id", marketId); } catch (e) {}
+              }
+              try { window.location.replace(${JSON.stringify(target)}); }
+              catch (e) { window.location.href = ${JSON.stringify(target)}; }
+            } catch (e) {}
+          })();
+        `}</script>
       </head>
       <body
         style={{
@@ -137,11 +115,6 @@ export default async function MarketDeepLinkPage({ params }: PageProps) {
           <div style={{ marginTop: "12px", fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
             If nothing happens, <a href={fallbackWeb} style={{ color: "#fff" }}>open in web</a>.
           </div>
-          {telegram ? (
-            <div style={{ marginTop: "10px", fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
-              Or <a href={telegram} style={{ color: "#fff" }}>open in Telegram</a>.
-            </div>
-          ) : null}
         </div>
       </body>
     </html>

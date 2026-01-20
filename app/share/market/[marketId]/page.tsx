@@ -45,15 +45,6 @@ const fetchMarketPreview = async (marketId: string) => {
   return { title, imageUrl };
 };
 
-const buildTelegramStartUrl = (marketId: string) => {
-  const bot = (process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "").replace(/^@/, "").trim();
-  const app = (process.env.NEXT_PUBLIC_TELEGRAM_MINIAPP_SHORTNAME || "").trim();
-  if (!bot || !app) return null;
-  // Telegram Mini App deep-link: https://t.me/<bot>/<app>?startapp=<payload>
-  const payload = `m_${marketId}`;
-  return `https://t.me/${encodeURIComponent(bot)}/${encodeURIComponent(app)}?startapp=${encodeURIComponent(payload)}`;
-};
-
 export const generateMetadata = async ({ params }: PageProps): Promise<Metadata> => {
   const { marketId } = await params;
   const baseUrl = await getBaseUrl();
@@ -86,8 +77,7 @@ export default async function ShareMarketPage({ params }: PageProps) {
   const { marketId } = await params;
   const baseUrl = await getBaseUrl();
   const fallback = baseUrl ? `${baseUrl}/?marketId=${encodeURIComponent(marketId)}` : `/?marketId=${encodeURIComponent(marketId)}`;
-  const telegram = isUuid(marketId) ? buildTelegramStartUrl(marketId) : null;
-  const target = telegram ?? fallback;
+  const target = fallback;
 
   // IMPORTANT:
   // - We must return HTML (not a 3xx redirect) so Telegram can read OG meta tags for previews.
