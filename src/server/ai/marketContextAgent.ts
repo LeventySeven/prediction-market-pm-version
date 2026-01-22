@@ -146,7 +146,6 @@ const MarketContextState = Annotation.Root({
 const createMarketContextGraph = () => {
   const llm = new ChatOpenAI({
     model: "gpt-5",
-    temperature: 0.2,
   });
 
   const buildQuery = async (state: typeof MarketContextState.State) => {
