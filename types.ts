@@ -53,6 +53,7 @@ export interface Market {
   noPrice: number;
   chance: number; // Percentage for YES
   description: string;
+  source: string | null;
   history: HistoryPoint[];
   comments: Comment[];
   isNew?: boolean;

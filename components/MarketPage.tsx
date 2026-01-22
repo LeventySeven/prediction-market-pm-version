@@ -409,6 +409,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
     }
   };
 
+  const sourceLabel = lang === "RU" ? "Источник" : "Source";
+  const sourceValue = (market.source ?? "").trim();
+  const sourceIsUrl = /^https?:\/\//i.test(sourceValue);
+
   const renderOutcomeBadge = () => {
     if (!winningSide) return null;
     return (
@@ -924,6 +928,23 @@ const MarketPage: React.FC<MarketPageProps> = ({
               </h3>
               <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
                 <p>{market.description}</p>
+              {sourceValue && (
+                <p className="text-[11px] text-zinc-400">
+                  <span className="uppercase tracking-wider text-zinc-500">{sourceLabel}:</span>{" "}
+                  {sourceIsUrl ? (
+                    <a
+                      href={sourceValue}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-zinc-200 underline underline-offset-4 hover:text-white"
+                    >
+                      {sourceValue}
+                    </a>
+                  ) : (
+                    <span className="text-zinc-200">{sourceValue}</span>
+                  )}
+                </p>
+              )}
                 <p className="pt-4 border-t border-zinc-900">
                   Resolution based on consensus.
                 </p>
@@ -1290,6 +1311,23 @@ const MarketPage: React.FC<MarketPageProps> = ({
             </h3>
             <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
               <p>{market.description}</p>
+              {sourceValue && (
+                <p className="text-[11px] text-zinc-400">
+                  <span className="uppercase tracking-wider text-zinc-500">{sourceLabel}:</span>{" "}
+                  {sourceIsUrl ? (
+                    <a
+                      href={sourceValue}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-zinc-200 underline underline-offset-4 hover:text-white"
+                    >
+                      {sourceValue}
+                    </a>
+                  ) : (
+                    <span className="text-zinc-200">{sourceValue}</span>
+                  )}
+                </p>
+              )}
               <p className="pt-4 border-t border-zinc-900">
                 Resolution based on consensus.
               </p>

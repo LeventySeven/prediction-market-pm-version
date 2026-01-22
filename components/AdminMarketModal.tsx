@@ -13,7 +13,8 @@ type AdminMarketModalProps = {
   onReloadCategories?: () => void;
   onCreate: (payload: {
     titleEn: string;
-    description?: string | null;
+    description: string;
+    source: string;
     closesAt?: string | null;
     expiresAt: string;
     categoryId: string;
@@ -32,6 +33,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 }) => {
   const [titleEn, setTitleEn] = useState("");
   const [description, setDescription] = useState("");
+  const [source, setSource] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [categoryId, setCategoryId] = useState<string>("");
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -78,6 +80,14 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
     if (titleEn.trim().length < 3) {
       issues.push(t("Название — минимум 3 символа", "Title — at least 3 characters"));
+    }
+
+    if (description.trim().length < 3) {
+      issues.push(t("Описание — обязательное", "Description — required"));
+    }
+
+    if (source.trim().length < 3) {
+      issues.push(t("Источник — обязательный", "Source — required"));
     }
 
     const expiresAtMs = Date.parse(expiresAt);
@@ -167,13 +177,15 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
 
       await onCreate({
         titleEn: titleEn.trim(),
-        description: description.trim() || null,
+        description: description.trim(),
+        source: source.trim(),
         expiresAt,
         categoryId,
         imageUrl: finalImageUrl,
       });
       setTitleEn("");
       setDescription("");
+      setSource("");
       setExpiresAt("");
       setCategoryId("");
       setImageFile(null);
@@ -235,6 +247,21 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                 onChange={(e) => setDescription(e.target.value)}
                 rows={4}
                 placeholder={t("Условия разрешения события...", "Resolution criteria...")}
+                className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-white focus:border-zinc-700 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-white mb-1">{t("Источник (обязательно)", "Source (required)")}</label>
+              <div className="text-[11px] text-zinc-500 mb-2">
+                {t(
+                  "Укажите, где будет подтверждаться исход (например: Twitter, Telegram-канал, сайт).",
+                  "Where will the outcome be verified? (e.g., Twitter, Telegram channel, website)."
+                )}
+              </div>
+              <input
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                placeholder={t("Например: https://t.me/...", "e.g. https://t.me/...")}
                 className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-white focus:border-zinc-700 focus:outline-none"
               />
             </div>

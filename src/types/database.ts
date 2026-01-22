@@ -279,6 +279,7 @@ export interface Database {
           title_rus: string | null;
           title_eng: string;
           description: string | null;
+          source: string | null;
           image_url: string | null;
           state: MarketState;
           closes_at: string;
@@ -300,6 +301,7 @@ export interface Database {
           title_rus?: string | null;
           title_eng: string;
           description?: string | null;
+          source?: string | null;
           image_url?: string | null;
           state?: MarketState;
           closes_at: string;
@@ -321,6 +323,7 @@ export interface Database {
           title_rus?: string;
           title_eng?: string;
           description?: string | null;
+          source?: string | null;
           image_url?: string | null;
           state?: MarketState;
           closes_at?: string;
@@ -848,6 +851,22 @@ export interface Database {
       };
       sell_position_tx: {
         Args: {
+          p_market_id: string;
+          p_side: string; // 'YES' | 'NO'
+          p_shares: number;
+        };
+        Returns: {
+          trade_id: string;
+          payout_net_minor: number;
+          new_balance_minor: number;
+          shares_sold: number;
+          price_before: number;
+          price_after: number;
+        };
+      };
+      sell_position_service_tx: {
+        Args: {
+          p_user_id: string;
           p_market_id: string;
           p_side: string; // 'YES' | 'NO'
           p_shares: number;

@@ -889,6 +889,7 @@ export default function HomePage() {
           noPrice: Number(m.priceNo.toFixed(4)),
           chance,
           description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
+          source: (m as { source?: string | null }).source ?? null,
           history: [],
           comments: [],
           liquidityB: m.liquidityB,

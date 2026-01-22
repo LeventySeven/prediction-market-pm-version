@@ -82,6 +82,7 @@ const mapMarketRow = (
     titleRu: row.title_rus ?? row.title_eng,
     titleEn: row.title_eng,
     description: row.description,
+    source: row.source ?? null,
     imageUrl: row.image_url ?? "",
     state: row.state,
     createdAt: new Date(row.created_at).toISOString(),
@@ -253,7 +254,7 @@ export const marketRouter = router({
       let query = supabase
         .from("markets")
         .select(`
-          id, title_rus, title_eng, description, image_url, state, closes_at, expires_at, created_by,
+          id, title_rus, title_eng, description, source, image_url, state, closes_at, expires_at, created_by,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
@@ -328,7 +329,7 @@ export const marketRouter = router({
       const { data, error } = await supabase
         .from("markets")
         .select(`
-          id, title_rus, title_eng, description, image_url, state, closes_at, expires_at, created_by,
+          id, title_rus, title_eng, description, source, image_url, state, closes_at, expires_at, created_by,
           resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
@@ -563,24 +564,19 @@ export const marketRouter = router({
       }
 
       const useService = supabaseService !== supabase;
-      const rpcName = useService ? "sell_position_service_tx" : "sell_position_tx";
-      const rpcArgs = useService
-        ? {
+      const client = useService ? (supabaseService as SupabaseDbClient) : (supabase as SupabaseDbClient);
+      const { data, error } = useService
+        ? await client.rpc("sell_position_service_tx", {
             p_user_id: authUser.id,
             p_market_id: marketId,
             p_side: side,
             p_shares: shares,
-          }
-        : {
+          })
+        : await client.rpc("sell_position_tx", {
             p_market_id: marketId,
             p_side: side,
             p_shares: shares,
-          };
-
-      const { data, error } = await (useService ? (supabaseService as SupabaseDbClient) : (supabase as SupabaseDbClient)).rpc(
-        rpcName,
-        rpcArgs as Record<string, unknown>
-      );
+          });
 
       if (error) {
         const msg = error.message || "";
@@ -1345,7 +1341,8 @@ export const marketRouter = router({
     .input(
       z.object({
         titleEn: z.string().min(3), // Allow any characters including special characters
-        description: z.string().optional().nullable(), // Allow any characters including special characters
+        description: z.string().min(3), // Required
+        source: z.string().min(3), // Required
         closesAt: z.string().optional().nullable(),
         expiresAt: z.string(), // Accepts datetime-local format (YYYY-MM-DDTHH:MM)
         categoryId: z.string().min(1),
@@ -1395,8 +1392,16 @@ export const marketRouter = router({
 
       // Validate trimmed title is not empty
       const titleEnTrimmed = input.titleEn.trim();
+      const descriptionTrimmed = input.description.trim();
+      const sourceTrimmed = input.source.trim();
       if (titleEnTrimmed.length < 3) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Title must be at least 3 characters" });
+      }
+      if (descriptionTrimmed.length < 3) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Description is required" });
+      }
+      if (sourceTrimmed.length < 3) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Source is required" });
       }
 
       // Insert market - title_rus is optional (nullable) for English-only markets
@@ -1405,7 +1410,8 @@ export const marketRouter = router({
         .insert({
           title_rus: null, // Optional field - focusing on English audience
           title_eng: titleEnTrimmed,
-          description: input.description?.trim() || null,
+          description: descriptionTrimmed,
+          source: sourceTrimmed,
           image_url: input.imageUrl?.trim() || null,
           state: "open",
           closes_at: new Date(closesAtMs).toISOString(),
