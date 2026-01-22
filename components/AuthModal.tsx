@@ -301,6 +301,21 @@ const AuthModal: React.FC<AuthModalProps> = ({
           <X size={16} className="text-zinc-400" />
       </button>
 
+        {/* Social login buttons at the top */}
+        {telegramInitData && onTelegramLogin && (
+          <div className="mb-5">
+            <button
+              type="button"
+              onClick={handleTelegram}
+              disabled={loading}
+              className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors inline-flex items-center justify-center gap-2 font-semibold"
+            >
+              <Send size={16} className="text-[rgba(245,68,166,1)] shrink-0" />
+              <span className="leading-none">{t.telegramButton}</span>
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-col space-y-1.5 text-center sm:text-left mb-6">
             <h2 className="text-lg font-semibold leading-none tracking-tight text-white">
                 {modalTitle}
@@ -309,20 +324,6 @@ const AuthModal: React.FC<AuthModalProps> = ({
                 {modalSubtitle}
             </p>
         </div>
-
-        {telegramInitData && onTelegramLogin && (
-          <>
-            <button
-              type="button"
-              onClick={handleTelegram}
-              disabled={loading}
-              className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors inline-flex items-center justify-center gap-2 font-semibold mb-5"
-            >
-              <Send size={16} className="text-[rgba(245,68,166,1)] shrink-0" />
-              <span className="leading-none">{t.telegramButton}</span>
-            </button>
-          </>
-        )}
 
         <div className="flex items-center gap-2 mb-6">
           <button

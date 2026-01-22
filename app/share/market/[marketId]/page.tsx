@@ -78,21 +78,105 @@ export default async function ShareMarketPage({ params }: PageProps) {
   const baseUrl = await getBaseUrl();
   const fallback = baseUrl ? `${baseUrl}/?marketId=${encodeURIComponent(marketId)}` : `/?marketId=${encodeURIComponent(marketId)}`;
   const target = fallback;
+  const valid = isUuid(marketId);
+  const preview = valid ? await fetchMarketPreview(marketId) : null;
+  const title = preview?.title ?? "Yalla Market";
+  const image = preview?.imageUrl ?? (baseUrl ? `${baseUrl}/white.svg` : "/white.svg");
 
   // IMPORTANT:
   // - We must return HTML (not a 3xx redirect) so Telegram can read OG meta tags for previews.
-  // - For humans, we immediately redirect with meta refresh and JS.
+  // - For humans, we redirect (with a tiny delay so the UI can render).
   return (
     <html>
       <head>
-        <meta httpEquiv="refresh" content={`0; url=${target}`} />
-        <script>{`try { window.location.replace(${JSON.stringify(target)}); } catch { window.location.href = ${JSON.stringify(
-          target
-        )}; }`}</script>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta httpEquiv="refresh" content={`1; url=${target}`} />
+        <script>{`(function () { try { setTimeout(function () { try { window.location.replace(${JSON.stringify(target)}); } catch { window.location.href = ${JSON.stringify(target)}; } }, 200); } catch (e) {} })();`}</script>
       </head>
-      <body style={{ background: "#000", color: "#fff", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
-        <div style={{ padding: "24px", textAlign: "center" }}>
-          Redirecting…
+      <body
+        style={{
+          background: "#000",
+          color: "#fff",
+          fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+          margin: 0,
+        }}
+      >
+        <div
+          style={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              borderRadius: 20,
+              border: "1px solid rgba(24,24,27,1)", // zinc-900-ish
+              background: "rgba(0,0,0,1)",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: 20,
+                borderBottom: "1px solid rgba(24,24,27,1)",
+                background:
+                  "radial-gradient(700px 220px at 0% 0%, rgba(245,68,166,0.12), transparent 60%), radial-gradient(520px 180px at 100% 0%, rgba(190,255,29,0.08), transparent 55%)",
+              }}
+            >
+              <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 999,
+                    overflow: "hidden",
+                    border: "1px solid rgba(24,24,27,1)",
+                    background: "rgba(9,9,11,1)",
+                    flex: "0 0 auto",
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={image} alt={title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+
+                <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+                  <div style={{ fontSize: 14, letterSpacing: 2.2, textTransform: "uppercase", color: "rgba(161,161,170,1)", fontWeight: 700 }}>
+                    Yalla Market
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 18,
+                      lineHeight: 1.25,
+                      fontWeight: 700,
+                      color: "rgba(244,244,245,1)",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {title}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: 18 }}>
+              <div style={{ fontSize: 13, color: "rgba(161,161,170,1)" }}>Opening…</div>
+              <div style={{ marginTop: 10, fontSize: 12, color: "rgba(113,113,122,1)" }}>
+                If nothing happens,{" "}
+                <a href={target} style={{ color: "rgba(244,244,245,1)", textDecoration: "underline", textUnderlineOffset: 3 }}>
+                  open in web
+                </a>
+                .
+              </div>
+            </div>
+          </div>
         </div>
       </body>
     </html>
