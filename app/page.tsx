@@ -60,6 +60,8 @@ export default function HomePage() {
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
   type CatalogStatus = "ALL" | "ONGOING" | "ENDED";
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
+  type CatalogTimeFilter = "ANY" | "HOUR" | "DAY";
+  const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
   type LeaderboardSort = "PNL" | "BETS";
   const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
@@ -1139,9 +1141,27 @@ export default function HomePage() {
         ? filteredMarkets.filter((m) => isEnded(m))
         : filteredMarkets;
 
+    // Apply time-to-end filter (only makes sense for ongoing markets).
+    // Keep the rest of the logic the same (sorting + ended-at-bottom).
+    const applyTimeFilter = (arr: Market[]) => {
+      if (catalogTimeFilter === "ANY") return arr;
+      const cutoff =
+        catalogTimeFilter === "HOUR"
+          ? now + 60 * 60 * 1000
+          : now + 24 * 60 * 60 * 1000;
+      return arr.filter((m) => {
+        if (isEnded(m)) return false;
+        const t = endTs(m);
+        return Number.isFinite(t) && t > now && t <= cutoff;
+      });
+    };
+
+    const baseWithTime =
+      catalogStatus === "ENDED" ? base : applyTimeFilter(base);
+
     // If showing ALL, keep ongoing first and ended at bottom.
-    const ongoing = base.filter((m) => !isEnded(m));
-    const ended = base.filter((m) => isEnded(m));
+    const ongoing = baseWithTime.filter((m) => !isEnded(m));
+    const ended = baseWithTime.filter((m) => isEnded(m));
 
     const sortGroup = (arr: Market[]) => {
       const sorted = [...arr];
@@ -1181,7 +1201,7 @@ export default function HomePage() {
         ? [...ended].sort((a, b) => endTs(b) - endTs(a))
         : sortGroup(ended);
     return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
-  }, [filteredMarkets, catalogSort, catalogStatus]);
+  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter]);
 
   // Feed: markets where the user currently has bets (positions).
   const myBetMarketIds = useMemo(() => {
@@ -2236,6 +2256,35 @@ export default function HomePage() {
                     role="radio"
                     aria-checked={selected}
                     onClick={() => setCatalogStatus(opt.id)}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                      selected
+                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
+                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
+              {lang === "RU" ? "Время" : "Time"}
+            </div>
+            <div role="radiogroup" className="space-y-2 mb-4">
+              {([
+                { id: "ANY" as const, labelRu: "Любое", labelEn: "Any" },
+                { id: "HOUR" as const, labelRu: "Закончится в течение часа", labelEn: "Ends within an hour" },
+                { id: "DAY" as const, labelRu: "Закончится в течение дня", labelEn: "Ends within a day" },
+              ]).map((opt) => {
+                const selected = catalogTimeFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setCatalogTimeFilter(opt.id)}
                     className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
                       selected
                         ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"

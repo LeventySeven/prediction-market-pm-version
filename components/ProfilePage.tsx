@@ -248,6 +248,36 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const [sellingKey, setSellingKey] = useState<string | null>(null);
   const [sellError, setSellError] = useState<string | null>(null);
+  const [sellSuccessKey, setSellSuccessKey] = useState<string | null>(null);
+
+  type ErrorLike = string | Error | { message?: string } | null | undefined;
+  const getErrorMessage = (error: ErrorLike): string => {
+    if (!error) return "";
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    if (typeof error.message === "string") return error.message;
+    return "";
+  };
+
+  const formatSellError = (err: ErrorLike): string => {
+    const msg = getErrorMessage(err).toUpperCase();
+    if (msg.includes("MARKET_CLOSED") || msg.includes("MARKET_NOT_OPEN")) {
+      return lang === "RU" ? "Торги закрыты." : "Trading is closed.";
+    }
+    if (msg.includes("NO_POSITION")) {
+      return lang === "RU" ? "Позиция не найдена." : "No position found.";
+    }
+    if (msg.includes("INSUFFICIENT_SHARES")) {
+      return lang === "RU" ? "Недостаточно акций для продажи." : "Insufficient shares.";
+    }
+    if (msg.includes("AMOUNT_TOO_SMALL") || msg.includes("PAYOUT_TOO_SMALL")) {
+      return lang === "RU" ? "Сумма слишком мала для продажи." : "Amount is too small to sell.";
+    }
+    if (msg.includes("UNAUTHORIZED") || msg.includes("NOT AUTHENTICATED")) {
+      return lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.";
+    }
+    return lang === "RU" ? "Не удалось продать позицию" : "Failed to sell position";
+  };
 
   useEffect(() => {
     if (!avatarFile) {
@@ -758,22 +788,32 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                               <div className="mt-3">
                                 <Button
                                   fullWidth
-                                  className="h-9 rounded-full !bg-zinc-800 !text-white hover:!bg-zinc-700"
+                                  type="button"
+                                  className="h-9 rounded-full !bg-[rgba(245,68,166,1)] !text-white hover:!bg-[rgba(245,68,166,0.90)]"
                                   disabled={sellingKey === rowKey}
                                   onClick={async (e) => {
-                                    e.preventDefault();
                                     e.stopPropagation();
                                     if (!onSellPosition) return;
                                     setSellError(null);
+                                    setSellSuccessKey(null);
                                     setSellingKey(rowKey);
                                     try {
+                                      const sharesToSell = Math.floor(shares * 1e6) / 1e6;
+                                      if (!Number.isFinite(sharesToSell) || sharesToSell <= 0) {
+                                        setSellError(lang === "RU" ? "Слишком мало акций для продажи." : "Too few shares to sell.");
+                                        return;
+                                      }
                                       await onSellPosition({
                                         marketId: b.marketId,
                                         side: b.side,
-                                        shares,
+                                        shares: sharesToSell,
                                       });
-                                    } catch {
-                                      setSellError(lang === 'RU' ? 'Не удалось продать позицию' : 'Failed to sell position');
+                                      // Force-refresh bets in case a concurrent load skipped an update.
+                                      onLoadBets?.();
+                                      setSellSuccessKey(rowKey);
+                                      setTimeout(() => setSellSuccessKey((prev) => (prev === rowKey ? null : prev)), 1200);
+                                    } catch (err) {
+                                      setSellError(formatSellError(err as unknown as ErrorLike));
                                     } finally {
                                       setSellingKey(null);
                                     }
@@ -785,6 +825,16 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                     ? `Продать ${b.side === 'YES' ? 'ДА' : 'НЕТ'}`
                                     : `Sell ${b.side}`}
                                 </Button>
+                                {sellSuccessKey === rowKey && (
+                                  <div className="mt-2 text-[11px] text-[rgba(190,255,29,1)]">
+                                    {lang === "RU" ? "Продано" : "Sold"}
+                                  </div>
+                                )}
+                                {sellError && sellingKey !== rowKey && (
+                                  <div className="mt-2 text-[11px] text-red-400">
+                                    {sellError}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -811,11 +861,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   })}
                 </div>
               )}
-              {sellError && (
-                <div className="mt-3 text-xs text-red-400 px-1">
-                  {sellError}
-                </div>
-              )}
+              {/* Error is shown inline under the corresponding sell button */}
             </div>
 
             {/* Completed */}
