@@ -301,7 +301,7 @@ export default function HomePage() {
   type MarketContextPayload = { context: string; sources: string[]; updatedAt: string };
   const [marketContextById, setMarketContextById] = useState<Record<string, MarketContextPayload>>({});
   const [marketContextLoadingId, setMarketContextLoadingId] = useState<string | null>(null);
-  const [marketContextError, setMarketContextError] = useState<string | null>(null);
+  const [marketContextErrorById, setMarketContextErrorById] = useState<Record<string, string | null>>({});
   const [marketComments, setMarketComments] = useState<MarketComment[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
   const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
@@ -1845,7 +1845,7 @@ export default function HomePage() {
 
   const handleFetchMarketContext = useCallback(async (marketId: string) => {
     if (!marketId || marketContextLoadingId === marketId) return;
-    setMarketContextError(null);
+    setMarketContextErrorById((prev) => ({ ...prev, [marketId]: null }));
     setMarketContextLoadingId(marketId);
     try {
       const result = await trpcClient.market.generateMarketContext.mutate({ marketId });
@@ -1859,9 +1859,9 @@ export default function HomePage() {
       }));
     } catch (err) {
       console.error("generateMarketContext failed", err);
-      setMarketContextError(getErrorMessage(err));
+      setMarketContextErrorById((prev) => ({ ...prev, [marketId]: getErrorMessage(err) }));
     } finally {
-      setMarketContextLoadingId(null);
+      setMarketContextLoadingId((prev) => (prev === marketId ? null : prev));
     }
   }, [marketContextLoadingId]);
 
@@ -1951,7 +1951,7 @@ export default function HomePage() {
               marketContext={marketContextById[selectedMarket.id]?.context ?? null}
               marketContextSources={marketContextById[selectedMarket.id]?.sources ?? []}
               marketContextLoading={marketContextLoadingId === selectedMarket.id}
-              marketContextError={marketContextError}
+              marketContextError={marketContextErrorById[selectedMarket.id] ?? null}
               onFetchMarketContext={handleFetchMarketContext}
             />
           </main>
