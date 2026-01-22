@@ -248,6 +248,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const [sellingKey, setSellingKey] = useState<string | null>(null);
   const [sellError, setSellError] = useState<string | null>(null);
+  const [sellErrorKey, setSellErrorKey] = useState<string | null>(null);
   const [sellSuccessKey, setSellSuccessKey] = useState<string | null>(null);
 
   type ErrorLike = string | Error | { message?: string } | null | undefined;
@@ -795,6 +796,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                     e.stopPropagation();
                                     if (!onSellPosition) return;
                                     setSellError(null);
+                                    setSellErrorKey(null);
                                     setSellSuccessKey(null);
                                     setSellingKey(rowKey);
                                     try {
@@ -802,6 +804,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                       if (!Number.isFinite(sharesToSell) || sharesToSell <= 0) {
                                         // Defensive: ensure we never leave the row in "loading/disabled" state.
                                         setSellingKey(null);
+                                        setSellErrorKey(rowKey);
                                         setSellError(lang === "RU" ? "Слишком мало акций для продажи." : "Too few shares to sell.");
                                         return;
                                       }
@@ -812,9 +815,12 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                       });
                                       // Force-refresh bets in case a concurrent load skipped an update.
                                       onLoadBets?.();
+                                      setSellError(null);
+                                      setSellErrorKey(null);
                                       setSellSuccessKey(rowKey);
                                       setTimeout(() => setSellSuccessKey((prev) => (prev === rowKey ? null : prev)), 1200);
                                     } catch (err) {
+                                      setSellErrorKey(rowKey);
                                       setSellError(formatSellError(err as unknown as ErrorLike));
                                     } finally {
                                       setSellingKey(null);
@@ -832,7 +838,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                     {lang === "RU" ? "Продано" : "Sold"}
                                   </div>
                                 )}
-                                {sellError && sellingKey !== rowKey && (
+                                {sellError && sellErrorKey === rowKey && (
                                   <div className="mt-2 text-[11px] text-red-400">
                                     {sellError}
                                   </div>
