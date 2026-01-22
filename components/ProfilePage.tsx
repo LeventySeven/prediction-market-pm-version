@@ -800,6 +800,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                     try {
                                       const sharesToSell = Math.floor(shares * 1e6) / 1e6;
                                       if (!Number.isFinite(sharesToSell) || sharesToSell <= 0) {
+                                        // Defensive: ensure we never leave the row in "loading/disabled" state.
+                                        setSellingKey(null);
                                         setSellError(lang === "RU" ? "Слишком мало акций для продажи." : "Too few shares to sell.");
                                         return;
                                       }
