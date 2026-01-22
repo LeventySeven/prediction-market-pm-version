@@ -88,32 +88,10 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
           </div>
         ) : (
           <>
-            <div className="mb-4 flex items-center gap-2">
-              <div className="flex-1 flex items-center gap-2 border border-zinc-900 bg-black rounded-full p-1">
-                <button
-                  type="button"
-                  onClick={() => onLeaderboardSortChange('PNL')}
-                  className={`flex-1 rounded-full py-2 text-[11px] font-bold uppercase tracking-wider transition ${
-                    leaderboardSort === 'PNL'
-                      ? 'bg-zinc-950 text-white border border-zinc-800'
-                      : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {lang === 'RU' ? 'PnL' : 'PnL'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onLeaderboardSortChange('BETS')}
-                  className={`flex-1 rounded-full py-2 text-[11px] font-bold uppercase tracking-wider transition ${
-                    leaderboardSort === 'BETS'
-                      ? 'bg-zinc-950 text-white border border-zinc-800'
-                      : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {lang === 'RU' ? 'Ставки' : 'Bets'}
-                </button>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                {lang === "RU" ? "Фильтр" : "Filter"}
               </div>
-
               <button
                 type="button"
                 onClick={() => setLeaderPickerOpen(true)}
@@ -148,6 +126,34 @@ const FriendsPage: React.FC<FriendsPageProps> = ({ lang, user, leaderboardUsers,
               >
                 <X size={16} />
               </button>
+            </div>
+
+            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
+              {lang === "RU" ? "Сортировка" : "Sort"}
+            </div>
+            <div role="radiogroup" className="space-y-2 mb-4">
+              {([
+                { id: "PNL" as const, labelRu: "PnL", labelEn: "PnL" },
+                { id: "BETS" as const, labelRu: "Ставки", labelEn: "Bets" },
+              ]).map((opt) => {
+                const selected = leaderboardSort === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => onLeaderboardSortChange(opt.id)}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                      selected
+                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
+                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="relative mb-4">

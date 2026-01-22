@@ -555,18 +555,32 @@ export const marketRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { supabase, authUser } = ctx;
+      const { supabase, supabaseService, authUser } = ctx;
       const { marketId, side, shares } = input;
 
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
-      const { data, error } = await (supabase as SupabaseDbClient).rpc("sell_position_tx", {
-        p_market_id: marketId,
-        p_side: side,
-        p_shares: shares,
-      });
+      const useService = supabaseService !== supabase;
+      const rpcName = useService ? "sell_position_service_tx" : "sell_position_tx";
+      const rpcArgs = useService
+        ? {
+            p_user_id: authUser.id,
+            p_market_id: marketId,
+            p_side: side,
+            p_shares: shares,
+          }
+        : {
+            p_market_id: marketId,
+            p_side: side,
+            p_shares: shares,
+          };
+
+      const { data, error } = await (useService ? (supabaseService as SupabaseDbClient) : (supabase as SupabaseDbClient)).rpc(
+        rpcName,
+        rpcArgs as Record<string, unknown>
+      );
 
       if (error) {
         const msg = error.message || "";
