@@ -290,7 +290,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
     return () => URL.revokeObjectURL(url);
   }, [avatarFile]);
 
-  const activeBets = bets.filter((b) => b.status === 'open');
+  const activeBets = bets.filter((b) => b.status === 'open' && Number(b.shares ?? 0) > 0);
   const settledBets = bets.filter((b) => b.status !== 'open');
 
   const formatMoney = (value: number) => `$${value.toFixed(2)}`;
@@ -800,7 +800,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                                     setSellSuccessKey(null);
                                     setSellingKey(rowKey);
                                     try {
-                                      const sharesToSell = Math.floor(shares * 1e6) / 1e6;
+                                      // Match DB precision (1e-9) to avoid tiny leftover shares.
+                                      const sharesToSell = Math.round(shares * 1e9) / 1e9;
                                       if (!Number.isFinite(sharesToSell) || sharesToSell <= 0) {
                                         // Defensive: ensure we never leave the row in "loading/disabled" state.
                                         setSellingKey(null);
