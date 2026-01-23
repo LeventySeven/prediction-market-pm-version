@@ -772,7 +772,7 @@ export default function HomePage() {
         trpcClient.market.myPositions.query(),
         trpcClient.market.myTrades.query(),
         trpcClient.market.myBookmarks.query(),
-        trpcClient.market.getWalletBalance.query().catch(() => null),
+        trpcClient.market.myWalletBalance.query().catch(() => null),
       ]);
 
       const positionsParsed = positionsSchema.parse(positionsRaw);
