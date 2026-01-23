@@ -303,6 +303,7 @@ export default function HomePage() {
   const [marketContextById, setMarketContextById] = useState<Record<string, MarketContextPayload>>({});
   const [marketContextLoadingId, setMarketContextLoadingId] = useState<string | null>(null);
   const [marketContextErrorById, setMarketContextErrorById] = useState<Record<string, string | null>>({});
+  const [walletBalanceMajor, setWalletBalanceMajor] = useState<number | null>(null);
   const [marketComments, setMarketComments] = useState<MarketComment[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
   const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
@@ -767,10 +768,11 @@ export default function HomePage() {
     setMyBetsLoading(true);
     setMyBetsError(null);
     try {
-      const [positionsRaw, tradesRaw, bookmarksRaw] = await Promise.all([
+      const [positionsRaw, tradesRaw, bookmarksRaw, walletBalanceRaw] = await Promise.all([
         trpcClient.market.myPositions.query(),
         trpcClient.market.myTrades.query(),
         trpcClient.market.myBookmarks.query(),
+        trpcClient.market.getWalletBalance.query().catch(() => null),
       ]);
 
       const positionsParsed = positionsSchema.parse(positionsRaw);
@@ -814,6 +816,9 @@ export default function HomePage() {
       setMyPositions(positions);
       setMyTrades(trades);
       setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
+      if (walletBalanceRaw && typeof walletBalanceRaw.balanceMajor === "number") {
+        setWalletBalanceMajor(walletBalanceRaw.balanceMajor);
+      }
     } catch (err) {
       const errorMsg = getErrorMessage(err);
       console.error("Failed to load positions/trades", { error: errorMsg, err, userId: user?.id });
@@ -890,8 +895,8 @@ export default function HomePage() {
           volume: `$${m.volume.toFixed(2)}`,
           closesAt: m.closesAt,
           expiresAt: m.expiresAt,
-          yesPrice: Number(m.priceYes.toFixed(4)),
-          noPrice: Number(m.priceNo.toFixed(4)),
+          yesPrice: Number(m.priceYes),
+          noPrice: Number(m.priceNo),
           chance,
           description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
           source: (m as { source?: string | null }).source ?? null,
@@ -974,6 +979,7 @@ export default function HomePage() {
       setMyPositions([]);
       setMyTrades([]);
       setMyBookmarks([]);
+      setWalletBalanceMajor(null);
       return;
     }
     void loadMyBets();
@@ -1554,6 +1560,7 @@ export default function HomePage() {
       // Update user balance from response (minor units -> major)
       const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
       setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
+      setWalletBalanceMajor(newBalanceMajor);
 
       await loadMarkets();
       await refreshUser();
@@ -1809,6 +1816,7 @@ export default function HomePage() {
 
       const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
       setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
+      setWalletBalanceMajor(newBalanceMajor);
 
       await loadMarkets();
       await refreshUser();
@@ -2274,7 +2282,7 @@ export default function HomePage() {
                     onLogout={handleLogout}
                     onUpdateDisplayName={handleUpdateDisplayName}
                     onUpdateAvatarUrl={handleUpdateAvatarUrl}
-                    balanceMajor={user?.balance ?? 0}
+                    balanceMajor={walletBalanceMajor ?? user?.balance ?? 0}
                     pnlMajor={totalPnl}
                     bets={legacyBets}
                     betsLoading={myBetsLoading}

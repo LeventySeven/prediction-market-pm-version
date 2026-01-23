@@ -646,7 +646,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
           <div
             className={`text-2xl font-mono font-bold ${
-              pnlIsPositive ? 'text-[rgba(245,68,166,1)]' : 'text-[rgba(245,68,166,1)]'
+              pnlIsPositive ? 'text-[rgba(190,255,29,1)]' : 'text-[rgba(245,68,166,1)]'
             }`}
           >
             {pnlIsPositive ? '+' : '-'}${Math.abs(pnlMajor).toFixed(2)}
