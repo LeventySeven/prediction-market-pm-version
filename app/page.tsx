@@ -1571,15 +1571,59 @@ export default function HomePage() {
   };
 
   const handleOpenMarketBet = useCallback(
-    (market: Market, side: "YES" | "NO") => {
-      setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
-      setSelectedMarketId(market.id);
+    async (market: Market, side: "YES" | "NO") => {
       if (!user) {
         setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
         openAuth("SIGN_UP");
+        return;
       }
+      if (reloginRequired) {
+        setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
+        triggerRelogin();
+        return;
+      }
+      const me = await refreshUser();
+      if (!me) {
+        setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
+        triggerRelogin();
+        setUser(null);
+        return;
+      }
+      setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
+      setSelectedMarketId(market.id);
     },
-    [openAuth, user]
+    [openAuth, user, reloginRequired, refreshUser, triggerRelogin]
+  );
+
+  const openMarketWithAuthCheck = useCallback(
+    async (marketId: string) => {
+      if (!user) {
+        setSelectedMarketId(marketId);
+        return;
+      }
+      if (reloginRequired) {
+        try {
+          localStorage.setItem("pending_market_id", marketId);
+        } catch {
+          // ignore
+        }
+        triggerRelogin();
+        return;
+      }
+      const me = await refreshUser();
+      if (!me) {
+        try {
+          localStorage.setItem("pending_market_id", marketId);
+        } catch {
+          // ignore
+        }
+        triggerRelogin();
+        setUser(null);
+        return;
+      }
+      setSelectedMarketId(marketId);
+    },
+    [user, reloginRequired, refreshUser, triggerRelogin]
   );
 
   const handleOpenCreateMarket = useCallback(() => {
@@ -2103,7 +2147,7 @@ export default function HomePage() {
                               bookmarked={bookmarkedMarketIds.has(market.id)}
                               onClick={() => {
                                 setMarketBetIntent(null);
-                                setSelectedMarketId(market.id);
+                                void openMarketWithAuthCheck(market.id);
                               }}
                               onQuickBet={(side) => handleOpenMarketBet(market, side)}
                               lang={lang}
@@ -2143,7 +2187,7 @@ export default function HomePage() {
                                 bookmarked
                                 onClick={() => {
                                   setMarketBetIntent(null);
-                                  setSelectedMarketId(market.id);
+                                  void openMarketWithAuthCheck(market.id);
                                 }}
                                 onQuickBet={(side) => handleOpenMarketBet(market, side)}
                                 lang={lang}
@@ -2181,7 +2225,7 @@ export default function HomePage() {
                               bookmarked={bookmarkedMarketIds.has(market.id)}
                               onClick={() => {
                                 setMarketBetIntent(null);
-                                setSelectedMarketId(market.id);
+                                void openMarketWithAuthCheck(market.id);
                               }}
                               onQuickBet={(side) => handleOpenMarketBet(market, side)}
                               lang={lang}
@@ -2229,7 +2273,7 @@ export default function HomePage() {
                     onLoadComments={() => void loadMyComments()}
                     onMarketClick={(marketId) => {
                       setMarketBetIntent(null); // Clear bet intent when clicking from profile
-                      setSelectedMarketId(marketId);
+                      void openMarketWithAuthCheck(marketId);
                     }}
                   />
                 </div>
@@ -2476,7 +2520,7 @@ export default function HomePage() {
         onMarketClick={(marketId) => {
           closePublicProfile();
           setMarketBetIntent(null);
-          setSelectedMarketId(marketId);
+          void openMarketWithAuthCheck(marketId);
           setCurrentView("CATALOG");
         }}
       />
