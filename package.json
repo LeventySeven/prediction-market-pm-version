@@ -46,6 +46,7 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "fast-xml-parser": "^5.3.3",
+    "grammy": "^1.39.3",
     "jose": "^5.9.3",
     "jssoup": "^0.0.15",
     "lucide-react": "^0.555.0",
