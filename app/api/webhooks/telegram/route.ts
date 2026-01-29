@@ -12,15 +12,11 @@ No initial liquidity needed. No permissions required.
 Tap the button below to start predicting ⬇️`;
 
 const getMiniAppUrl = () => {
-  const raw =
-    process.env.TELEGRAM_MINIAPP_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  if (!raw) {
+  const url = process.env.TELEGRAM_MINIAPP_URL;
+  if (!url) {
     throw new Error("TELEGRAM_MINIAPP_URL is not configured");
   }
-  return raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`;
+  return url;
 };
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
