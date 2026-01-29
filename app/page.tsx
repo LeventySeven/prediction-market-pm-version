@@ -2034,7 +2034,7 @@ export default function HomePage() {
     }
     const res = await trpcClient.market.prepareClaim.mutate({
       marketId,
-      assetCode,
+      assetCode: "USDC",
       userPubkey: publicKey.toBase58(),
     });
     const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));

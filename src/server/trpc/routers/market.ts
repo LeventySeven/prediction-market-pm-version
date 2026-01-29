@@ -151,22 +151,27 @@ const normalizeSolanaCluster = (): SolanaCluster => {
 
 const readU64 = (buffer: Buffer, offset: number): bigint => buffer.readBigUInt64LE(offset);
 
-const getAccountKeysFromMessage = (message: {
-  accountKeys?: PublicKey[];
-  getAccountKeys?: () => { staticAccountKeys: PublicKey[] };
-}): PublicKey[] => {
-  if (typeof message.getAccountKeys === "function") {
-    return message.getAccountKeys().staticAccountKeys;
+const getAccountKeysFromMessage = (message: unknown): PublicKey[] => {
+  const msg = message as {
+    accountKeys?: PublicKey[];
+    getAccountKeys?: () => { staticAccountKeys: PublicKey[] };
+  };
+  if (typeof msg.getAccountKeys === "function") {
+    return msg.getAccountKeys().staticAccountKeys;
   }
-  return message.accountKeys ?? [];
+  return msg.accountKeys ?? [];
 };
 
 const findProgramInstruction = (
-  tx: { transaction: { message: { instructions: { programIdIndex: number; accounts: number[]; data: string }[] } } },
+  tx: { transaction: { message: unknown } },
   programId: PublicKey,
   discriminator: Buffer
 ): { data: Buffer; accountKeys: PublicKey[]; accounts: PublicKey[] } | null => {
-  const message = tx.transaction.message;
+  const message = tx.transaction.message as {
+    instructions: { programIdIndex: number; accounts: number[]; data: string }[];
+    accountKeys?: PublicKey[];
+    getAccountKeys?: () => { staticAccountKeys: PublicKey[] };
+  };
   const accountKeys = getAccountKeysFromMessage(message);
   for (const ix of message.instructions) {
     const ixProgramId = accountKeys[ix.programIdIndex];
@@ -1334,7 +1339,7 @@ export const marketRouter = router({
       const nextQNo = outcome === 2 ? qNo + sharesMajor : qNo;
       const { priceYes: priceAfterYes } = calculateBoundedPrices(nextQYes, nextQNo, b);
 
-      const { data, error } = await client.rpc("place_bet_onchain_tx", {
+      const { data: rpcData, error } = await client.rpc("place_bet_onchain_tx", {
         p_market_id: marketId,
         p_side: outcome === 1 ? "YES" : "NO",
         p_collateral_minor: Number(collateralMinor),
@@ -1346,7 +1351,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       }
 
-      const result = (Array.isArray(data) ? data[0] : data) as PlaceBetResult | null;
+      const result = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as PlaceBetResult | null;
       if (!result) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to finalize bet" });
       }
