@@ -1655,7 +1655,7 @@ export default function HomePage() {
         await connection.confirmTransaction(signature, "confirmed");
 
         await loadMarkets();
-        await refreshUser();
+        const refreshedUser = await refreshUser();
         await loadMyBets();
 
         setBetConfirm({
@@ -1663,7 +1663,7 @@ export default function HomePage() {
           marketTitle,
           side,
           amount,
-          newBalance: user?.balance,
+          newBalance: refreshedUser?.balance ?? user?.balance,
           errorMessage: null,
           isLoading: false,
         });
@@ -1699,14 +1699,14 @@ export default function HomePage() {
       console.error("placeBet failed", err);
       const friendly = formatBetError(getErrorMessage(err));
       await loadMarkets();
-      await refreshUser();
+      const refreshedUser = await refreshUser();
       await loadMyBets();
       setBetConfirm({
         open: true,
         marketTitle,
         side,
         amount,
-        newBalance: user?.balance,
+        newBalance: refreshedUser?.balance ?? user?.balance,
         errorMessage: friendly,
         isLoading: false,
       });

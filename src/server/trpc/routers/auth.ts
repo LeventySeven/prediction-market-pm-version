@@ -578,7 +578,9 @@ export const authRouter = router({
 
     const sessionUserId = data.session.user?.id;
     if (!sessionUserId) {
-      return { user: null };
+      setCookie(clearCookie(SUPABASE_ACCESS_COOKIE));
+      setCookie(clearCookie(SUPABASE_REFRESH_COOKIE));
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "REFRESH_FAILED" });
     }
 
     try {
@@ -589,7 +591,12 @@ export const authRouter = router({
         .maybeSingle();
 
       if (userError || !userRow) {
-        return { user: null };
+        setCookie(clearCookie(SUPABASE_ACCESS_COOKIE));
+        setCookie(clearCookie(SUPABASE_REFRESH_COOKIE));
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: userError?.message ?? "REFRESH_FAILED",
+        });
       }
 
       const authRow = userRow as DbUserRow;
@@ -614,7 +621,9 @@ export const authRouter = router({
       return { user: toPublicUser(authRow, Number(balanceMinor)) };
     } catch (err) {
       console.warn("Failed to hydrate user after refresh", err);
-      return { user: null };
+      setCookie(clearCookie(SUPABASE_ACCESS_COOKIE));
+      setCookie(clearCookie(SUPABASE_REFRESH_COOKIE));
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "REFRESH_FAILED" });
     }
   }),
 
