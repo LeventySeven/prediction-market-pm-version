@@ -310,7 +310,11 @@ bun run dev
 - Anchor program deployment (has placeholder program ID)
 - USDC mint creation (devnet)
 - Helius webhook configuration
-- On-chain transaction preparation (endpoints throw "SOLANA_PROGRAM_NOT_DEPLOYED")
+- Production-grade indexing (Helius or dedicated RPC with signature polling)
+
+✅ **Admin-only on-chain flow (devnet):**
+- `prepareBet/prepareSell/prepareClaim` build Solana transactions for admins.
+- `finalizeBet/finalizeSell/finalizeClaim` confirm the on-chain tx and mirror results into Supabase.
 
 ## Testing the Wallet Connection
 
@@ -325,7 +329,7 @@ Once the app is running:
 
 ### "SOLANA_PROGRAM_NOT_DEPLOYED" Error
 
-This is expected until the Anchor program is deployed. The endpoints are ready but intentionally disabled until deployment.
+This indicates the Anchor program ID or deployment is missing. The admin-only on-chain endpoints require a deployed program and a devnet USDC mint.
 
 ### Wallet Not Syncing
 
@@ -345,6 +349,6 @@ If you're hitting rate limits on public RPC:
 1. **Apply the database migration** (required for wallet sync)
 2. **Set basic env vars** (`NEXT_PUBLIC_SOLANA_CLUSTER=devnet`)
 3. **Test wallet connection** (should work immediately)
-4. **Deploy Anchor program** (when ready for on-chain features)
-5. **Create devnet USDC mint** (for testing deposits/bets)
-6. **Configure Helius webhook** (for production transaction indexing)
+4. **Deploy Anchor program** (required for admin on-chain flow)
+5. **Create devnet USDC mint** (for testing admin buy/sell/claim)
+6. **Configure Helius webhook** (for production-grade indexing)

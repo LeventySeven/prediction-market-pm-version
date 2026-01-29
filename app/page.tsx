@@ -1645,8 +1645,16 @@ export default function HomePage() {
         const signature = await sendTransaction(tx, connection);
         await connection.confirmTransaction(signature, "confirmed");
 
+        const finalized = await trpcClient.market.finalizeBet.mutate({
+          marketId,
+          signature,
+        });
+        const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
+        setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
+        setWalletBalanceMajor(newBalanceMajor);
+
         await loadMarkets();
-        const refreshedUser = await refreshUser();
+        await refreshUser();
         await loadMyBets();
 
         setBetConfirm({
@@ -1654,7 +1662,7 @@ export default function HomePage() {
           marketTitle,
           side,
           amount,
-          newBalance: refreshedUser?.balance ?? user?.balance,
+          newBalance: newBalanceMajor,
           errorMessage: null,
           isLoading: false,
         });
@@ -1957,7 +1965,35 @@ export default function HomePage() {
       const isOnChain = settlementAsset === "USDC" || settlementAsset === "USDT";
 
       if (isOnChain) {
-        throw new Error("SOLANA_ONCHAIN_TEMP_DISABLED");
+        if (!user.isAdmin) {
+          throw new Error("ADMIN_ONLY_ONCHAIN");
+        }
+        if (!isWalletConnected || !publicKey) {
+          throw new Error("WALLET_NOT_CONNECTED");
+        }
+        const res = await trpcClient.market.prepareSell.mutate({
+          marketId,
+          side,
+          shares,
+          assetCode: "USDC",
+          userPubkey: publicKey.toBase58(),
+        });
+        const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
+        const signature = await sendTransaction(tx, connection);
+        await connection.confirmTransaction(signature, "confirmed");
+
+        const finalized = await trpcClient.market.finalizeSell.mutate({
+          marketId,
+          signature,
+        });
+        const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
+        setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
+        setWalletBalanceMajor(newBalanceMajor);
+
+        await loadMarkets();
+        await refreshUser();
+        await loadMyBets();
+        return;
       }
 
       const res = await trpcClient.market.sellPosition.mutate({
@@ -1990,7 +2026,32 @@ export default function HomePage() {
     assetCode: "USDC" | "USDT";
   }) => {
     if (!user) return;
-    throw new Error("SOLANA_ONCHAIN_TEMP_DISABLED");
+    if (!user.isAdmin) {
+      throw new Error("ADMIN_ONLY_ONCHAIN");
+    }
+    if (!isWalletConnected || !publicKey) {
+      throw new Error("WALLET_NOT_CONNECTED");
+    }
+    const res = await trpcClient.market.prepareClaim.mutate({
+      marketId,
+      assetCode,
+      userPubkey: publicKey.toBase58(),
+    });
+    const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
+    const signature = await sendTransaction(tx, connection);
+    await connection.confirmTransaction(signature, "confirmed");
+
+    const finalized = await trpcClient.market.finalizeClaim.mutate({
+      marketId,
+      signature,
+    });
+    const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
+    setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
+    setWalletBalanceMajor(newBalanceMajor);
+
+    await loadMarkets();
+    await refreshUser();
+    await loadMyBets();
   };
 
   const handlePostMarketComment = useCallback(

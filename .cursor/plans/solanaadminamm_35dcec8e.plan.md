@@ -1,26 +1,26 @@
 ---
 name: SolanaAdminAmm
-overview: Migrate admin-only flows from VCOIN to Solana devnet with on-chain AMM state updates, while keeping all finances and UI fully off-chain and requiring wallet signatures for every admin transaction.
+overview: Move admin-only flows from VCOIN to USDC with on-chain AMM state transitions + PDA escrow (non-custodial). Supabase provides quotes/indexing, but the program enforces pricing bounds and settlement on-chain. Non-admins remain on VCOIN during testing.
 todos:
-  - id: anchor-amm
-    content: Refactor Anchor program for on-chain AMM math only
+  - id: anchor-escrow
+    content: Refactor Anchor program to PDA escrow only (deposit/withdraw/fee)
     status: pending
   - id: server-finalize
     content: Add prepare/finalize endpoints for admin flows
-    status: pending
+    status: completed
   - id: sql-offchain
     content: Adjust SQL to accept on-chain results
-    status: pending
+    status: completed
   - id: frontend-admin
     content: Wire admin UI to sign + finalize onchain txs
-    status: pending
+    status: completed
   - id: docs
     content: Update Solana setup and DB context docs
-    status: pending
+    status: completed
 isProject: false
 ---
 
-# Solana Admin AMM + Off-chain Finance Plan
+# Solana Admin AMM + Hybrid PDA Escrow Plan
 
 ## Current State (Key Anchors)
 
@@ -64,55 +64,55 @@ isProject: false
 
 ## Target Behavior
 
-- If `isAdmin`, all transaction flows require a Solana devnet wallet signature for buy/sell/claim.
-- AMM state updates happen on-chain, but pricing math is computed off-chain for speed/flexibility and encoded into signed transactions.
-- All finances (USDC transfers, balances, fees, payouts) are off-chain; on-chain state is limited to AMM position state only.
-- Off-chain tables remain the source of truth for balances; on-chain events are used for reconciliation.
-- Non-admins keep the existing VCOIN flow until the full rollout.
+- If `isAdmin`, all USDC flows require a Solana devnet wallet signature (buy/sell/claim).
+- Program owns the AMM state and positions on-chain and enforces pricing bounds (`max_cost`, `min_payout`) before moving funds.
+- Supabase remains for quotes, analytics, and indexing, but is not a security authority.
+- Funds are non-custodial: held in user wallets or program-controlled PDA vaults only.
+- Non-admins continue to use the VCOIN flow until the admin-only USDC path is validated.
 
 ## Plan
 
-1. **Refactor Anchor program to AMM-only state**
+1. **Refactor Anchor program to on-chain AMM + PDA escrow**
 
-   - Update `Market` account to store AMM state (`q_yes`, `q_no`, `b`, and optional `last_price_yes`) and use it for pricing.
-   - Keep bounded cost function math off-chain; the program accepts `shares_minor`, `price_before/after`, and `collateral_minor` as inputs signed by a `quote_authority`.
-   - Remove USDC transfers from the program; do not read or modify any on-chain token accounts.
-   - Emit Anchor events with computed shares/payout and updated AMM state for off-chain reconciliation.
+   - Store AMM state and positions on-chain (`Market` + `Position` PDAs).
+   - Use PDA vault per market for USDC custody; program signs withdrawals with PDA authority.
+   - Implement `buy`, `sell`, `resolve`, `claim` with bounds (`max_cost`, `min_payout`) to reject bad quotes.
+   - Emit Anchor events for off-chain reconciliation/indexing.
    - Files: [anchor/programs/prediction_market_vault/src/lib.rs](anchor/programs/prediction_market_vault/src/lib.rs)
 
 2. **Align PDA helpers and instruction encoding**
 
-   - Update client-side PDA derivations if account layouts or seeds change (e.g., market account now includes `b`).
-   - Update instruction data encoding in the server to match new Anchor instruction args (remove `shares_minor` input; let program compute it).
+   - Update PDA derivations for market/position/vault/authority.
+   - Update server-side instruction building to use `buy/sell/claim/resolve` with bounds.
    - Files: [lib/solana/pdas.ts](lib/solana/pdas.ts), [src/server/trpc/routers/market.ts](src/server/trpc/routers/market.ts)
 
-3. **Add “finalize” endpoints for off-chain settlement**
+3. **Add “finalize” endpoints for off-chain indexing**
 
-   - Add `finalizeBet`, `finalizeSell`, and `finalizeClaim` TRPC mutations that accept a Solana signature, fetch the confirmed transaction, parse Anchor events, and apply off-chain balance updates.
-   - Use those events to update `wallet_balances`, `positions`, `trades`, and market snapshots without re-running AMM math off-chain.
+   - Add `finalizeBet`, `finalizeSell`, and `finalizeClaim` TRPC mutations that accept a Solana signature, verify it, and then update Supabase projections.
+   - Supabase mirrors on-chain state for UI/analytics only.
    - Files: [src/server/trpc/routers/market.ts](src/server/trpc/routers/market.ts)
 
-4. **Adjust SQL functions for “precomputed AMM” flows**
+4. **Adjust SQL functions for quotes only**
 
-   - Extend `place_bet_tx` / `sell_position_tx` or add new functions that accept precomputed `shares`, `price_before/after`, and collateral/payout from on-chain events to avoid recalculating AMM off-chain.
-   - Add a `claim_winnings_tx` function to record on-chain claim events (payout + share burn) in Supabase.
+   - Keep bounded cost helpers in Supabase for **quotes** only.
+   - Add/extend functions for indexing confirmed on-chain events into trades/positions/candles.
    - Files: [db/functions/place_bet_tx.sql](db/functions/place_bet_tx.sql)
 
 5. **Wire frontend admin flows to sign + finalize**
 
-   - For admin trades, replace the current inline success path with: prepare tx → sign/confirm → call finalize endpoint → refresh UI from Supabase.
-   - Implement on-chain admin sell and claim flows (remove `SOLANA_ONCHAIN_TEMP_DISABLED` guard).
+   - For admin trades, replace current flow with: quote → sign tx → confirm → finalize → refresh.
+   - Implement admin sell + claim with on-chain `sell/claim` and finalize in Supabase.
    - Files: [app/page.tsx](app/page.tsx), [components/MarketPage.tsx](components/MarketPage.tsx)
 
 6. **Docs + configuration alignment with Solana guidance**
 
-   - Update `SOLANA_SETUP.md` to describe the AMM-on-chain/off-chain-finance split and how to deploy/initialize the program for devnet.
+   - Update `SOLANA_SETUP.md` to describe the PDA escrow + off-chain AMM split and how to deploy/initialize the program for devnet.
    - Update `supabase/DB_CONTEXT.md` to reflect the new on-chain/off-chain responsibility boundaries.
    - Files: [SOLANA_SETUP.md](SOLANA_SETUP.md), [supabase/DB_CONTEXT.md](supabase/DB_CONTEXT.md)
 
 ## Test Plan
 
-- Admin user on devnet: place bet → wallet signature → finalize mirrors trades/positions/market.
-- Admin user: sell position → wallet signature → finalize mirrors updates.
-- Admin user: claim winnings after resolution → wallet signature → finalize mirrors updates.
+- Admin user on devnet: quote → buy (USDC) → finalize mirrors trades/positions/market.
+- Admin user: sell → finalize mirrors updates.
+- Admin user: resolve → claim winnings → finalize mirrors updates.
 - Non-admin users: continue to use off-chain VCOIN flow without Solana wallet requirement.

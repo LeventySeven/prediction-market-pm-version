@@ -45,15 +45,17 @@ pub struct Market {
     /// 0=open/unresolved, 1=YES, 2=NO, 3=cancelled
     pub outcome: u8,
     /// Total YES shares (scaled by 1e6)
-    pub pool_yes: u64,
+    pub q_yes: u64,
     /// Total NO shares (scaled by 1e6)
-    pub pool_no: u64,
+    pub q_no: u64,
+    /// Liquidity parameter b (scaled by 1e6)
+    pub b: u64,
     pub bump: u8,
 }
 
 impl Market {
     pub const SEED: &'static [u8] = b"market";
-    pub const LEN: usize = 16 + 1 + 8 + 8 + 1;
+    pub const LEN: usize = 16 + 1 + 8 + 8 + 8 + 1;
 }
 
 #[account]
@@ -181,8 +183,9 @@ pub mod prediction_market_vault {
         let m = &mut ctx.accounts.market;
         m.uuid = market_uuid;
         m.outcome = 0;
-        m.pool_yes = 0;
-        m.pool_no = 0;
+        m.q_yes = 0;
+        m.q_no = 0;
+        m.b = 0;
         m.bump = ctx.bumps.market;
         Ok(())
     }
@@ -350,24 +353,22 @@ pub mod prediction_market_vault {
         Ok(())
     }
 
-    /// Place a bet (buy shares). Pricing is enforced off-chain by requiring the backend quote authority to co-sign.
+    /// Place a bet (buy shares). Pricing is enforced off-chain; on-chain enforces bounds + custody.
     pub fn place_bet(
         ctx: Context<PlaceBet>,
         outcome: u8,          // 1=YES, 2=NO
         collateral_minor: u64,
         shares_minor: u64,    // scaled by 1e6
+        max_cost_minor: u64,
     ) -> Result<()> {
         require!(outcome == 1 || outcome == 2, VaultError::InvalidOutcome);
         require!(collateral_minor > 0 && shares_minor > 0, VaultError::InvalidAmount);
+        require!(collateral_minor <= max_cost_minor, VaultError::InvalidAmount);
         require!(ctx.accounts.market.outcome == 0, VaultError::MarketNotOpen);
         require!(
             ctx.accounts.quote_authority.key() == ctx.accounts.config.quote_authority,
             VaultError::NotAuthorized
         );
-
-        let uv = &mut ctx.accounts.user_vault;
-        require!(uv.balance >= collateral_minor, VaultError::InsufficientBalance);
-        uv.balance = uv.balance.saturating_sub(collateral_minor);
 
         let pos = &mut ctx.accounts.position;
         pos.market = ctx.accounts.market.key();
@@ -375,11 +376,89 @@ pub mod prediction_market_vault {
         pos.bump = ctx.bumps.position;
         if outcome == 1 {
             pos.shares_yes = pos.shares_yes.saturating_add(shares_minor);
-            ctx.accounts.market.pool_yes = ctx.accounts.market.pool_yes.saturating_add(shares_minor);
+            ctx.accounts.market.q_yes = ctx.accounts.market.q_yes.saturating_add(shares_minor);
         } else {
             pos.shares_no = pos.shares_no.saturating_add(shares_minor);
-            ctx.accounts.market.pool_no = ctx.accounts.market.pool_no.saturating_add(shares_minor);
+            ctx.accounts.market.q_no = ctx.accounts.market.q_no.saturating_add(shares_minor);
         }
+
+        // Ensure USDC mint matches config.
+        require!(
+            ctx.accounts.usdc_mint.key() == ctx.accounts.config.usdc_mint,
+            VaultError::MintMismatch
+        );
+
+        require_keys_eq!(
+            ctx.accounts.token_program.key(),
+            spl_token::id(),
+            VaultError::InvalidProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.associated_token_program.key(),
+            spl_associated_token_account::id(),
+            VaultError::InvalidProgram
+        );
+
+        let usdc_mint_key = ctx.accounts.usdc_mint.key();
+        let user_expected_ata =
+            get_associated_token_address(&ctx.accounts.user.key(), &usdc_mint_key);
+        let vault_expected_ata =
+            get_associated_token_address(&ctx.accounts.market.key(), &usdc_mint_key);
+
+        require_keys_eq!(
+            ctx.accounts.user_usdc_ata.key(),
+            user_expected_ata,
+            VaultError::InvalidAta
+        );
+        require_keys_eq!(
+            ctx.accounts.market_vault_ata.key(),
+            vault_expected_ata,
+            VaultError::InvalidAta
+        );
+
+        require!(
+            !ctx.accounts.user_usdc_ata.to_account_info().data_is_empty(),
+            VaultError::MissingAta
+        );
+
+        // Create market vault ATA if missing.
+        if ctx.accounts.market_vault_ata.to_account_info().data_is_empty() {
+            let ix = spl_associated_token_account::instruction::create_associated_token_account(
+                &ctx.accounts.user.key(),
+                &ctx.accounts.market.key(),
+                &usdc_mint_key,
+                &spl_token::id(),
+            );
+            invoke(
+                &ix,
+                &[
+                    ctx.accounts.user.to_account_info(),
+                    ctx.accounts.market_vault_ata.to_account_info(),
+                    ctx.accounts.market.to_account_info(),
+                    ctx.accounts.usdc_mint.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                    ctx.accounts.token_program.to_account_info(),
+                ],
+            )?;
+        }
+
+        // Transfer from user -> market vault ATA (owned by market PDA).
+        let ix = spl_token::instruction::transfer(
+            &spl_token::id(),
+            &ctx.accounts.user_usdc_ata.key(),
+            &ctx.accounts.market_vault_ata.key(),
+            &ctx.accounts.user.key(),
+            &[],
+            collateral_minor,
+        )?;
+        invoke(
+            &ix,
+            &[
+                ctx.accounts.user_usdc_ata.to_account_info(),
+                ctx.accounts.market_vault_ata.to_account_info(),
+                ctx.accounts.user.to_account_info(),
+            ],
+        )?;
 
         emit!(BetPlaced {
             user: ctx.accounts.user.key(),
@@ -397,9 +476,11 @@ pub mod prediction_market_vault {
         outcome: u8,       // 1=YES, 2=NO
         shares_minor: u64,
         payout_minor: u64,
+        min_payout_minor: u64,
     ) -> Result<()> {
         require!(outcome == 1 || outcome == 2, VaultError::InvalidOutcome);
         require!(shares_minor > 0, VaultError::InvalidAmount);
+        require!(payout_minor >= min_payout_minor, VaultError::InvalidAmount);
         require!(ctx.accounts.market.outcome == 0, VaultError::MarketNotOpen);
         require!(
             ctx.accounts.quote_authority.key() == ctx.accounts.config.quote_authority,
@@ -410,15 +491,67 @@ pub mod prediction_market_vault {
         if outcome == 1 {
             require!(pos.shares_yes >= shares_minor, VaultError::InsufficientShares);
             pos.shares_yes = pos.shares_yes.saturating_sub(shares_minor);
-            ctx.accounts.market.pool_yes = ctx.accounts.market.pool_yes.saturating_sub(shares_minor);
+            ctx.accounts.market.q_yes = ctx.accounts.market.q_yes.saturating_sub(shares_minor);
         } else {
             require!(pos.shares_no >= shares_minor, VaultError::InsufficientShares);
             pos.shares_no = pos.shares_no.saturating_sub(shares_minor);
-            ctx.accounts.market.pool_no = ctx.accounts.market.pool_no.saturating_sub(shares_minor);
+            ctx.accounts.market.q_no = ctx.accounts.market.q_no.saturating_sub(shares_minor);
         }
 
-        let uv = &mut ctx.accounts.user_vault;
-        uv.balance = uv.balance.saturating_add(payout_minor);
+        require!(
+            ctx.accounts.usdc_mint.key() == ctx.accounts.config.usdc_mint,
+            VaultError::MintMismatch
+        );
+        require_keys_eq!(
+            ctx.accounts.token_program.key(),
+            spl_token::id(),
+            VaultError::InvalidProgram
+        );
+
+        let usdc_mint_key = ctx.accounts.usdc_mint.key();
+        let user_expected_ata =
+            get_associated_token_address(&ctx.accounts.user.key(), &usdc_mint_key);
+        let vault_expected_ata =
+            get_associated_token_address(&ctx.accounts.market.key(), &usdc_mint_key);
+
+        require_keys_eq!(
+            ctx.accounts.user_usdc_ata.key(),
+            user_expected_ata,
+            VaultError::InvalidAta
+        );
+        require_keys_eq!(
+            ctx.accounts.market_vault_ata.key(),
+            vault_expected_ata,
+            VaultError::InvalidAta
+        );
+        require!(
+            !ctx.accounts.market_vault_ata.to_account_info().data_is_empty(),
+            VaultError::MissingAta
+        );
+
+        // Transfer from market vault ATA -> user ATA (market PDA signs).
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            Market::SEED,
+            ctx.accounts.market.uuid.as_ref(),
+            &[ctx.accounts.market.bump],
+        ]];
+        let ix = spl_token::instruction::transfer(
+            &spl_token::id(),
+            &ctx.accounts.market_vault_ata.key(),
+            &ctx.accounts.user_usdc_ata.key(),
+            &ctx.accounts.market.key(),
+            &[],
+            payout_minor,
+        )?;
+        invoke_signed(
+            &ix,
+            &[
+                ctx.accounts.market_vault_ata.to_account_info(),
+                ctx.accounts.user_usdc_ata.to_account_info(),
+                ctx.accounts.market.to_account_info(),
+            ],
+            signer_seeds,
+        )?;
 
         emit!(PositionSold {
             user: ctx.accounts.user.key(),
@@ -445,7 +578,7 @@ pub mod prediction_market_vault {
         Ok(())
     }
 
-    pub fn claim_winnings(ctx: Context<ClaimWinnings>) -> Result<()> {
+    pub fn claim_winnings(ctx: Context<ClaimWinnings>, min_payout_minor: u64) -> Result<()> {
         let outcome = ctx.accounts.market.outcome;
         require!(outcome == 1 || outcome == 2, VaultError::MarketNotResolved);
 
@@ -462,9 +595,62 @@ pub mod prediction_market_vault {
             s
         };
         let payout_minor = shares_minor;
+        require!(payout_minor >= min_payout_minor, VaultError::InvalidAmount);
 
-        let uv = &mut ctx.accounts.user_vault;
-        uv.balance = uv.balance.saturating_add(payout_minor);
+        require!(
+            ctx.accounts.usdc_mint.key() == ctx.accounts.config.usdc_mint,
+            VaultError::MintMismatch
+        );
+        require_keys_eq!(
+            ctx.accounts.token_program.key(),
+            spl_token::id(),
+            VaultError::InvalidProgram
+        );
+
+        let usdc_mint_key = ctx.accounts.usdc_mint.key();
+        let user_expected_ata =
+            get_associated_token_address(&ctx.accounts.user.key(), &usdc_mint_key);
+        let vault_expected_ata =
+            get_associated_token_address(&ctx.accounts.market.key(), &usdc_mint_key);
+
+        require_keys_eq!(
+            ctx.accounts.user_usdc_ata.key(),
+            user_expected_ata,
+            VaultError::InvalidAta
+        );
+        require_keys_eq!(
+            ctx.accounts.market_vault_ata.key(),
+            vault_expected_ata,
+            VaultError::InvalidAta
+        );
+        require!(
+            !ctx.accounts.market_vault_ata.to_account_info().data_is_empty(),
+            VaultError::MissingAta
+        );
+
+        // Transfer from market vault ATA -> user ATA (market PDA signs).
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            Market::SEED,
+            ctx.accounts.market.uuid.as_ref(),
+            &[ctx.accounts.market.bump],
+        ]];
+        let ix = spl_token::instruction::transfer(
+            &spl_token::id(),
+            &ctx.accounts.market_vault_ata.key(),
+            &ctx.accounts.user_usdc_ata.key(),
+            &ctx.accounts.market.key(),
+            &[],
+            payout_minor,
+        )?;
+        invoke_signed(
+            &ix,
+            &[
+                ctx.accounts.market_vault_ata.to_account_info(),
+                ctx.accounts.user_usdc_ata.to_account_info(),
+                ctx.accounts.market.to_account_info(),
+            ],
+            signer_seeds,
+        )?;
 
         emit!(WinningsClaimed {
             user: ctx.accounts.user.key(),
@@ -607,13 +793,9 @@ pub struct PlaceBet<'info> {
 
     #[account(
         mut,
-        seeds = [UserVault::SEED, user.key().as_ref()],
-        bump = user_vault.bump,
-        constraint = user_vault.user == user.key()
+        seeds = [Market::SEED, market.uuid.as_ref()],
+        bump = market.bump
     )]
-    pub user_vault: Account<'info, UserVault>,
-
-    #[account(mut)]
     pub market: Account<'info, Market>,
 
     #[account(
@@ -625,6 +807,21 @@ pub struct PlaceBet<'info> {
     )]
     pub position: Account<'info, Position>,
 
+    /// CHECK: validated by comparing pubkeys against config.usdc_mint.
+    pub usdc_mint: UncheckedAccount<'info>,
+
+    /// CHECK: user's USDC ATA.
+    #[account(mut)]
+    pub user_usdc_ata: UncheckedAccount<'info>,
+
+    /// CHECK: market PDA USDC ATA.
+    #[account(mut)]
+    pub market_vault_ata: UncheckedAccount<'info>,
+
+    /// CHECK: validated against `spl_token::id()`.
+    pub token_program: UncheckedAccount<'info>,
+    /// CHECK: validated against `spl_associated_token_account::id()`.
+    pub associated_token_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -643,13 +840,9 @@ pub struct SellPosition<'info> {
 
     #[account(
         mut,
-        seeds = [UserVault::SEED, user.key().as_ref()],
-        bump = user_vault.bump,
-        constraint = user_vault.user == user.key()
+        seeds = [Market::SEED, market.uuid.as_ref()],
+        bump = market.bump
     )]
-    pub user_vault: Account<'info, UserVault>,
-
-    #[account(mut)]
     pub market: Account<'info, Market>,
 
     #[account(
@@ -658,6 +851,20 @@ pub struct SellPosition<'info> {
         bump = position.bump
     )]
     pub position: Account<'info, Position>,
+
+    /// CHECK: validated by comparing pubkeys against config.usdc_mint.
+    pub usdc_mint: UncheckedAccount<'info>,
+
+    /// CHECK: user's USDC ATA.
+    #[account(mut)]
+    pub user_usdc_ata: UncheckedAccount<'info>,
+
+    /// CHECK: market PDA USDC ATA.
+    #[account(mut)]
+    pub market_vault_ata: UncheckedAccount<'info>,
+
+    /// CHECK: validated against `spl_token::id()`.
+    pub token_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -670,7 +877,11 @@ pub struct ResolveMarket<'info> {
     )]
     pub config: Account<'info, Config>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [Market::SEED, market.uuid.as_ref()],
+        bump = market.bump
+    )]
     pub market: Account<'info, Market>,
 }
 
@@ -687,13 +898,9 @@ pub struct ClaimWinnings<'info> {
 
     #[account(
         mut,
-        seeds = [UserVault::SEED, user.key().as_ref()],
-        bump = user_vault.bump,
-        constraint = user_vault.user == user.key()
+        seeds = [Market::SEED, market.uuid.as_ref()],
+        bump = market.bump
     )]
-    pub user_vault: Account<'info, UserVault>,
-
-    #[account(mut)]
     pub market: Account<'info, Market>,
 
     #[account(
@@ -702,5 +909,19 @@ pub struct ClaimWinnings<'info> {
         bump = position.bump
     )]
     pub position: Account<'info, Position>,
+
+    /// CHECK: validated by comparing pubkeys against config.usdc_mint.
+    pub usdc_mint: UncheckedAccount<'info>,
+
+    /// CHECK: user's USDC ATA.
+    #[account(mut)]
+    pub user_usdc_ata: UncheckedAccount<'info>,
+
+    /// CHECK: market PDA USDC ATA.
+    #[account(mut)]
+    pub market_vault_ata: UncheckedAccount<'info>,
+
+    /// CHECK: validated against `spl_token::id()`.
+    pub token_program: UncheckedAccount<'info>,
 }
 

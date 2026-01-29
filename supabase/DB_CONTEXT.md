@@ -285,6 +285,7 @@ Total: **29**
 - `asset_code`: `string(text)` — NOT NULL, PK, FK → assets.code
 - `balance_minor`: `integer(bigint)` — NOT NULL
 - `updated_at`: `string(timestamp with time zone)` — NOT NULL
+  - For admin-only Solana flows, balances are mirrored after confirmed on-chain transactions.
 
 ### `wallet_transactions`
 - `id`: `string(uuid)` — NOT NULL, PK
@@ -315,3 +316,6 @@ Total: **29**
   - `lmsr_price_yes_safe`
   - `place_bet_tx`
   - `sell_position_tx`
+  - `place_bet_onchain_tx`
+  - `sell_position_onchain_tx`
+  - `claim_winnings_onchain_tx`
