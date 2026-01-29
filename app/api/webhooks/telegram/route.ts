@@ -1,6 +1,6 @@
 import { Bot, type Context, webhookCallback } from "grammy";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 
 const START_TEXT = `Welcome to YALLA!
 Here's what you can do:
@@ -52,4 +52,4 @@ bot.callbackQuery("start", async (ctx) => {
   await replyWithStart(ctx);
 });
 
-export const POST = webhookCallback(bot, "http");
+export const POST = webhookCallback(bot, "std/http");
