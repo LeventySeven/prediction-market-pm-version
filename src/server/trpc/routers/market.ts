@@ -2,13 +2,19 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import {
-  calculateLMSRPrices,
+  calculateBoundedPrices,
+  calculateBuyCost,
   calculateSellProceeds,
   toMajorUnits,
+  toMinorUnits,
 } from "../helpers/pricing";
 import { generateMarketContext } from "../../ai/marketContextAgent";
 import type { Database } from "../../../types/database";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { getPredictionMarketVaultProgramId, getSolanaCluster, getSolanaRpcUrl } from "../../../../lib/solana/config";
+import { readFileSync } from "fs";
+import { createHash } from "crypto";
 
 type SupabaseDbClient = SupabaseClient<Database, "public">;
 
@@ -35,6 +41,69 @@ type MarketWithAmm = MarketRowForRead & {
 
 type WalletBalanceRowBase = Database["public"]["Tables"]["wallet_balances"]["Row"];
 type WalletBalanceRow = Pick<WalletBalanceRowBase, "balance_minor">;
+
+type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
+
+const SOLANA_CLUSTER_VALUES: SolanaCluster[] = ["devnet", "testnet", "mainnet-beta"];
+const SOLANA_DECIMALS = 6;
+
+const MARKET_SEED = Buffer.from("market");
+const CONFIG_SEED = Buffer.from("config");
+const USER_VAULT_SEED = Buffer.from("user_vault");
+const POSITION_SEED = Buffer.from("position");
+
+const PLACE_BET_DISCRIMINATOR = (() => {
+  const hash = createHash("sha256").update("global:place_bet").digest();
+  return hash.subarray(0, 8);
+})();
+
+const toBytesUuid = (uuid: string): Buffer => {
+  const compact = uuid.replace(/-/g, "");
+  if (compact.length !== 32) {
+    throw new Error("INVALID_UUID");
+  }
+  return Buffer.from(compact, "hex");
+};
+
+const readKeypairFromJson = (raw: string): Keypair => {
+  const parsed = JSON.parse(raw) as number[];
+  if (!Array.isArray(parsed) || parsed.some((v) => typeof v !== "number")) {
+    throw new Error("INVALID_KEYPAIR_JSON");
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(parsed));
+};
+
+const loadQuoteAuthorityKeypair = (): Keypair => {
+  const inline = (process.env.SOLANA_QUOTE_AUTHORITY_KEYPAIR || "").trim();
+  if (inline) return readKeypairFromJson(inline);
+
+  const fromPath = (process.env.SOLANA_QUOTE_AUTHORITY_KEYPAIR_PATH || "anchor/quote-authority.json").trim();
+  const raw = readFileSync(fromPath, "utf8");
+  return readKeypairFromJson(raw);
+};
+
+const encodePlaceBetIxData = (outcome: number, collateralMinor: bigint, sharesMinor: bigint): Buffer => {
+  const data = Buffer.alloc(8 + 1 + 8 + 8);
+  PLACE_BET_DISCRIMINATOR.copy(data, 0);
+  data.writeUInt8(outcome, 8);
+  data.writeBigUInt64LE(collateralMinor, 9);
+  data.writeBigUInt64LE(sharesMinor, 17);
+  return data;
+};
+
+const normalizeSolanaCluster = (): SolanaCluster => {
+  const raw = getSolanaCluster();
+  return SOLANA_CLUSTER_VALUES.includes(raw) ? raw : "devnet";
+};
+
+const resolveAssetDecimals = async (supabase: SupabaseDbClient, assetCode: string): Promise<number> => {
+  const { data, error } = await supabase.from("assets").select("decimals").eq("code", assetCode).maybeSingle();
+  if (error) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+  }
+  const decimals = data?.decimals ?? SOLANA_DECIMALS;
+  return Number.isFinite(decimals) ? decimals : SOLANA_DECIMALS;
+};
 
 type PositionWithMarket = PositionRow & {
   markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome" | "closes_at" | "expires_at"> | null;
@@ -105,7 +174,7 @@ const mapMarketRow = (
 ) => {
   const amm = row.market_amm_state;
   const { priceYes, priceNo } = amm
-    ? calculateLMSRPrices(Number(amm.q_yes), Number(amm.q_no), Number(amm.b))
+    ? calculateBoundedPrices(Number(amm.q_yes), Number(amm.q_no), Number(amm.b))
     : { priceYes: 0.5, priceNo: 0.5 };
 
   const categoryId = row.category_id ?? null;
@@ -645,11 +714,138 @@ export const marketRouter = router({
         side: z.enum(["YES", "NO"]),
         amount: z.number().positive(),
         assetCode: z.enum(["USDC"]),
+        userPubkey: z.string().min(32),
       })
     )
     .output(z.object({ solanaCluster: z.enum(["devnet", "testnet", "mainnet-beta"]), txBase64: z.string().min(1) }))
-    .mutation(async () => {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "SOLANA_PROGRAM_NOT_DEPLOYED" });
+    .mutation(async ({ ctx, input }) => {
+      const { supabaseService, authUser } = ctx;
+      const { marketId, side, amount, assetCode, userPubkey } = input;
+
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+      if (!authUser.isAdmin) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "ADMIN_ONLY_ONCHAIN" });
+      }
+
+      const client = supabaseService as SupabaseDbClient;
+      const { data: userRow, error: userError } = await client
+        .from("users")
+        .select("solana_wallet_address")
+        .eq("id", authUser.id)
+        .maybeSingle();
+      if (userError) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: userError.message });
+      }
+      const storedPubkey = userRow?.solana_wallet_address ? String(userRow.solana_wallet_address) : null;
+      if (!storedPubkey || storedPubkey !== userPubkey) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SOLANA_WALLET_MISMATCH" });
+      }
+
+      const { data: marketRow, error: marketError } = await client
+        .from("markets")
+        .select("id, state, settlement_asset_code, liquidity_b, fee_bps")
+        .eq("id", marketId)
+        .maybeSingle();
+      if (marketError || !marketRow) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+      }
+      if (String(marketRow.settlement_asset_code || "").toUpperCase() !== assetCode) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "ASSET_MISMATCH" });
+      }
+      if (marketRow.state !== "open") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_NOT_OPEN" });
+      }
+
+      const { data: ammRow, error: ammError } = await client
+        .from("market_amm_state")
+        .select("q_yes, q_no")
+        .eq("market_id", marketId)
+        .maybeSingle();
+      if (ammError || !ammRow) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AMM_STATE_MISSING" });
+      }
+
+      const decimals = await resolveAssetDecimals(client, assetCode);
+      const amountMinor = toMinorUnits(amount, decimals);
+      const feeBps = Number(marketRow.fee_bps ?? 0);
+      const feeMinor = Math.floor((amountMinor * feeBps) / 10000);
+      const netMinor = Math.max(0, amountMinor - feeMinor);
+      if (netMinor <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+      }
+
+      const netMajor = toMajorUnits(netMinor, decimals);
+      const qYes = Number(ammRow.q_yes ?? 0);
+      const qNo = Number(ammRow.q_no ?? 0);
+      const b = Number(marketRow.liquidity_b ?? 0);
+      if (!Number.isFinite(b) || b <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_LIQUIDITY" });
+      }
+
+      let low = 0;
+      let high = Math.max(0.000001, netMajor);
+      const maxIterations = 64;
+
+      for (let i = 0; i < 32; i += 1) {
+        const cost = calculateBuyCost(qYes, qNo, b, side, high);
+        if (cost >= netMajor) break;
+        high *= 2;
+      }
+
+      for (let i = 0; i < maxIterations; i += 1) {
+        const mid = (low + high) / 2;
+        const cost = calculateBuyCost(qYes, qNo, b, side, mid);
+        if (cost > netMajor) {
+          high = mid;
+        } else {
+          low = mid;
+        }
+      }
+
+      const sharesMajor = low;
+      if (!Number.isFinite(sharesMajor) || sharesMajor <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "AMOUNT_TOO_SMALL" });
+      }
+
+      const sharesMinor = BigInt(Math.floor(sharesMajor * 1_000_000));
+      const collateralMinor = BigInt(netMinor);
+
+      const programId = getPredictionMarketVaultProgramId();
+      const userKey = new PublicKey(userPubkey);
+      const marketUuidBytes = toBytesUuid(marketId);
+      const [configPda] = PublicKey.findProgramAddressSync([CONFIG_SEED], programId);
+      const [userVaultPda] = PublicKey.findProgramAddressSync([USER_VAULT_SEED, userKey.toBuffer()], programId);
+      const [marketPda] = PublicKey.findProgramAddressSync([MARKET_SEED, marketUuidBytes], programId);
+      const [positionPda] = PublicKey.findProgramAddressSync(
+        [POSITION_SEED, marketPda.toBuffer(), userKey.toBuffer()],
+        programId
+      );
+
+      const outcome = side === "YES" ? 1 : 2;
+      const quoteAuthority = loadQuoteAuthorityKeypair();
+      const ix = new TransactionInstruction({
+        programId,
+        keys: [
+          { pubkey: userKey, isSigner: true, isWritable: true },
+          { pubkey: quoteAuthority.publicKey, isSigner: true, isWritable: false },
+          { pubkey: configPda, isSigner: false, isWritable: false },
+          { pubkey: userVaultPda, isSigner: false, isWritable: true },
+          { pubkey: marketPda, isSigner: false, isWritable: true },
+          { pubkey: positionPda, isSigner: false, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        ],
+        data: encodePlaceBetIxData(outcome, collateralMinor, sharesMinor),
+      });
+
+      const connection = new Connection(getSolanaRpcUrl(), "confirmed");
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const tx = new Transaction({ feePayer: userKey, recentBlockhash: blockhash }).add(ix);
+      tx.partialSign(quoteAuthority);
+
+      const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
+      return { solanaCluster: normalizeSolanaCluster(), txBase64 };
     }),
 
   prepareSell: publicProcedure

@@ -25,6 +25,8 @@ import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { Transaction } from "@solana/web3.js";
+import { Buffer } from "buffer";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -125,7 +127,6 @@ export default function HomePage() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authInitialMode, setAuthInitialMode] = useState<AuthMode>("SIGN_IN");
-  const [showReloginWarning, setShowReloginWarning] = useState(false);
   const [reloginRequired, setReloginRequired] = useState(false);
   type CatalogSort = "ENDING_SOON" | "CREATED_DESC" | "CREATED_ASC" | "VOLUME_DESC" | "VOLUME_ASC";
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
@@ -153,7 +154,7 @@ export default function HomePage() {
     }
   });
   const [user, setUser] = useState<User | null>(null);
-  const reloginPromptShownRef = useRef(false);
+  const silentRefreshInFlightRef = useRef<Promise<boolean> | null>(null);
   // Wallet state (Solana Wallet Adapter)
   const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet();
   const { connection } = useConnection();
@@ -467,67 +468,6 @@ export default function HomePage() {
     );
   };
 
-  const triggerRelogin = useCallback(() => {
-    setReloginRequired(true);
-    // Only show the warning modal once until auth succeeds again.
-    if (!reloginPromptShownRef.current) {
-      reloginPromptShownRef.current = true;
-      setShowReloginWarning(true);
-    }
-  }, []);
-
-  const clearRelogin = useCallback(() => {
-    setReloginRequired(false);
-    reloginPromptShownRef.current = false;
-  }, []);
-
-  const formatBetError = (msg?: string) => {
-    if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
-    const upper = msg.toUpperCase();
-    // Check for authentication errors first
-    if (upper.includes("UNAUTHORIZED") || upper.includes("NOT AUTHENTICATED") || upper.includes("NOT_AUTHENTICATED")) {
-      triggerRelogin();
-      return lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.";
-    }
-    if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
-      return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
-    }
-    if (upper.includes("INSUFFICIENT_BALANCE")) {
-      return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
-    }
-    if (upper.includes("MARKET_RESOLVED")) {
-      return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
-    }
-    if (upper.includes("AMOUNT_TOO_SMALL") || upper.includes("INVALID_AMOUNT")) {
-      return lang === "RU" ? "Сумма слишком мала." : "Amount is too small.";
-    }
-    if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
-      return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
-    }
-    if (upper.includes("BET_TOO_LARGE")) {
-      return lang === "RU" ? "Достигнут лимит максимальной ставки." : "Maximum bet limit reached.";
-    }
-    if (upper.includes("INVALID_LIQUIDITY")) {
-      return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
-    }
-    if (upper.includes("ASSET_DISABLED")) {
-      return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
-    }
-    return msg;
-  };
-
-  const maybeRequireRelogin = useCallback(
-    (err: ErrorLike) => {
-      const msg = getErrorMessage(err);
-      if (isAuthErrorMessage(msg)) {
-        triggerRelogin();
-        return true;
-      }
-      return false;
-    },
-    [triggerRelogin]
-  );
-
   const loadLeaderboard = useCallback(async (sortBy: LeaderboardSort = leaderboardSort) => {
     setLoadingLeaderboard(true);
     setLeaderboardError(null);
@@ -579,6 +519,120 @@ export default function HomePage() {
     setShowAuth(true);
   }, []);
 
+  const applyPublicUser = useCallback((me: {
+    id: string;
+    email?: string | null;
+    username?: string | null;
+    displayName?: string | null;
+    createdAt?: string | null;
+    avatarUrl?: string | null;
+    telegramPhotoUrl?: string | null;
+    balance: number;
+    isAdmin?: boolean | null;
+    referralCode?: string | null;
+    referralCommissionRate?: number | null;
+    referralEnabled?: boolean | null;
+  }) => {
+    setUser({
+      id: String(me.id),
+      email: me.email ?? undefined,
+      username: me.username ?? undefined,
+      name: me.displayName ?? me.username ?? undefined,
+      createdAt: me.createdAt ?? undefined,
+      avatarUrl: me.avatarUrl ?? null,
+      telegramPhotoUrl: me.telegramPhotoUrl ?? null,
+      avatar: me.avatarUrl ?? me.telegramPhotoUrl ?? undefined,
+      balance: me.balance,
+      isAdmin: Boolean(me.isAdmin),
+      referralCode: me.referralCode ?? null,
+      referralCommissionRate: me.referralCommissionRate ?? null,
+      referralEnabled: me.referralEnabled ?? null,
+    });
+  }, []);
+
+  const clearRelogin = useCallback(() => {
+    setReloginRequired(false);
+  }, []);
+
+  const attemptSilentRefresh = useCallback(async () => {
+    if (silentRefreshInFlightRef.current) {
+      return silentRefreshInFlightRef.current;
+    }
+
+    const task = (async () => {
+      try {
+        const refreshed = await trpcClient.auth.refreshSession.mutate();
+        if (refreshed?.user) {
+          applyPublicUser(refreshed.user);
+        }
+        clearRelogin();
+        return true;
+      } catch (err) {
+        console.warn("Silent session refresh failed", err);
+        setReloginRequired(true);
+        setUser(null);
+        openAuth("SIGN_IN");
+        return false;
+      } finally {
+        silentRefreshInFlightRef.current = null;
+      }
+    })();
+
+    silentRefreshInFlightRef.current = task;
+    return task;
+  }, [applyPublicUser, clearRelogin, openAuth]);
+
+  const triggerRelogin = useCallback(() => {
+    void attemptSilentRefresh();
+  }, [attemptSilentRefresh]);
+
+  const formatBetError = (msg?: string) => {
+    if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
+    const upper = msg.toUpperCase();
+    // Check for authentication errors first
+    if (upper.includes("UNAUTHORIZED") || upper.includes("NOT AUTHENTICATED") || upper.includes("NOT_AUTHENTICATED")) {
+      triggerRelogin();
+      return lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.";
+    }
+    if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
+      return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
+    }
+    if (upper.includes("INSUFFICIENT_BALANCE")) {
+      return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
+    }
+    if (upper.includes("MARKET_RESOLVED")) {
+      return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
+    }
+    if (upper.includes("AMOUNT_TOO_SMALL") || upper.includes("INVALID_AMOUNT")) {
+      return lang === "RU" ? "Сумма слишком мала." : "Amount is too small.";
+    }
+    if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
+      return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
+    }
+    if (upper.includes("BET_TOO_LARGE")) {
+      return lang === "RU" ? "Достигнут лимит максимальной ставки." : "Maximum bet limit reached.";
+    }
+    if (upper.includes("INVALID_LIQUIDITY")) {
+      return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
+    }
+    if (upper.includes("ASSET_DISABLED")) {
+      return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
+    }
+    return msg;
+  };
+
+  const maybeRequireRelogin = useCallback(
+    (err: ErrorLike) => {
+      const msg = getErrorMessage(err);
+      if (isAuthErrorMessage(msg)) {
+        triggerRelogin();
+        return true;
+      }
+      return false;
+    },
+    [triggerRelogin]
+  );
+
   const handleSignUp = async (payload: {
     email: string;
     username: string;
@@ -593,21 +647,7 @@ export default function HomePage() {
       referralCode: pendingReferralCode ?? undefined,
     });
     clearRelogin();
-    setUser({
-      id: String(me.user.id),
-      email: me.user.email,
-      username: me.user.username,
-      name: me.user.displayName ?? me.user.username,
-      createdAt: me.user.createdAt,
-      avatarUrl: me.user.avatarUrl ?? null,
-      telegramPhotoUrl: me.user.telegramPhotoUrl ?? null,
-      avatar: me.user.avatarUrl ?? me.user.telegramPhotoUrl ?? undefined,
-      balance: me.user.balance,
-      isAdmin: me.user.isAdmin,
-      referralCode: me.user.referralCode,
-      referralCommissionRate: me.user.referralCommissionRate,
-      referralEnabled: me.user.referralEnabled,
-    });
+    applyPublicUser(me.user);
 
     // If user came from a deep link, keep them on that market after signup.
     try {
@@ -638,21 +678,7 @@ export default function HomePage() {
       password: payload.password,
     });
     clearRelogin();
-    setUser({
-      id: String(me.user.id),
-      email: me.user.email,
-      username: me.user.username,
-      name: me.user.displayName ?? me.user.username,
-      createdAt: me.user.createdAt,
-      avatarUrl: me.user.avatarUrl ?? null,
-      telegramPhotoUrl: me.user.telegramPhotoUrl ?? null,
-      avatar: me.user.avatarUrl ?? me.user.telegramPhotoUrl ?? undefined,
-      balance: me.user.balance,
-      isAdmin: me.user.isAdmin,
-      referralCode: me.user.referralCode,
-      referralCommissionRate: me.user.referralCommissionRate,
-      referralEnabled: me.user.referralEnabled,
-    });
+    applyPublicUser(me.user);
 
     // If user came from a deep link, keep them on that market after login.
     try {
@@ -670,50 +696,22 @@ export default function HomePage() {
   const handleTelegramLogin = useCallback(async (initData: string) => {
     const res = await trpcClient.auth.telegramLogin.mutate({ initData });
     clearRelogin();
-    setUser({
-      id: String(res.user.id),
-      email: res.user.email,
-      username: res.user.username,
-      name: res.user.displayName ?? res.user.username,
-      createdAt: res.user.createdAt,
-      avatarUrl: res.user.avatarUrl ?? null,
-      telegramPhotoUrl: res.user.telegramPhotoUrl ?? null,
-      avatar: res.user.avatarUrl ?? res.user.telegramPhotoUrl ?? undefined,
-      balance: res.user.balance,
-      isAdmin: res.user.isAdmin,
-      referralCode: res.user.referralCode,
-      referralCommissionRate: res.user.referralCommissionRate,
-      referralEnabled: res.user.referralEnabled,
-    });
-  }, [clearRelogin]);
+    applyPublicUser(res.user);
+  }, [applyPublicUser, clearRelogin]);
 
   const refreshUser = useCallback(async () => {
     try {
       const me = await trpcClient.auth.me.query();
       if (me) {
         clearRelogin();
-        setUser({
-          id: String(me.id),
-          email: me.email,
-          username: me.username,
-          name: me.displayName ?? me.username,
-          createdAt: me.createdAt,
-          avatarUrl: me.avatarUrl ?? null,
-          telegramPhotoUrl: me.telegramPhotoUrl ?? null,
-          avatar: me.avatarUrl ?? me.telegramPhotoUrl ?? undefined,
-          balance: me.balance,
-          isAdmin: me.isAdmin,
-          referralCode: me.referralCode,
-          referralCommissionRate: me.referralCommissionRate,
-          referralEnabled: me.referralEnabled,
-        });
+        applyPublicUser(me);
         return me;
       }
     } catch (err) {
       console.error("Failed to refresh session user", err);
     }
     return null;
-  }, [clearRelogin]);
+  }, [applyPublicUser, clearRelogin]);
 
   // If auth expires while the UI still thinks we have a user, prompt re-login as soon as they enter a market.
   useEffect(() => {
@@ -723,11 +721,10 @@ export default function HomePage() {
     void (async () => {
       const me = await refreshUser();
       if (!me) {
-        triggerRelogin();
-        setUser(null);
+        await attemptSilentRefresh();
       }
     })();
-  }, [selectedMarketId, user, reloginRequired, refreshUser, triggerRelogin]);
+  }, [selectedMarketId, user, reloginRequired, refreshUser, attemptSilentRefresh]);
 
   const handleUpdateDisplayName = useCallback(
     async (nextDisplayName: string) => {
@@ -910,8 +907,13 @@ export default function HomePage() {
       console.error("Failed to load positions/trades", { error: errorMsg, err, userId: user?.id });
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
-        triggerRelogin();
-        setUser(null);
+        const refreshed = await attemptSilentRefresh();
+        if (refreshed) {
+          myBetsLoadingRef.current = false;
+          setMyBetsLoading(false);
+          await loadMyBets();
+          return;
+        }
         setMyBetsError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
       } else {
         setMyBetsError(lang === "RU" ? "Не удалось загрузить ставки." : "Failed to load bets.");
@@ -921,7 +923,7 @@ export default function HomePage() {
       myBetsLoadingRef.current = false;
       setMyBetsLoading(false);
     }
-  }, [user, lang]);
+  }, [user, lang, attemptSilentRefresh]);
 
   // NOTE: wallet_transactions loading was removed from the UI (wallet now focuses on bets + PnL).
 
@@ -1020,8 +1022,11 @@ export default function HomePage() {
       const errorMsg = getErrorMessage(err);
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
-        triggerRelogin();
-        setUser(null);
+        const refreshed = await attemptSilentRefresh();
+        if (refreshed) {
+          await loadMyComments();
+          return;
+        }
         setMyCommentsError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
       } else {
         setMyCommentsError(lang === "RU" ? "Не удалось загрузить комментарии." : "Failed to load comments.");
@@ -1030,7 +1035,7 @@ export default function HomePage() {
     finally {
       setMyCommentsLoading(false);
     }
-  }, [user, lang]);
+  }, [user, lang, attemptSilentRefresh]);
   useEffect(() => {
     if (!user) {
       setMyPositions([]);
@@ -1576,33 +1581,90 @@ export default function HomePage() {
       // Verify auth is still valid before placing bet (in case cookies expired or weren't set)
       const authCheck = await refreshUser();
       if (!authCheck) {
-        triggerRelogin();
-        setUser(null);
-        setBetConfirm({
-          open: true,
-          marketTitle,
-          side,
-          amount,
-          newBalance: undefined,
-          errorMessage: lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.",
-          isLoading: false,
-        });
-        return;
+        const refreshed = await attemptSilentRefresh();
+        if (!refreshed) {
+          setBetConfirm({
+            open: true,
+            marketTitle,
+            side,
+            amount,
+            newBalance: undefined,
+            errorMessage: lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.",
+            isLoading: false,
+          });
+          return;
+        }
       }
 
       if (isOnChain) {
-        // During Solana migration we intentionally disable EVM on-chain flows here.
-        // These will be re-enabled once the Solana program + tx-prep endpoints are implemented.
+        if (!user.isAdmin) {
+          setBetConfirm({
+            open: true,
+            marketTitle,
+            side,
+            amount,
+            newBalance: undefined,
+            errorMessage:
+              lang === "RU"
+                ? "Ончейн-ставки доступны только администраторам."
+                : "On-chain bets are currently enabled for admins only.",
+            isLoading: false,
+          });
+          return;
+        }
+
+        if (settlementAsset !== "USDC") {
+          setBetConfirm({
+            open: true,
+            marketTitle,
+            side,
+            amount,
+            newBalance: undefined,
+            errorMessage:
+              lang === "RU"
+                ? "USDT-ончейн ставки пока не включены."
+                : "USDT on-chain bets are not enabled yet.",
+            isLoading: false,
+          });
+          return;
+        }
+
+        if (!isWalletConnected || !publicKey) {
+          setBetConfirm({
+            open: true,
+            marketTitle,
+            side,
+            amount,
+            newBalance: undefined,
+            errorMessage: lang === "RU" ? "Подключите Solana-кошелёк." : "Connect your Solana wallet.",
+            isLoading: false,
+          });
+          return;
+        }
+
+        const res = await trpcClient.market.prepareBet.mutate({
+          marketId,
+          side,
+          amount,
+          assetCode: "USDC",
+          userPubkey: publicKey.toBase58(),
+        });
+
+        const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
+        const signature = await sendTransaction(tx, connection);
+        await connection.confirmTransaction(signature, "confirmed");
+
+        await loadMarkets();
+        await refreshUser();
+        await loadMyBets();
+
         setBetConfirm({
           open: true,
           marketTitle,
           side,
           amount,
-          newBalance: undefined,
-          errorMessage:
-            lang === "RU"
-              ? "Ончейн рынки (USDC/USDT) временно недоступны: переносим их на Solana."
-              : "On-chain USDC/USDT markets are temporarily unavailable while migrating to Solana.",
+          newBalance: user?.balance,
+          errorMessage: null,
           isLoading: false,
         });
         return;
@@ -1660,20 +1722,19 @@ export default function HomePage() {
       }
       if (reloginRequired) {
         setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
-        triggerRelogin();
-        return;
+        const refreshed = await attemptSilentRefresh();
+        if (!refreshed) return;
       }
       const me = await refreshUser();
       if (!me) {
         setPostAuthAction({ type: "OPEN_MARKET_BET", marketId: market.id, side });
-        triggerRelogin();
-        setUser(null);
-        return;
+        const refreshed = await attemptSilentRefresh();
+        if (!refreshed) return;
       }
       setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
       setSelectedMarketId(market.id);
     },
-    [openAuth, user, reloginRequired, refreshUser, triggerRelogin]
+    [openAuth, user, reloginRequired, refreshUser, attemptSilentRefresh]
   );
 
   const openMarketWithAuthCheck = useCallback(
@@ -1688,8 +1749,8 @@ export default function HomePage() {
         } catch {
           // ignore
         }
-        triggerRelogin();
-        return;
+        const refreshed = await attemptSilentRefresh();
+        if (!refreshed) return;
       }
       const me = await refreshUser();
       if (!me) {
@@ -1698,13 +1759,12 @@ export default function HomePage() {
         } catch {
           // ignore
         }
-        triggerRelogin();
-        setUser(null);
-        return;
+        const refreshed = await attemptSilentRefresh();
+        if (!refreshed) return;
       }
       setSelectedMarketId(marketId);
     },
-    [user, reloginRequired, refreshUser, triggerRelogin]
+    [user, reloginRequired, refreshUser, attemptSilentRefresh]
   );
 
   const creatorHasBets = useMemo(() => {
@@ -2738,41 +2798,6 @@ export default function HomePage() {
                 {lang === "RU" ? "Удалить" : "Delete"}
               </Button>
             </div>
-          </div>
-        </div>
-      )}
-      {/* Re-login warning modal */}
-      {showReloginWarning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowReloginWarning(false)} />
-          <div className="relative bg-black border border-zinc-900 w-full max-w-md rounded-2xl p-6 shadow-2xl animate-fade-in-up">
-            <button
-              onClick={() => setShowReloginWarning(false)}
-              className="absolute top-4 right-4 text-neutral-400 hover:text-white"
-              aria-label="Close"
-            >
-              <X size={22} />
-            </button>
-            <div className="flex items-center gap-3 mb-4">
-              <AlertCircle className="text-yellow-400" size={24} />
-              <h2 className="text-xl font-bold text-white">
-                {lang === "RU" ? "Требуется повторная авторизация" : "Re-authentication Required"}
-              </h2>
-            </div>
-            <p className="text-sm text-zinc-300 mb-6">
-              {lang === "RU"
-                ? "По соображениям безопасности необходимо войти в систему снова. Пожалуйста, войдите в свой аккаунт."
-                : "For security reasons, you need to log in again. Please sign in to your account."}
-            </p>
-            <button
-              onClick={() => {
-                setShowReloginWarning(false);
-                openAuth("SIGN_IN");
-              }}
-              className="w-full px-4 py-2.5 text-sm font-semibold text-black bg-[rgba(190,255,29,1)] hover:bg-[rgba(190,255,29,0.90)] rounded-lg transition-colors"
-            >
-              {lang === "RU" ? "ОК" : "OK"}
-            </button>
           </div>
         </div>
       )}

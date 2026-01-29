@@ -556,6 +556,68 @@ export const authRouter = router({
       return { user: toPublicUser(upserted.data as DbUserRow, balanceMinor) };
     }),
 
+  refreshSession: publicProcedure.mutation(async ({ ctx }) => {
+    const { supabase, supabaseService, cookies, setCookie } = ctx;
+    const refreshToken = cookies?.[SUPABASE_REFRESH_COOKIE];
+
+    if (!refreshToken) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "REFRESH_TOKEN_MISSING" });
+    }
+
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+    if (error || !data.session) {
+      setCookie(clearCookie(SUPABASE_ACCESS_COOKIE));
+      setCookie(clearCookie(SUPABASE_REFRESH_COOKIE));
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: error?.message ?? "REFRESH_FAILED",
+      });
+    }
+
+    persistSupabaseSession(data.session, setCookie);
+
+    const sessionUserId = data.session.user?.id;
+    if (!sessionUserId) {
+      return { user: null };
+    }
+
+    try {
+      const { data: userRow, error: userError } = await supabaseService
+        .from("users")
+        .select(publicColumns)
+        .eq("id", sessionUserId)
+        .maybeSingle();
+
+      if (userError || !userRow) {
+        return { user: null };
+      }
+
+      const authRow = userRow as DbUserRow;
+      const { data: walletRow } = await supabaseService
+        .from("wallet_balances")
+        .select("balance_minor")
+        .eq("user_id", authRow.id)
+        .eq("asset_code", DEFAULT_ASSET)
+        .maybeSingle();
+
+      const wallet = walletRow as WalletBalanceRow | null;
+      const balanceMinor = wallet ? Number(wallet.balance_minor ?? 0) : 0;
+
+      const token = await signAuthToken({
+        sub: String(authRow.id),
+        email: authRow.email,
+        username: authRow.username,
+        isAdmin: Boolean(authRow.is_admin),
+      });
+      setCookie(authCookie(token));
+
+      return { user: toPublicUser(authRow, Number(balanceMinor)) };
+    } catch (err) {
+      console.warn("Failed to hydrate user after refresh", err);
+      return { user: null };
+    }
+  }),
+
   me: publicProcedure.query(async ({ ctx }) => {
     const { supabaseService, cookies } = ctx;
     const token = cookies?.auth_token;

@@ -1,12 +1,12 @@
 # Supabase DB Context (public)
 
-Generated at: `2026-01-16T23:22:22.360Z`
+Generated at: `2026-01-26T10:43:49.046Z`
 Supabase URL: `https://zebqsdwawldoehvupmtm.supabase.co`
 
 Refresh: `bun run supabase:schema`
 
 ## Resources
-Total: **28**
+Total: **29**
 
 ### `assets`
 - `code`: `string(text)` — NOT NULL, PK
@@ -17,12 +17,9 @@ Total: **28**
 ### `deposits`
 - `id`: `string(uuid)` — NOT NULL, PK
 - `user_id`: `string(uuid)` — NOT NULL, FK → users.id
-- `tx_sig`: `string(text)` — NOT NULL
-- `solana_cluster`: `string(text)` — NOT NULL
 - `amount_minor`: `integer(bigint)` — NOT NULL
 - `asset_code`: `string(text)` — NOT NULL, FK → assets.code
 - `status`: `string(public.deposit_status)` — NOT NULL
-- `from_pubkey`: `string(text)` — NOT NULL
 - `block_number`: `integer(bigint)`
 - `block_timestamp`: `string(timestamp with time zone)`
 - `credited_at`: `string(timestamp with time zone)`
@@ -30,6 +27,9 @@ Total: **28**
 - `error_message`: `string(text)`
 - `created_at`: `string(timestamp with time zone)` — NOT NULL
 - `updated_at`: `string(timestamp with time zone)` — NOT NULL
+- `tx_sig`: `string(text)` — NOT NULL
+- `solana_cluster`: `string(text)` — NOT NULL
+- `from_pubkey`: `string(text)` — NOT NULL
 
 ### `leaderboard_public`
 - `user_id`: `string(uuid)` — PK
@@ -89,13 +89,20 @@ Total: **28**
 - `author_avatar_url`: `string(text)`
 - `likes_count`: `integer(integer)`
 
+### `market_context`
+- `market_id`: `string(uuid)` — NOT NULL, PK, FK → markets.id
+- `context`: `string(text)` — NOT NULL
+- `sources`: `n/a(jsonb)` — NOT NULL
+- `created_at`: `string(timestamp with time zone)` — NOT NULL
+- `updated_at`: `string(timestamp with time zone)` — NOT NULL
+
 ### `market_onchain_map`
 - `market_id`: `string(uuid)` — NOT NULL, PK, FK → markets.id
+- `created_at`: `string(timestamp with time zone)` — NOT NULL
+- `updated_at`: `string(timestamp with time zone)` — NOT NULL
 - `solana_cluster`: `string(text)` — NOT NULL, PK
 - `program_id`: `string(text)` — NOT NULL
 - `market_pda`: `string(text)` — NOT NULL
-- `created_at`: `string(timestamp with time zone)` — NOT NULL
-- `updated_at`: `string(timestamp with time zone)` — NOT NULL
 
 ### `market_price_candles`
 - `market_id`: `string(uuid)` — NOT NULL, PK, FK → markets.id
@@ -127,12 +134,11 @@ Total: **28**
 - `created_by`: `string(uuid)` — FK → users.id
 - `image_url`: `string(text)`
 - `onchain_market_id`: `string(text)`
+- `source`: `string(text)`
 
 ### `on_chain_transactions`
 - `id`: `string(uuid)` — NOT NULL, PK
 - `user_id`: `string(uuid)` — NOT NULL, FK → users.id
-- `tx_sig`: `string(text)` — NOT NULL
-- `solana_cluster`: `string(text)` — NOT NULL
 - `status`: `string(public.on_chain_tx_status)` — NOT NULL
 - `tx_type`: `string(public.on_chain_tx_type)` — NOT NULL
 - `amount_minor`: `integer(bigint)`
@@ -149,6 +155,8 @@ Total: **28**
 - `created_at`: `string(timestamp with time zone)` — NOT NULL
 - `confirmed_at`: `string(timestamp with time zone)`
 - `updated_at`: `string(timestamp with time zone)` — NOT NULL
+- `tx_sig`: `string(text)` — NOT NULL
+- `solana_cluster`: `string(text)` — NOT NULL
 
 ### `positions`
 - `user_id`: `string(uuid)` — NOT NULL, PK, FK → users.id

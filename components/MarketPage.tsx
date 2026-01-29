@@ -161,6 +161,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const isResolved = market.state === 'resolved' || Boolean(market.outcome);
   const winningSide = market.outcome;
   const isCreator = Boolean(user && market.createdBy && market.createdBy === user.id);
+  const creatorId = market.createdBy ? String(market.createdBy) : null;
+  const creatorLabel = creatorId
+    ? (user?.id === creatorId
+        ? (lang === 'RU' ? 'Вы' : 'You')
+        : `${creatorId.slice(0, 6)}...${creatorId.slice(-4)}`)
+    : null;
   const eventEnded = (() => {
     const parsed = Date.parse(eventEnd);
     return Number.isFinite(parsed) && parsed <= Date.now();
@@ -944,6 +950,25 @@ const MarketPage: React.FC<MarketPageProps> = ({
               </h3>
               <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
                 <p>{market.description}</p>
+                {creatorId && creatorLabel && (
+                  <p className="text-[11px] text-zinc-400">
+                    <span className="uppercase tracking-wider text-zinc-500">
+                      {lang === 'RU' ? 'Создатель' : 'Created by'}:
+                    </span>{' '}
+                    {onOpenUserProfile ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenUserProfile(creatorId)}
+                        className="inline-flex items-center gap-1 text-zinc-200 underline underline-offset-4 hover:text-white"
+                      >
+                        <UserIcon size={12} />
+                        {creatorLabel}
+                      </button>
+                    ) : (
+                      <span className="text-zinc-200">{creatorLabel}</span>
+                    )}
+                  </p>
+                )}
               {sourceValue && (
                 <p className="text-[11px] text-zinc-400">
                   <span className="uppercase tracking-wider text-zinc-500">{sourceLabel}:</span>{" "}
@@ -1425,6 +1450,25 @@ const MarketPage: React.FC<MarketPageProps> = ({
             </h3>
             <div className="text-xs text-zinc-500 leading-relaxed space-y-4 font-mono">
               <p>{market.description}</p>
+              {creatorId && creatorLabel && (
+                <p className="text-[11px] text-zinc-400">
+                  <span className="uppercase tracking-wider text-zinc-500">
+                    {lang === 'RU' ? 'Создатель' : 'Created by'}:
+                  </span>{' '}
+                  {onOpenUserProfile ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenUserProfile(creatorId)}
+                      className="inline-flex items-center gap-1 text-zinc-200 underline underline-offset-4 hover:text-white"
+                    >
+                      <UserIcon size={12} />
+                      {creatorLabel}
+                    </button>
+                  ) : (
+                    <span className="text-zinc-200">{creatorLabel}</span>
+                  )}
+                </p>
+              )}
               {sourceValue && (
                 <p className="text-[11px] text-zinc-400">
                   <span className="uppercase tracking-wider text-zinc-500">{sourceLabel}:</span>{" "}

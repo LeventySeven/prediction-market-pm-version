@@ -1,30 +1,43 @@
 /**
- * LMSR (Logarithmic Market Scoring Rule) pricing helpers
- * 
- * LMSR calculates prices based on quantity of shares (q_yes, q_no) and liquidity parameter (b).
- * Price formula: price_yes = e^(q_yes/b) / (e^(q_yes/b) + e^(q_no/b))
- * 
- * For numerical stability we use the softmax form:
- * price_yes = 1 / (1 + e^((q_no - q_yes)/b))
+ * Bounded cost-function AMM helpers (sigmoid corridor).
+ *
+ * Price is bounded in [PRICE_MIN, PRICE_MAX] and trade cost is derived
+ * from a convex potential to preserve path independence.
  */
 
+const PRICE_MIN = 0.01;
+const PRICE_MAX = 0.99;
+const PRICE_K = 0.85;
+
+const clampExpInput = (value: number) => {
+  if (value > 60) return 60;
+  if (value < -60) return -60;
+  return value;
+};
+
+const sigmoid = (x: number) => 1 / (1 + Math.exp(-clampExpInput(x)));
+
+const softplus = (x: number) => {
+  const v = clampExpInput(x);
+  const abs = Math.abs(v);
+  return Math.max(v, 0) + Math.log1p(Math.exp(-abs));
+};
+
 /**
- * Calculate current YES price from LMSR state
+ * Calculate bounded YES price from market state
  */
-export function calculateLMSRPriceYes(qYes: number, qNo: number, b: number): number {
-  if (b <= 0) return 0.5;
-  const diff = (qNo - qYes) / b;
-  // Clamp to avoid overflow
-  if (diff > 700) return 0;
-  if (diff < -700) return 1;
-  return 1 / (1 + Math.exp(diff));
+export function calculateBoundedPriceYes(qYes: number, qNo: number, b: number): number {
+  if (!Number.isFinite(b) || b <= 0) return 0.5;
+  const s = qYes - qNo;
+  const x = (PRICE_K * s) / b;
+  return PRICE_MIN + (PRICE_MAX - PRICE_MIN) * sigmoid(x);
 }
 
 /**
- * Calculate both YES and NO prices
+ * Calculate both YES and NO prices (bounded)
  */
-export function calculateLMSRPrices(qYes: number, qNo: number, b: number): { priceYes: number; priceNo: number } {
-  const priceYes = calculateLMSRPriceYes(qYes, qNo, b);
+export function calculateBoundedPrices(qYes: number, qNo: number, b: number): { priceYes: number; priceNo: number } {
+  const priceYes = calculateBoundedPriceYes(qYes, qNo, b);
   return {
     priceYes,
     priceNo: 1 - priceYes,
@@ -32,18 +45,13 @@ export function calculateLMSRPrices(qYes: number, qNo: number, b: number): { pri
 }
 
 /**
- * LMSR cost function: C(q) = b * ln(e^(q_yes/b) + e^(q_no/b))
- * For numerical stability: C(q) = max(q_yes, q_no)/b + b * ln(1 + e^(-|q_yes - q_no|/b))
+ * Bounded cost function C(s)
  */
-export function lmsrCost(qYes: number, qNo: number, b: number): number {
-  if (b <= 0) return 0;
-  const maxQ = Math.max(qYes, qNo);
-  const diff = Math.abs(qYes - qNo) / b;
-  // For large diff, ln(1 + e^-diff) ≈ 0
-  if (diff > 700) {
-    return maxQ;
-  }
-  return maxQ + b * Math.log(1 + Math.exp(-diff));
+export function boundedCost(qYes: number, qNo: number, b: number): number {
+  if (!Number.isFinite(b) || b <= 0) return 0;
+  const s = qYes - qNo;
+  const x = (PRICE_K * s) / b;
+  return PRICE_MIN * s + (PRICE_MAX - PRICE_MIN) * (b / PRICE_K) * softplus(x);
 }
 
 /**
@@ -57,10 +65,10 @@ export function calculateBuyCost(
   side: "YES" | "NO",
   shares: number
 ): number {
-  const currentCost = lmsrCost(qYes, qNo, b);
+  const currentCost = boundedCost(qYes, qNo, b);
   const newQYes = side === "YES" ? qYes + shares : qYes;
   const newQNo = side === "NO" ? qNo + shares : qNo;
-  const newCost = lmsrCost(newQYes, newQNo, b);
+  const newCost = boundedCost(newQYes, newQNo, b);
   return newCost - currentCost;
 }
 
@@ -75,10 +83,10 @@ export function calculateSellProceeds(
   side: "YES" | "NO",
   shares: number
 ): number {
-  const currentCost = lmsrCost(qYes, qNo, b);
+  const currentCost = boundedCost(qYes, qNo, b);
   const newQYes = side === "YES" ? qYes - shares : qYes;
   const newQNo = side === "NO" ? qNo - shares : qNo;
-  const newCost = lmsrCost(newQYes, newQNo, b);
+  const newCost = boundedCost(newQYes, newQNo, b);
   return currentCost - newCost;
 }
 

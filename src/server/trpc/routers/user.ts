@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import { calculateLMSRPrices, toMajorUnits } from "../helpers/pricing";
+import { calculateBoundedPrices, toMajorUnits } from "../helpers/pricing";
 import type { Database } from "../../../types/database";
 import { randomBytes } from "node:crypto";
 import { leaderboardUsersSchema } from "../../../schemas/leaderboard";
@@ -107,7 +107,7 @@ const buildMarkToMarketPnLByUser = (
     } else {
       const amm = ammByMarketId.get(marketId);
       if (!amm) return;
-      const { priceYes, priceNo } = calculateLMSRPrices(
+      const { priceYes, priceNo } = calculateBoundedPrices(
         Number(amm.q_yes ?? 0),
         Number(amm.q_no ?? 0),
         Number(amm.b ?? 0)

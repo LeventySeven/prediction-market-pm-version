@@ -131,10 +131,12 @@ const sampleAvatarHue = async (src: string): Promise<number | null> => {
   }
 };
 
-const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
+const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN'; dbPubkey: string | null }> = ({ lang, dbPubkey }) => {
   const { publicKey, connected } = useWallet();
   const pubkey = publicKey ? publicKey.toBase58() : null;
   const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || 'devnet').toLowerCase();
+  const displayPubkey = pubkey ?? dbPubkey;
+  const isConnected = connected || Boolean(dbPubkey);
 
   const truncate = (v: string) => `${v.slice(0, 6)}...${v.slice(-4)}`;
 
@@ -149,9 +151,9 @@ const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN' }> = ({ lang }) => {
             <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">
               {lang === 'RU' ? 'Solana Wallet' : 'Solana Wallet'}
             </div>
-            {connected && pubkey ? (
+            {isConnected && displayPubkey ? (
               <div className="space-y-1">
-                <div className="text-sm font-mono text-zinc-300 truncate">{truncate(pubkey)}</div>
+                <div className="text-sm font-mono text-zinc-300 truncate">{truncate(displayPubkey)}</div>
                 <div className="text-[10px] uppercase tracking-wider text-zinc-500">{cluster}</div>
               </div>
             ) : (
@@ -595,7 +597,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
       </div>
 
       {/* Solana Wallet Connection */}
-      <SolanaWalletSection lang={lang} />
+      <SolanaWalletSection lang={lang} dbPubkey={user?.solanaWalletAddress ?? null} />
 
       {/* PnL graph (lightweight sparkline) */}
       <div className="mt-4 border border-zinc-900 bg-black rounded-2xl overflow-hidden">
