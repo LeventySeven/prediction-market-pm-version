@@ -576,37 +576,11 @@ export default function HomePage() {
     setReloginRequired(false);
   }, []);
 
-  const attemptSilentRefresh = useCallback(async () => {
-    if (silentRefreshInFlightRef.current) {
-      return silentRefreshInFlightRef.current;
-    }
-
-    const task = (async () => {
-      try {
-        const refreshed = await trpcClient.auth.refreshSession.mutate();
-        if (refreshed?.user) {
-          applyPublicUser(refreshed.user);
-        }
-        clearRelogin();
-        return true;
-      } catch (err) {
-        console.warn("Silent session refresh failed", err);
-        setReloginRequired(true);
-        setUser(null);
-        openAuth("SIGN_IN");
-        return false;
-      } finally {
-        silentRefreshInFlightRef.current = null;
-      }
-    })();
-
-    silentRefreshInFlightRef.current = task;
-    return task;
-  }, [applyPublicUser, clearRelogin, openAuth]);
-
-  const triggerRelogin = useCallback(() => {
-    void attemptSilentRefresh();
-  }, [attemptSilentRefresh]);
+  const handleTelegramLogin = useCallback(async (initData: string) => {
+    const res = await trpcClient.auth.telegramLogin.mutate({ initData });
+    clearRelogin();
+    applyPublicUser(res.user);
+  }, [applyPublicUser, clearRelogin]);
 
   const formatBetError = (msg?: string) => {
     if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
@@ -642,18 +616,6 @@ export default function HomePage() {
     }
     return msg;
   };
-
-  const maybeRequireRelogin = useCallback(
-    (err: ErrorLike) => {
-      const msg = getErrorMessage(err);
-      if (isAuthErrorMessage(msg)) {
-        triggerRelogin();
-        return true;
-      }
-      return false;
-    },
-    [triggerRelogin]
-  );
 
   const handleSignUp = async (payload: {
     email: string;
@@ -715,12 +677,6 @@ export default function HomePage() {
     }
   };
 
-  const handleTelegramLogin = useCallback(async (initData: string) => {
-    const res = await trpcClient.auth.telegramLogin.mutate({ initData });
-    clearRelogin();
-    applyPublicUser(res.user);
-  }, [applyPublicUser, clearRelogin]);
-
   const refreshUser = useCallback(async () => {
     try {
       const me = await trpcClient.auth.me.query();
@@ -734,6 +690,64 @@ export default function HomePage() {
     }
     return null;
   }, [applyPublicUser, clearRelogin]);
+
+  const attemptSilentRefresh = useCallback(async () => {
+    if (silentRefreshInFlightRef.current) {
+      return silentRefreshInFlightRef.current;
+    }
+
+    const task = (async () => {
+      try {
+        const refreshed = await trpcClient.auth.refreshSession.mutate();
+        if (refreshed?.user) {
+          applyPublicUser(refreshed.user);
+        }
+        clearRelogin();
+        return true;
+      } catch (err) {
+        console.warn("Silent session refresh failed", err);
+        const initData = getTelegramInitData();
+        if (initData) {
+          try {
+            await handleTelegramLogin(initData);
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const me = await refreshUser();
+            if (me) {
+              clearRelogin();
+              return true;
+            }
+          } catch (telegramErr) {
+            console.warn("Telegram re-auth failed", telegramErr);
+          }
+        }
+        setReloginRequired(true);
+        setUser(null);
+        openAuth("SIGN_IN");
+        return false;
+      } finally {
+        silentRefreshInFlightRef.current = null;
+      }
+    })();
+
+    silentRefreshInFlightRef.current = task;
+    return task;
+  }, [applyPublicUser, clearRelogin, handleTelegramLogin, openAuth, refreshUser, getTelegramInitData]);
+
+  const triggerRelogin = useCallback(() => {
+    void attemptSilentRefresh();
+  }, [attemptSilentRefresh]);
+
+  const maybeRequireRelogin = useCallback(
+    (err: ErrorLike) => {
+      const msg = getErrorMessage(err);
+      if (isAuthErrorMessage(msg)) {
+        triggerRelogin();
+        return true;
+      }
+      return false;
+    },
+    [triggerRelogin]
+  );
 
   // If auth expires while the UI still thinks we have a user, prompt re-login as soon as they enter a market.
   useEffect(() => {
