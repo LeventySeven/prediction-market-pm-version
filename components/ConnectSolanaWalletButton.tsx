@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { WalletReadyState, WalletNotReadyError } from '@solana/wallet-adapter-base';
+import { SolanaMobileWalletAdapter } from '@solana-mobile/wallet-adapter-mobile';
 
 type Props = {
   className?: string;
@@ -60,7 +61,7 @@ export default function ConnectSolanaWalletButton({
   connectingLabel = 'Connecting ...',
 }: Props) {
   const { setVisible, visible } = useWalletModal();
-  const { wallet, connected, connecting, connect, select } = useWallet();
+  const { wallet, wallets, connected, connecting, connect, select } = useWallet();
   const [error, setError] = useState<string | null>(null);
   const [pendingConnect, setPendingConnect] = useState(false);
 
@@ -101,8 +102,18 @@ export default function ConnectSolanaWalletButton({
     } // wait for selection
 
     // In Telegram webviews, Phantom typically isn't "Installed" (no injection).
-    // When Phantom is selected but not detected, open the dapp in Phantom in-wallet browser.
+    // Prefer Solana Mobile Wallet Adapter (deep link) to keep the user in Telegram.
     if (wallet.adapter.name === 'Phantom' && wallet.readyState === WalletReadyState.NotDetected) {
+      const isTelegramWebApp = Boolean(getTelegram()?.WebApp);
+      if (isTelegramWebApp) {
+        const mobileAdapter = wallets.find(
+          (w) => w.adapter instanceof SolanaMobileWalletAdapter
+        );
+        if (mobileAdapter) {
+          select(mobileAdapter.adapter.name);
+          return;
+        }
+      }
       setPendingConnect(false);
       openPhantomBrowse(window.location.href);
       return;

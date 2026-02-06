@@ -648,6 +648,11 @@ export default function HomePage() {
     if (upper.includes("ASSET_DISABLED")) {
       return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
     }
+    if (upper.includes("UNEXPECTED TOKEN") && upper.includes("JSON")) {
+      return lang === "RU"
+        ? "Ошибка конфигурации Solana на сервере. Проверьте SOLANA_QUOTE_AUTHORITY_KEYPAIR."
+        : "Solana server config error. Check SOLANA_QUOTE_AUTHORITY_KEYPAIR.";
+    }
     return msg;
   };
 
@@ -1669,13 +1674,20 @@ export default function HomePage() {
         }
 
         if (!isWalletConnected || !publicKey) {
+          const hasLinkedWallet = Boolean(user.solanaWalletAddress);
           setBetConfirm({
             open: true,
             marketTitle,
             side,
             amount,
             newBalance: undefined,
-            errorMessage: lang === "RU" ? "Подключите Solana-кошелёк." : "Connect your Solana wallet.",
+            errorMessage: hasLinkedWallet
+              ? lang === "RU"
+                ? "Кошелёк привязан в профиле, но не подключен сейчас. Нажмите Connect."
+                : "Wallet is linked in your profile, but not connected right now. Tap Connect to sign."
+              : lang === "RU"
+                ? "Подключите Solana-кошелёк."
+                : "Connect your Solana wallet.",
             isLoading: false,
           });
           return;
