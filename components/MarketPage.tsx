@@ -5,6 +5,7 @@ import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, Thum
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { useOnChainMarketData } from '../lib/solana/hooks';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
 
@@ -110,11 +111,21 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const { publicKey, connected: walletConnected } = useWallet();
   const walletAddress = publicKey ? publicKey.toBase58() : null;
   const isOnChainMarket = market.settlementAsset === 'USDC' || market.settlementAsset === 'USDT';
-  const [vaultBalanceMajor, setVaultBalanceMajor] = useState<number | null>(null);
-  const [walletBalanceMajor, setWalletBalanceMajor] = useState<number | null>(null);
-  const [onchainYesShares, setOnchainYesShares] = useState<number | null>(null);
-  const [onchainNoShares, setOnchainNoShares] = useState<number | null>(null);
-  const [onchainLoadError, setOnchainLoadError] = useState<string | null>(null);
+  const onchainDisabled = process.env.NEXT_PUBLIC_ONCHAIN_DISABLED === 'true';
+  const onchainData = useOnChainMarketData(market.id, isOnChainMarket && !onchainDisabled);
+  const walletBalanceMajor = onchainData.walletBalance ?? null;
+  const vaultBalanceMajor = onchainData.vaultBalance ?? null;
+  const onchainYesShares = onchainData.sharesYes ?? null;
+  const onchainNoShares = onchainData.sharesNo ?? null;
+  const onchainLoadError = useMemo(() => {
+    if (!isOnChainMarket) return null;
+    if (onchainDisabled) {
+      return lang === 'RU'
+        ? 'Ончейн-данные временно недоступны: функция в разработке.'
+        : 'On-chain data is temporarily unavailable: feature in development.';
+    }
+    return onchainData.error ?? null;
+  }, [isOnChainMarket, onchainDisabled, onchainData.error, lang]);
 
   useEffect(() => {
     if (!betIntent) return;
@@ -122,20 +133,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
     const el = document.getElementById("bid-section");
     el?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [betIntent?.nonce]);
-
-  useEffect(() => {
-    if (!isOnChainMarket) return;
-    // During Solana migration we intentionally disable EVM-derived on-chain reads here.
-    setVaultBalanceMajor(null);
-    setWalletBalanceMajor(null);
-    setOnchainYesShares(null);
-    setOnchainNoShares(null);
-    setOnchainLoadError(
-      lang === 'RU'
-        ? 'Ончейн-данные временно недоступны: переносим ончейн-часть на Solana.'
-        : 'On-chain data is temporarily unavailable while migrating to Solana.'
-    );
-  }, [isOnChainMarket, lang]);
 
   // Use closesAt for trading deadline, expiresAt for event end
   const tradingDeadline = market.closesAt || market.expiresAt;
