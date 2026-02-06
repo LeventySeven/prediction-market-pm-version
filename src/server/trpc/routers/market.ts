@@ -2536,8 +2536,18 @@ export const marketRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Source must be at least 3 characters" });
       }
 
+      const { data: adminRow, error: adminError } = await supabaseService
+        .from("users")
+        .select("is_admin")
+        .eq("id", authUser.id)
+        .maybeSingle();
+      if (adminError) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: adminError.message });
+      }
+      const isAdmin = Boolean(adminRow?.is_admin);
+
       const requestedAsset = (input.settlementAssetCode ?? DEFAULT_ASSET).toUpperCase();
-      if (!authUser.isAdmin && requestedAsset !== DEFAULT_ASSET) {
+      if (!isAdmin && requestedAsset !== DEFAULT_ASSET) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Only admins can create USDC markets",
