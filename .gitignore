@@ -20,6 +20,8 @@ coverage/
 *.tsbuildinfo
 .bun/
 *.local
+.agents/
+*.mp4
 
 # Editor directories and files
 .vscode/*

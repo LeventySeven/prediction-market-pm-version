@@ -70,12 +70,38 @@ const translateFieldError = (
   const field = opts.field?.toLowerCase();
   const validation = opts.validation?.toLowerCase();
   const code = opts.code?.toLowerCase();
+  const message = typeof opts.message === 'string' ? opts.message.trim() : '';
+  const messageLower = message.toLowerCase();
 
   if (validation === 'email' || field === 'email') {
     return lang === 'RU' ? 'Укажите корректный email.' : 'Enter a valid email address.';
   }
 
-  if (validation === 'regex' || field === 'username') {
+  if (validation === 'regex') {
+    return lang === 'RU'
+      ? 'Username может содержать только буквы, цифры, _, . или -.'
+      : 'Username may contain letters, numbers, _, ., or -.';
+  }
+
+  if (field === 'username') {
+    if (code === 'too_small' || messageLower.includes('at least')) {
+      return lang === 'RU'
+        ? 'Username должен быть длиной минимум 3 символа.'
+        : 'Username must be at least 3 characters long.';
+    }
+    if (code === 'too_big' || messageLower.includes('at most')) {
+      return lang === 'RU'
+        ? 'Username должен быть не длиннее 32 символов.'
+        : 'Username must be at most 32 characters long.';
+    }
+    if (message) {
+      if (message === 'Username may contain letters, numbers, _, ., -') {
+        return lang === 'RU'
+          ? 'Username может содержать только буквы, цифры, _, . или -.'
+          : 'Username may contain letters, numbers, _, ., or -.';
+      }
+      return message;
+    }
     return lang === 'RU'
       ? 'Username может содержать только буквы, цифры, _, . или -.'
       : 'Username may contain letters, numbers, _, ., or -.';
@@ -87,7 +113,7 @@ const translateFieldError = (
       : 'Password must contain at least 8 characters.';
   }
 
-  return opts.message ?? friendlyMessages[lang].genericError;
+  return message || friendlyMessages[lang].genericError;
 };
 
 type JsonPrimitive = string | number | boolean | null;
