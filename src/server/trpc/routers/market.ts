@@ -203,6 +203,14 @@ const resolveAssetDecimals = async (supabase: SupabaseDbClient, assetCode: strin
   return Number.isFinite(decimals) ? decimals : SOLANA_DECIMALS;
 };
 
+const shouldSimulateSolanaTx = (): boolean => {
+  return String(process.env.SOLANA_SIMULATE_TX || "").toLowerCase() === "true";
+};
+
+const shouldDebugSolanaTx = (): boolean => {
+  return String(process.env.SOLANA_DEBUG_TX || "").toLowerCase() === "true";
+};
+
 type PositionWithMarket = PositionRow & {
   markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome" | "closes_at" | "expires_at"> | null;
 };
@@ -991,6 +999,16 @@ export const marketRouter = router({
       const quoteAuthority = loadQuoteAuthorityKeypair();
 
       const connection = new Connection(getSolanaRpcUrl(), "confirmed");
+      if (shouldDebugSolanaTx()) {
+        console.log("[prepareBet] programId", programId.toBase58());
+        console.log("[prepareBet] marketId", marketId);
+        console.log("[prepareBet] user", userKey.toBase58());
+        console.log("[prepareBet] quoteAuthority", quoteAuthority.publicKey.toBase58());
+        console.log("[prepareBet] usdcMint", usdcMint.toBase58());
+        console.log("[prepareBet] userUsdcAta", userUsdcAta.toBase58());
+        console.log("[prepareBet] marketVaultAta", marketVaultAta.toBase58());
+        console.log("[prepareBet] feeRecipientAta", feeRecipientAta.toBase58());
+      }
       const ataInfos = await connection.getMultipleAccountsInfo([userUsdcAta, marketVaultAta, feeRecipientAta]);
       const ataInstructions: TransactionInstruction[] = [];
       if (!ataInfos[0]) {
@@ -1076,6 +1094,25 @@ export const marketRouter = router({
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const tx = new Transaction({ feePayer: userKey, recentBlockhash: blockhash }).add(...instructions);
       tx.partialSign(quoteAuthority);
+      if (shouldDebugSolanaTx()) {
+        console.log("[prepareBet] instructionCount", instructions.length);
+        console.log("[prepareBet] signatures", tx.signatures.map((s) => s.publicKey.toBase58()));
+        console.log("[prepareBet] recentBlockhash", blockhash);
+      }
+
+      if (shouldSimulateSolanaTx()) {
+        const sim = await connection.simulateTransaction(tx, {
+          sigVerify: false,
+          commitment: "processed",
+        });
+        if (sim.value.err) {
+          const logs = sim.value.logs?.join("\n") || "no logs";
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `SOLANA_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)} | ${logs}`,
+          });
+        }
+      }
 
       const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
       return { solanaCluster: normalizeSolanaCluster(), txBase64 };
@@ -1176,6 +1213,15 @@ export const marketRouter = router({
 
       const outcome = side === "YES" ? 1 : 2;
       const quoteAuthority = loadQuoteAuthorityKeypair();
+      if (shouldDebugSolanaTx()) {
+        console.log("[prepareSell] programId", programId.toBase58());
+        console.log("[prepareSell] marketId", marketId);
+        console.log("[prepareSell] user", userKey.toBase58());
+        console.log("[prepareSell] quoteAuthority", quoteAuthority.publicKey.toBase58());
+        console.log("[prepareSell] usdcMint", usdcMint.toBase58());
+        console.log("[prepareSell] userUsdcAta", userUsdcAta.toBase58());
+        console.log("[prepareSell] marketVaultAta", marketVaultAta.toBase58());
+      }
       const ix = new TransactionInstruction({
         programId,
         keys: [
@@ -1196,6 +1242,23 @@ export const marketRouter = router({
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const tx = new Transaction({ feePayer: userKey, recentBlockhash: blockhash }).add(ix);
       tx.partialSign(quoteAuthority);
+      if (shouldDebugSolanaTx()) {
+        console.log("[prepareSell] recentBlockhash", blockhash);
+      }
+
+      if (shouldSimulateSolanaTx()) {
+        const sim = await connection.simulateTransaction(tx, {
+          sigVerify: false,
+          commitment: "processed",
+        });
+        if (sim.value.err) {
+          const logs = sim.value.logs?.join("\n") || "no logs";
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `SOLANA_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)} | ${logs}`,
+          });
+        }
+      }
 
       const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
       return { solanaCluster: normalizeSolanaCluster(), txBase64 };
