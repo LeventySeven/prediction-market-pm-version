@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/prediction_market_vault.json`.
  */
 export type PredictionMarketVault = {
-  "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT",
+  "address": "8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ",
   "metadata": {
     "name": "predictionMarketVault",
     "version": "0.1.0",
@@ -1413,7 +1413,7 @@ export type PredictionMarketVault = {
         },
         {
           "name": "program",
-          "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT"
+          "address": "8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ"
         },
         {
           "name": "programData"
@@ -3093,6 +3093,13 @@ export type PredictionMarketVault = {
               "Pending authority to accept ownership."
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "requestedAtTs",
+            "docs": [
+              "Unix timestamp when transfer was initiated."
+            ],
+            "type": "i64"
           },
           {
             "name": "bump",

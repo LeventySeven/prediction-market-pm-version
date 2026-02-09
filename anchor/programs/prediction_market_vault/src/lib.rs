@@ -7,7 +7,7 @@ use anchor_spl::{
     token::{self, Mint, Token, TokenAccount, TransferChecked},
 };
 
-declare_id!("As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT");
+declare_id!("8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ");
 
 // ============================================================================
 // Constants
@@ -15,6 +15,8 @@ declare_id!("As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT");
 
 /// Fee to create a market: 2 USDC (6 decimals).
 pub const CREATE_MARKET_FEE_MINOR: u64 = 2_000_000;
+/// Delay before a pending authority transfer can be accepted.
+pub const AUTHORITY_TRANSFER_DELAY_SECONDS: i64 = 3600;
 
 // ============================================================================
 // Accounts
@@ -41,6 +43,8 @@ impl Config {
 pub struct AuthorityTransfer {
     /// Pending authority to accept ownership.
     pub pending_authority: Pubkey,
+    /// Unix timestamp when transfer was initiated.
+    pub requested_at_ts: i64,
     pub bump: u8,
 }
 
@@ -262,6 +266,7 @@ pub mod prediction_market_vault {
 
         let transfer = &mut ctx.accounts.authority_transfer;
         transfer.pending_authority = new_authority;
+        transfer.requested_at_ts = Clock::get()?.unix_timestamp;
         transfer.bump = ctx.bumps.authority_transfer;
         Ok(())
     }
@@ -281,6 +286,14 @@ pub mod prediction_market_vault {
             ctx.accounts.authority_transfer.pending_authority == ctx.accounts.new_authority.key(),
             VaultError::NotAuthorized
         );
+        let now_ts = Clock::get()?.unix_timestamp;
+        let ready_at = ctx
+            .accounts
+            .authority_transfer
+            .requested_at_ts
+            .checked_add(AUTHORITY_TRANSFER_DELAY_SECONDS)
+            .ok_or(VaultError::ArithmeticOverflow)?;
+        require!(now_ts >= ready_at, VaultError::NotAuthorized);
         ctx.accounts.config.authority = ctx.accounts.new_authority.key();
         Ok(())
     }
@@ -678,6 +691,7 @@ pub mod prediction_market_vault {
         let remaining_liability = liability_shares
             .checked_sub(ctx.accounts.market.total_claimed)
             .unwrap_or(0);
+        require!(remaining_liability == 0, VaultError::InsufficientBalance);
         let max_collectible = ctx
             .accounts
             .market_vault_ata

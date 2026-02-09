@@ -1,9 +1,0 @@
-/Users/seventyleven/Projects/prediction-market-ru /prediction-market-ru/anchor/target/debug/deps/num_enum_derive-e647c36d54a029de.d: /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/lib.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/enum_attributes.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/parsing.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/utils.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/variant_attributes.rs
-
-/Users/seventyleven/Projects/prediction-market-ru /prediction-market-ru/anchor/target/debug/deps/libnum_enum_derive-e647c36d54a029de.dylib: /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/lib.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/enum_attributes.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/parsing.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/utils.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/variant_attributes.rs
-
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/lib.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/enum_attributes.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/parsing.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/utils.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.5/src/variant_attributes.rs:

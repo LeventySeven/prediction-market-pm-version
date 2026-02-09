@@ -1,9 +1,0 @@
-/Users/seventyleven/Projects/prediction-market-ru /prediction-market-ru/anchor/target/sbpf-solana-solana/release/deps/solana_loader_v3_interface-b3b1c2bdd9abdc5e.d: /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/lib.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/instruction.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/state.rs
-
-/Users/seventyleven/Projects/prediction-market-ru /prediction-market-ru/anchor/target/sbpf-solana-solana/release/deps/libsolana_loader_v3_interface-b3b1c2bdd9abdc5e.rlib: /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/lib.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/instruction.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/state.rs
-
-/Users/seventyleven/Projects/prediction-market-ru /prediction-market-ru/anchor/target/sbpf-solana-solana/release/deps/libsolana_loader_v3_interface-b3b1c2bdd9abdc5e.rmeta: /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/lib.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/instruction.rs /Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/state.rs
-
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/lib.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/instruction.rs:
-/Users/seventyleven/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/solana-loader-v3-interface-3.0.0/src/state.rs:

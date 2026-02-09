@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-prediction_market_vault = "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT"
+prediction_market_vault = "8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ"
 
 [programs.mainnet]
 prediction_market_vault = "11111111111111111111111111111111"

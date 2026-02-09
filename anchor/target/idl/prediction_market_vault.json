@@ -1,5 +1,5 @@
 {
-  "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT",
+  "address": "8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ",
   "metadata": {
     "name": "prediction_market_vault",
     "version": "0.1.0",
@@ -1407,7 +1407,7 @@
         },
         {
           "name": "program",
-          "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT"
+          "address": "8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ"
         },
         {
           "name": "program_data"
@@ -3087,6 +3087,13 @@
               "Pending authority to accept ownership."
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "requested_at_ts",
+            "docs": [
+              "Unix timestamp when transfer was initiated."
+            ],
+            "type": "i64"
           },
           {
             "name": "bump",
