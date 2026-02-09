@@ -315,7 +315,7 @@ export default function HomePage() {
   const [loadingUser, setLoadingUser] = useState(false);
   const telegramAutoLoginAttemptedRef = useRef(false);
 
-  const getTelegramInitDataFromUrl = () => {
+  const getTelegramInitDataFromUrl = useCallback(() => {
     if (typeof window === "undefined") return null;
     try {
       const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
@@ -331,14 +331,14 @@ export default function HomePage() {
     } catch {
       return null;
     }
-  };
+  }, []);
 
-  const getTelegramInitData = () => {
+  const getTelegramInitData = useCallback(() => {
     if (typeof window === "undefined") return null;
     const initData = window.Telegram?.WebApp?.initData;
     if (typeof initData === "string" && initData.trim().length > 0) return initData;
     return getTelegramInitDataFromUrl();
-  };
+  }, [getTelegramInitDataFromUrl]);
 
   const getMarketIdFromUrl = () => {
     if (typeof window === "undefined") return null;

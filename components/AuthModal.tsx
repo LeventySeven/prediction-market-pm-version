@@ -252,6 +252,24 @@ const AuthModal: React.FC<AuthModalProps> = ({
     }
   }, [isOpen]);
 
+  const telegramBotLoginUrl = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
+    if (!raw) return null;
+    const username = raw.trim().replace(/^@/, '');
+    if (!username) return null;
+    return `https://t.me/${username}?start=login`;
+  }, []);
+
+  const handleTelegramBotLogin = () => {
+    if (!telegramBotLoginUrl) return;
+    try {
+      window.open(telegramBotLoginUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      window.location.href = telegramBotLoginUrl;
+    }
+    onClose();
+  };
+
   const handleTelegram = async () => {
     if (!telegramInitData || !onTelegramLogin) return;
     try {
@@ -313,6 +331,9 @@ const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
+  const showTelegramInitButton = Boolean(telegramInitData && onTelegramLogin);
+  const showTelegramBotButton = Boolean(!showTelegramInitButton && telegramBotLoginUrl);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div 
@@ -328,11 +349,24 @@ const AuthModal: React.FC<AuthModalProps> = ({
       </button>
 
         {/* Social login buttons at the top */}
-        {telegramInitData && onTelegramLogin && (
+        {showTelegramInitButton && (
           <div className="mb-5">
             <button
               type="button"
               onClick={handleTelegram}
+              disabled={loading}
+              className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors inline-flex items-center justify-center gap-2 font-semibold"
+            >
+              <Send size={16} className="text-[rgba(245,68,166,1)] shrink-0" />
+              <span className="leading-none">{t.telegramButton}</span>
+            </button>
+          </div>
+        )}
+        {showTelegramBotButton && (
+          <div className="mb-5">
+            <button
+              type="button"
+              onClick={handleTelegramBotLogin}
               disabled={loading}
               className="w-full h-11 rounded-lg border border-zinc-800 bg-black text-white hover:bg-zinc-950 transition-colors inline-flex items-center justify-center gap-2 font-semibold"
             >
