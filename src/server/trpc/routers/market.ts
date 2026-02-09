@@ -1111,7 +1111,7 @@ export const marketRouter = router({
         }
       }
 
-      const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
+      const txBase64 = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
       return { solanaCluster: normalizeSolanaCluster(), txBase64 };
     }),
 
@@ -1254,7 +1254,7 @@ export const marketRouter = router({
         }
       }
 
-      const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
+      const txBase64 = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
       return { solanaCluster: normalizeSolanaCluster(), txBase64 };
     }),
 
@@ -1363,7 +1363,7 @@ export const marketRouter = router({
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const tx = new Transaction({ feePayer: userKey, recentBlockhash: blockhash }).add(ix);
 
-      const txBase64 = tx.serialize({ requireAllSignatures: false }).toString("base64");
+      const txBase64 = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
       return { solanaCluster: normalizeSolanaCluster(), txBase64 };
     }),
 
