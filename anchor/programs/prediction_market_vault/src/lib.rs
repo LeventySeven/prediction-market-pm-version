@@ -1,9 +1,10 @@
 #![allow(unexpected_cfgs)]
 
 use anchor_lang::prelude::*;
+use crate::program::PredictionMarketVault;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token::{self, Mint, Token, TokenAccount, Transfer},
+    token::{self, Mint, Token, TokenAccount, TransferChecked},
 };
 
 declare_id!("As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT");
@@ -35,6 +36,18 @@ impl Config {
     pub const SEED: &'static [u8] = b"config";
 }
 
+#[account]
+#[derive(InitSpace)]
+pub struct AuthorityTransfer {
+    /// Pending authority to accept ownership.
+    pub pending_authority: Pubkey,
+    pub bump: u8,
+}
+
+impl AuthorityTransfer {
+    pub const SEED: &'static [u8] = b"authority_transfer";
+}
+
 /// @deprecated - LEGACY: This account was used for custodial deposits.
 /// The new non-custodial flow transfers USDC directly to market vault ATAs.
 /// Kept for backward compatibility but should not be used in new code.
@@ -53,6 +66,18 @@ impl UserVault {
 
 #[account]
 #[derive(InitSpace)]
+pub struct UserMarketCreation {
+    pub user: Pubkey,
+    pub last_created_ts: i64,
+    pub bump: u8,
+}
+
+impl UserMarketCreation {
+    pub const SEED: &'static [u8] = b"market_creation";
+}
+
+#[account]
+#[derive(InitSpace)]
 pub struct Market {
     /// 16 raw UUID bytes from Supabase market id.
     pub uuid: [u8; 16],
@@ -64,6 +89,8 @@ pub struct Market {
     pub q_no: u64,
     /// Liquidity parameter b (scaled by 1e6)
     pub b: u64,
+    /// Total winnings claimed (in minor units)
+    pub total_claimed: u64,
     pub bump: u8,
 }
 
@@ -95,6 +122,7 @@ pub struct Deposited {
     pub user: Pubkey,
     pub amount_minor: u64,
     pub new_balance_minor: u64,
+    pub timestamp: i64,
 }
 
 /// @deprecated - LEGACY: Event for custodial withdrawals (no longer used)
@@ -103,6 +131,7 @@ pub struct Withdrawn {
     pub user: Pubkey,
     pub amount_minor: u64,
     pub new_balance_minor: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -113,6 +142,7 @@ pub struct BetPlaced {
     pub outcome: u8,
     pub collateral_minor: u64,
     pub shares_minor: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -123,6 +153,7 @@ pub struct PositionSold {
     pub outcome: u8,
     pub shares_minor: u64,
     pub payout_minor: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -133,6 +164,7 @@ pub struct WinningsClaimed {
     pub outcome: u8,
     pub shares_minor: u64,
     pub payout_minor: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -140,6 +172,7 @@ pub struct MarketResolved {
     pub market: Pubkey,
     /// 1=YES, 2=NO, 3=cancelled
     pub outcome: u8,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -147,6 +180,7 @@ pub struct FeesCollected {
     pub market: Pubkey,
     pub authority: Pubkey,
     pub amount_minor: u64,
+    pub timestamp: i64,
 }
 
 // ============================================================================
@@ -175,6 +209,12 @@ pub enum VaultError {
     MintMismatch,
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
+    #[msg("Rate limit exceeded")]
+    RateLimitExceeded,
+    #[msg("Invalid authority")]
+    InvalidAuthority,
+    #[msg("Deadline exceeded")]
+    DeadlineExceeded,
 }
 
 // ============================================================================
@@ -190,6 +230,17 @@ pub mod prediction_market_vault {
         ctx: Context<InitializeConfig>,
         quote_authority: Pubkey,
     ) -> Result<()> {
+        require!(
+            ctx.accounts
+                .program_data
+                .upgrade_authority_address
+                == Some(ctx.accounts.authority.key()),
+            VaultError::NotAuthorized
+        );
+        require!(
+            ctx.accounts.usdc_mint.decimals == 6,
+            VaultError::InvalidAmount
+        );
         let cfg = &mut ctx.accounts.config;
         cfg.authority = ctx.accounts.authority.key();
         cfg.quote_authority = quote_authority;
@@ -198,16 +249,65 @@ pub mod prediction_market_vault {
         Ok(())
     }
 
+    /// Initiate a two-step authority transfer for the config.
+    pub fn set_pending_authority(
+        ctx: Context<SetPendingAuthority>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.config.authority,
+            VaultError::NotAuthorized
+        );
+        require!(new_authority != Pubkey::default(), VaultError::InvalidAuthority);
+
+        let transfer = &mut ctx.accounts.authority_transfer;
+        transfer.pending_authority = new_authority;
+        transfer.bump = ctx.bumps.authority_transfer;
+        Ok(())
+    }
+
+    /// Cancel a pending authority transfer. Current authority only.
+    pub fn cancel_authority_transfer(ctx: Context<CancelAuthorityTransfer>) -> Result<()> {
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.config.authority,
+            VaultError::NotAuthorized
+        );
+        Ok(())
+    }
+
+    /// Accept a pending authority transfer. Must be called by pending authority.
+    pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
+        require!(
+            ctx.accounts.authority_transfer.pending_authority == ctx.accounts.new_authority.key(),
+            VaultError::NotAuthorized
+        );
+        ctx.accounts.config.authority = ctx.accounts.new_authority.key();
+        Ok(())
+    }
+
     /// Create a market. Requires CREATE_MARKET_FEE_MINOR (2 USDC) transferred from payer to fee recipient.
     pub fn create_market(ctx: Context<CreateMarket>, market_uuid: [u8; 16]) -> Result<()> {
+        let now_ts = Clock::get()?.unix_timestamp;
+        let rate = &mut ctx.accounts.user_market_creation;
+        if rate.last_created_ts != 0 {
+            require!(
+                now_ts - rate.last_created_ts >= 600,
+                VaultError::RateLimitExceeded
+            );
+        }
+        rate.user = ctx.accounts.payer.key();
+        rate.last_created_ts = now_ts;
+        rate.bump = ctx.bumps.user_market_creation;
+
         // Transfer 2 USDC fee from payer to config's ATA
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.payer_usdc_ata.to_account_info(),
             to: ctx.accounts.fee_recipient_ata.to_account_info(),
             authority: ctx.accounts.payer.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        token::transfer(cpi_ctx, CREATE_MARKET_FEE_MINOR)?;
+        token::transfer_checked(cpi_ctx, CREATE_MARKET_FEE_MINOR, 6)?;
 
         let m = &mut ctx.accounts.market;
         m.uuid = market_uuid;
@@ -215,6 +315,7 @@ pub mod prediction_market_vault {
         m.q_yes = 0;
         m.q_no = 0;
         m.b = 0;
+        m.total_claimed = 0;
         m.bump = ctx.bumps.market;
         Ok(())
     }
@@ -227,13 +328,14 @@ pub mod prediction_market_vault {
         require!(amount_minor > 0, VaultError::InvalidAmount);
 
         // Transfer from user -> vault ATA (owned by config PDA)
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.user_usdc_ata.to_account_info(),
             to: ctx.accounts.vault_usdc_ata.to_account_info(),
             authority: ctx.accounts.user.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        token::transfer(cpi_ctx, amount_minor)?;
+        token::transfer_checked(cpi_ctx, amount_minor, 6)?;
 
         let uv = &mut ctx.accounts.user_vault;
         uv.user = ctx.accounts.user.key();
@@ -243,10 +345,12 @@ pub mod prediction_market_vault {
             .checked_add(amount_minor)
             .ok_or(VaultError::ArithmeticOverflow)?;
 
+        let now_ts = Clock::get()?.unix_timestamp;
         emit!(Deposited {
             user: ctx.accounts.user.key(),
             amount_minor,
             new_balance_minor: uv.balance,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -267,22 +371,25 @@ pub mod prediction_market_vault {
 
         // Transfer from vault ATA (owned by config PDA) -> user ATA
         let signer_seeds: &[&[&[u8]]] = &[&[Config::SEED, &[ctx.accounts.config.bump]]];
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.vault_usdc_ata.to_account_info(),
             to: ctx.accounts.user_usdc_ata.to_account_info(),
             authority: ctx.accounts.config.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
             signer_seeds,
         );
-        token::transfer(cpi_ctx, amount_minor)?;
+        token::transfer_checked(cpi_ctx, amount_minor, 6)?;
 
+        let now_ts = Clock::get()?.unix_timestamp;
         emit!(Withdrawn {
             user: ctx.accounts.user.key(),
             amount_minor,
             new_balance_minor: uv.balance,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -294,13 +401,17 @@ pub mod prediction_market_vault {
     /// * `collateral_minor` - Amount of USDC to pay (in minor units, 6 decimals)
     /// * `shares_minor` - Number of shares to receive (scaled by 1e6)
     /// * `max_cost_minor` - Maximum acceptable cost (slippage protection)
+    /// * `deadline_ts` - Latest unix timestamp for the tx to be valid
     pub fn place_bet(
         ctx: Context<PlaceBet>,
         outcome: u8,
         collateral_minor: u64,
         shares_minor: u64,
         max_cost_minor: u64,
+        deadline_ts: i64,
     ) -> Result<()> {
+        let now_ts = Clock::get()?.unix_timestamp;
+        require!(now_ts <= deadline_ts, VaultError::DeadlineExceeded);
         require!(outcome == 1 || outcome == 2, VaultError::InvalidOutcome);
         require!(
             collateral_minor > 0 && shares_minor > 0,
@@ -344,13 +455,14 @@ pub mod prediction_market_vault {
         }
 
         // Transfer USDC from user -> market vault ATA
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.user_usdc_ata.to_account_info(),
             to: ctx.accounts.market_vault_ata.to_account_info(),
             authority: ctx.accounts.user.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        token::transfer(cpi_ctx, collateral_minor)?;
+        token::transfer_checked(cpi_ctx, collateral_minor, 6)?;
 
         emit!(BetPlaced {
             user: ctx.accounts.user.key(),
@@ -358,6 +470,7 @@ pub mod prediction_market_vault {
             outcome,
             collateral_minor,
             shares_minor,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -369,13 +482,17 @@ pub mod prediction_market_vault {
     /// * `shares_minor` - Number of shares to sell (scaled by 1e6)
     /// * `payout_minor` - Amount of USDC to receive (in minor units)
     /// * `min_payout_minor` - Minimum acceptable payout (slippage protection)
+    /// * `deadline_ts` - Latest unix timestamp for the tx to be valid
     pub fn sell_position(
         ctx: Context<SellPosition>,
         outcome: u8,
         shares_minor: u64,
         payout_minor: u64,
         min_payout_minor: u64,
+        deadline_ts: i64,
     ) -> Result<()> {
+        let now_ts = Clock::get()?.unix_timestamp;
+        require!(now_ts <= deadline_ts, VaultError::DeadlineExceeded);
         require!(outcome == 1 || outcome == 2, VaultError::InvalidOutcome);
         require!(shares_minor > 0, VaultError::InvalidAmount);
         require!(payout_minor >= min_payout_minor, VaultError::InvalidAmount);
@@ -419,17 +536,18 @@ pub mod prediction_market_vault {
             ctx.accounts.market.uuid.as_ref(),
             &[ctx.accounts.market.bump],
         ]];
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.market_vault_ata.to_account_info(),
             to: ctx.accounts.user_usdc_ata.to_account_info(),
             authority: ctx.accounts.market.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
             signer_seeds,
         );
-        token::transfer(cpi_ctx, payout_minor)?;
+        token::transfer_checked(cpi_ctx, payout_minor, 6)?;
 
         emit!(PositionSold {
             user: ctx.accounts.user.key(),
@@ -437,6 +555,7 @@ pub mod prediction_market_vault {
             outcome,
             shares_minor,
             payout_minor,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -458,9 +577,11 @@ pub mod prediction_market_vault {
         
         ctx.accounts.market.outcome = outcome;
         
+        let now_ts = Clock::get()?.unix_timestamp;
         emit!(MarketResolved {
             market: ctx.accounts.market.key(),
             outcome,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -491,30 +612,40 @@ pub mod prediction_market_vault {
         let payout_minor = shares_minor;
         require!(payout_minor >= min_payout_minor, VaultError::InvalidAmount);
 
+        ctx.accounts.market.total_claimed = ctx
+            .accounts
+            .market
+            .total_claimed
+            .checked_add(payout_minor)
+            .ok_or(VaultError::ArithmeticOverflow)?;
+
         // Transfer USDC from market vault ATA -> user (market PDA signs)
         let signer_seeds: &[&[&[u8]]] = &[&[
             Market::SEED,
             ctx.accounts.market.uuid.as_ref(),
             &[ctx.accounts.market.bump],
         ]];
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.market_vault_ata.to_account_info(),
             to: ctx.accounts.user_usdc_ata.to_account_info(),
             authority: ctx.accounts.market.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
             signer_seeds,
         );
-        token::transfer(cpi_ctx, payout_minor)?;
+        token::transfer_checked(cpi_ctx, payout_minor, 6)?;
 
+        let now_ts = Clock::get()?.unix_timestamp;
         emit!(WinningsClaimed {
             user: ctx.accounts.user.key(),
             market: ctx.accounts.market.key(),
             outcome,
             shares_minor,
             payout_minor,
+            timestamp: now_ts,
         });
         Ok(())
     }
@@ -533,29 +664,112 @@ pub mod prediction_market_vault {
         let outcome = ctx.accounts.market.outcome;
         require!(outcome > 0, VaultError::MarketNotResolved);
 
+        let liability_shares = if outcome == 1 {
+            ctx.accounts.market.q_yes
+        } else if outcome == 2 {
+            ctx.accounts.market.q_no
+        } else {
+            ctx.accounts
+                .market
+                .q_yes
+                .checked_add(ctx.accounts.market.q_no)
+                .ok_or(VaultError::ArithmeticOverflow)?
+        };
+        let remaining_liability = liability_shares
+            .checked_sub(ctx.accounts.market.total_claimed)
+            .unwrap_or(0);
+        let max_collectible = ctx
+            .accounts
+            .market_vault_ata
+            .amount
+            .checked_sub(remaining_liability)
+            .ok_or(VaultError::InsufficientBalance)?;
+        require!(amount_minor <= max_collectible, VaultError::InsufficientBalance);
+
         // Transfer from market vault ATA -> fee recipient ATA (market PDA signs)
         let signer_seeds: &[&[&[u8]]] = &[&[
             Market::SEED,
             ctx.accounts.market.uuid.as_ref(),
             &[ctx.accounts.market.bump],
         ]];
-        let cpi_accounts = Transfer {
+        let cpi_accounts = TransferChecked {
             from: ctx.accounts.market_vault_ata.to_account_info(),
             to: ctx.accounts.fee_recipient_ata.to_account_info(),
             authority: ctx.accounts.market.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
             signer_seeds,
         );
-        token::transfer(cpi_ctx, amount_minor)?;
+        token::transfer_checked(cpi_ctx, amount_minor, 6)?;
 
+        let now_ts = Clock::get()?.unix_timestamp;
         emit!(FeesCollected {
             market: ctx.accounts.market.key(),
             authority: ctx.accounts.authority.key(),
             amount_minor,
+            timestamp: now_ts,
         });
+        Ok(())
+    }
+
+    /// Refund positions when a market is cancelled (outcome = 3).
+    /// Payout equals total shares held (YES + NO) since both sides are refunded.
+    pub fn refund_cancelled(ctx: Context<RefundCancelled>, min_payout_minor: u64) -> Result<()> {
+        require!(ctx.accounts.market.outcome == 3, VaultError::MarketNotResolved);
+
+        let pos = &mut ctx.accounts.position;
+        let shares_minor = pos
+            .shares_yes
+            .checked_add(pos.shares_no)
+            .ok_or(VaultError::ArithmeticOverflow)?;
+        require!(shares_minor > 0, VaultError::NoWinningPosition);
+
+        // Clear both sides on refund.
+        pos.shares_yes = 0;
+        pos.shares_no = 0;
+
+        let payout_minor = shares_minor;
+        require!(payout_minor >= min_payout_minor, VaultError::InvalidAmount);
+
+        ctx.accounts.market.total_claimed = ctx
+            .accounts
+            .market
+            .total_claimed
+            .checked_add(payout_minor)
+            .ok_or(VaultError::ArithmeticOverflow)?;
+
+        // Transfer USDC from market vault ATA -> user (market PDA signs)
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            Market::SEED,
+            ctx.accounts.market.uuid.as_ref(),
+            &[ctx.accounts.market.bump],
+        ]];
+        let cpi_accounts = TransferChecked {
+            from: ctx.accounts.market_vault_ata.to_account_info(),
+            to: ctx.accounts.user_usdc_ata.to_account_info(),
+            authority: ctx.accounts.market.to_account_info(),
+            mint: ctx.accounts.usdc_mint.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            cpi_accounts,
+            signer_seeds,
+        );
+        token::transfer_checked(cpi_ctx, payout_minor, 6)?;
+
+        Ok(())
+    }
+
+    /// Close a position account and reclaim rent once empty.
+    pub fn close_position(ctx: Context<ClosePosition>) -> Result<()> {
+        let pos = &ctx.accounts.position;
+        require!(
+            pos.shares_yes == 0 && pos.shares_no == 0,
+            VaultError::InsufficientShares
+        );
         Ok(())
     }
 }
@@ -570,6 +784,12 @@ pub struct InitializeConfig<'info> {
     pub authority: Signer<'info>,
 
     #[account(
+        constraint = program.programdata_address()? == Some(program_data.key())
+    )]
+    pub program: Program<'info, PredictionMarketVault>,
+    pub program_data: Account<'info, ProgramData>,
+
+    #[account(
         init,
         payer = authority,
         space = 8 + Config::INIT_SPACE,
@@ -582,6 +802,70 @@ pub struct InitializeConfig<'info> {
     pub usdc_mint: Box<Account<'info, Mint>>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetPendingAuthority<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [Config::SEED],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + AuthorityTransfer::INIT_SPACE,
+        seeds = [AuthorityTransfer::SEED],
+        bump
+    )]
+    pub authority_transfer: Box<Account<'info, AuthorityTransfer>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CancelAuthorityTransfer<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [Config::SEED],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        mut,
+        close = authority,
+        seeds = [AuthorityTransfer::SEED],
+        bump = authority_transfer.bump
+    )]
+    pub authority_transfer: Box<Account<'info, AuthorityTransfer>>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptAuthorityTransfer<'info> {
+    #[account(mut)]
+    pub new_authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [Config::SEED],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        mut,
+        close = new_authority,
+        seeds = [AuthorityTransfer::SEED],
+        bump = authority_transfer.bump
+    )]
+    pub authority_transfer: Box<Account<'info, AuthorityTransfer>>,
 }
 
 #[derive(Accounts)]
@@ -600,6 +884,15 @@ pub struct CreateMarket<'info> {
     pub market: Box<Account<'info, Market>>,
 
     #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + UserMarketCreation::INIT_SPACE,
+        seeds = [UserMarketCreation::SEED, payer.key().as_ref()],
+        bump
+    )]
+    pub user_market_creation: Box<Account<'info, UserMarketCreation>>,
+
+    #[account(
         seeds = [Config::SEED],
         bump = config.bump
     )]
@@ -615,10 +908,10 @@ pub struct CreateMarket<'info> {
 
     /// Fee recipient USDC ATA (config PDA's ATA).
     #[account(
-        init_if_needed,
-        payer = payer,
+        mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = config,
+        constraint = fee_recipient_ata.key() != payer_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub fee_recipient_ata: Box<Account<'info, TokenAccount>>,
 
@@ -670,10 +963,10 @@ pub struct Deposit<'info> {
 
     /// Config PDA's USDC ATA (vault destination).
     #[account(
-        init_if_needed,
-        payer = user,
+        mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = config,
+        constraint = vault_usdc_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub vault_usdc_ata: Box<Account<'info, TokenAccount>>,
 
@@ -721,6 +1014,7 @@ pub struct Withdraw<'info> {
         mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = config,
+        constraint = vault_usdc_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub vault_usdc_ata: Box<Account<'info, TokenAccount>>,
 
@@ -773,10 +1067,10 @@ pub struct PlaceBet<'info> {
 
     /// Market PDA's USDC ATA (vault destination).
     #[account(
-        init_if_needed,
-        payer = user,
+        mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = market,
+        constraint = market_vault_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub market_vault_ata: Box<Account<'info, TokenAccount>>,
 
@@ -833,6 +1127,7 @@ pub struct SellPosition<'info> {
         mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = market,
+        constraint = market_vault_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub market_vault_ata: Box<Account<'info, TokenAccount>>,
 
@@ -902,6 +1197,7 @@ pub struct ClaimWinnings<'info> {
         mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = market,
+        constraint = market_vault_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
     )]
     pub market_vault_ata: Box<Account<'info, TokenAccount>>,
 
@@ -928,6 +1224,9 @@ pub struct CollectFees<'info> {
 
     /// Fee recipient wallet (typically company treasury).
     /// CHECK: Any valid address can be a fee recipient.
+    #[account(
+        constraint = fee_recipient.key() == config.authority @ VaultError::NotAuthorized
+    )]
     pub fee_recipient: UncheckedAccount<'info>,
 
     /// USDC mint - validated against config.
@@ -946,14 +1245,81 @@ pub struct CollectFees<'info> {
 
     /// Fee recipient's USDC ATA (destination).
     #[account(
-        init_if_needed,
-        payer = authority,
+        mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = fee_recipient,
+        constraint = fee_recipient_ata.key() != market_vault_ata.key() @ VaultError::InvalidAmount
     )]
     pub fee_recipient_ata: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RefundCancelled<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        seeds = [Config::SEED],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        mut,
+        seeds = [Market::SEED, market.uuid.as_ref()],
+        bump = market.bump
+    )]
+    pub market: Box<Account<'info, Market>>,
+
+    #[account(
+        mut,
+        seeds = [Position::SEED, market.key().as_ref(), user.key().as_ref()],
+        bump = position.bump,
+        constraint = position.user == user.key() @ VaultError::NotAuthorized
+    )]
+    pub position: Box<Account<'info, Position>>,
+
+    /// USDC mint - validated against config.
+    #[account(
+        constraint = usdc_mint.key() == config.usdc_mint @ VaultError::MintMismatch
+    )]
+    pub usdc_mint: Box<Account<'info, Mint>>,
+
+    /// User's USDC ATA (payout destination). User must already have an ATA.
+    #[account(
+        mut,
+        associated_token::mint = usdc_mint,
+        associated_token::authority = user,
+    )]
+    pub user_usdc_ata: Box<Account<'info, TokenAccount>>,
+
+    /// Market PDA's USDC ATA (payout source).
+    #[account(
+        mut,
+        associated_token::mint = usdc_mint,
+        associated_token::authority = market,
+        constraint = market_vault_ata.key() != user_usdc_ata.key() @ VaultError::InvalidAmount
+    )]
+    pub market_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct ClosePosition<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        mut,
+        close = user,
+        seeds = [Position::SEED, position.market.as_ref(), user.key().as_ref()],
+        bump = position.bump,
+        constraint = position.user == user.key() @ VaultError::NotAuthorized
+    )]
+    pub position: Box<Account<'info, Position>>,
 }

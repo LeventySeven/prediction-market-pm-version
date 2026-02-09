@@ -8,6 +8,153 @@
   },
   "instructions": [
     {
+      "name": "accept_authority_transfer",
+      "docs": [
+        "Accept a pending authority transfer. Must be called by pending authority."
+      ],
+      "discriminator": [
+        239,
+        248,
+        177,
+        2,
+        206,
+        97,
+        46,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "new_authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority_transfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_authority_transfer",
+      "docs": [
+        "Cancel a pending authority transfer. Current authority only."
+      ],
+      "discriminator": [
+        94,
+        131,
+        125,
+        184,
+        183,
+        24,
+        125,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority_transfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "claim_winnings",
       "docs": [
         "Claim winnings after market resolution.",
@@ -306,6 +453,60 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "close_position",
+      "docs": [
+        "Close a position account and reclaim rent once empty."
+      ],
+      "discriminator": [
+        123,
+        134,
+        81,
+        0,
+        49,
+        68,
+        98,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "collect_fees",
@@ -631,6 +832,38 @@
               {
                 "kind": "arg",
                 "path": "market_uuid"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_market_creation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payer"
               }
             ]
           }
@@ -1173,6 +1406,13 @@
           "signer": true
         },
         {
+          "name": "program",
+          "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT"
+        },
+        {
+          "name": "program_data"
+        },
+        {
           "name": "config",
           "writable": true,
           "pda": {
@@ -1218,7 +1458,8 @@
         "* `outcome` - 1=YES, 2=NO",
         "* `collateral_minor` - Amount of USDC to pay (in minor units, 6 decimals)",
         "* `shares_minor` - Number of shares to receive (scaled by 1e6)",
-        "* `max_cost_minor` - Maximum acceptable cost (slippage protection)"
+        "* `max_cost_minor` - Maximum acceptable cost (slippage protection)",
+        "* `deadline_ts` - Latest unix timestamp for the tx to be valid"
       ],
       "discriminator": [
         222,
@@ -1535,6 +1776,307 @@
         {
           "name": "max_cost_minor",
           "type": "u64"
+        },
+        {
+          "name": "deadline_ts",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "refund_cancelled",
+      "docs": [
+        "Refund positions when a market is cancelled (outcome = 3).",
+        "Payout equals total shares held (YES + NO) since both sides are refunded."
+      ],
+      "discriminator": [
+        103,
+        244,
+        158,
+        83,
+        225,
+        80,
+        56,
+        62
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market.uuid",
+                "account": "Market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint",
+          "docs": [
+            "USDC mint - validated against config."
+          ]
+        },
+        {
+          "name": "user_usdc_ata",
+          "docs": [
+            "User's USDC ATA (payout destination). User must already have an ATA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "user"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdc_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "market_vault_ata",
+          "docs": [
+            "Market PDA's USDC ATA (payout source)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdc_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "min_payout_minor",
+          "type": "u64"
         }
       ]
     },
@@ -1620,7 +2162,8 @@
         "* `outcome` - 1=YES, 2=NO (which shares to sell)",
         "* `shares_minor` - Number of shares to sell (scaled by 1e6)",
         "* `payout_minor` - Amount of USDC to receive (in minor units)",
-        "* `min_payout_minor` - Minimum acceptable payout (slippage protection)"
+        "* `min_payout_minor` - Minimum acceptable payout (slippage protection)",
+        "* `deadline_ts` - Latest unix timestamp for the tx to be valid"
       ],
       "discriminator": [
         11,
@@ -1929,6 +2472,92 @@
         {
           "name": "min_payout_minor",
           "type": "u64"
+        },
+        {
+          "name": "deadline_ts",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "set_pending_authority",
+      "docs": [
+        "Initiate a two-step authority transfer for the config."
+      ],
+      "discriminator": [
+        175,
+        71,
+        167,
+        223,
+        49,
+        144,
+        102,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority_transfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
         }
       ]
     },
@@ -2208,6 +2837,19 @@
   ],
   "accounts": [
     {
+      "name": "AuthorityTransfer",
+      "discriminator": [
+        43,
+        243,
+        199,
+        71,
+        139,
+        255,
+        231,
+        113
+      ]
+    },
+    {
       "name": "Config",
       "discriminator": [
         155,
@@ -2244,6 +2886,19 @@
         64,
         247,
         208
+      ]
+    },
+    {
+      "name": "UserMarketCreation",
+      "discriminator": [
+        29,
+        219,
+        64,
+        250,
+        55,
+        163,
+        20,
+        195
       ]
     },
     {
@@ -2403,9 +3058,43 @@
       "code": 6009,
       "name": "ArithmeticOverflow",
       "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6010,
+      "name": "RateLimitExceeded",
+      "msg": "Rate limit exceeded"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidAuthority",
+      "msg": "Invalid authority"
+    },
+    {
+      "code": 6012,
+      "name": "DeadlineExceeded",
+      "msg": "Deadline exceeded"
     }
   ],
   "types": [
+    {
+      "name": "AuthorityTransfer",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pending_authority",
+            "docs": [
+              "Pending authority to accept ownership."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
     {
       "name": "BetPlaced",
       "type": {
@@ -2433,6 +3122,10 @@
           {
             "name": "shares_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2489,6 +3182,10 @@
           {
             "name": "new_balance_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2509,6 +3206,10 @@
           {
             "name": "amount_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2559,6 +3260,13 @@
             "type": "u64"
           },
           {
+            "name": "total_claimed",
+            "docs": [
+              "Total winnings claimed (in minor units)"
+            ],
+            "type": "u64"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -2580,6 +3288,10 @@
               "1=YES, 2=NO, 3=cancelled"
             ],
             "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2639,6 +3351,30 @@
           {
             "name": "payout_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserMarketCreation",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "last_created_ts",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -2698,6 +3434,10 @@
           {
             "name": "payout_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2721,6 +3461,10 @@
           {
             "name": "new_balance_minor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }

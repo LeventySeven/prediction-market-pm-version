@@ -14,6 +14,153 @@ export type PredictionMarketVault = {
   },
   "instructions": [
     {
+      "name": "acceptAuthorityTransfer",
+      "docs": [
+        "Accept a pending authority transfer. Must be called by pending authority."
+      ],
+      "discriminator": [
+        239,
+        248,
+        177,
+        2,
+        206,
+        97,
+        46,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "newAuthority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authorityTransfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancelAuthorityTransfer",
+      "docs": [
+        "Cancel a pending authority transfer. Current authority only."
+      ],
+      "discriminator": [
+        94,
+        131,
+        125,
+        184,
+        183,
+        24,
+        125,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authorityTransfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "claimWinnings",
       "docs": [
         "Claim winnings after market resolution.",
@@ -312,6 +459,60 @@ export type PredictionMarketVault = {
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "closePosition",
+      "docs": [
+        "Close a position account and reclaim rent once empty."
+      ],
+      "discriminator": [
+        123,
+        134,
+        81,
+        0,
+        49,
+        68,
+        98,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "position"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "collectFees",
@@ -637,6 +838,38 @@ export type PredictionMarketVault = {
               {
                 "kind": "arg",
                 "path": "marketUuid"
+              }
+            ]
+          }
+        },
+        {
+          "name": "userMarketCreation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  99,
+                  114,
+                  101,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payer"
               }
             ]
           }
@@ -1179,6 +1412,13 @@ export type PredictionMarketVault = {
           "signer": true
         },
         {
+          "name": "program",
+          "address": "As8oG6d6GVyEGSgRqTHLKLEc5ZumyBy4KxHaAbv6fAZT"
+        },
+        {
+          "name": "programData"
+        },
+        {
           "name": "config",
           "writable": true,
           "pda": {
@@ -1224,7 +1464,8 @@ export type PredictionMarketVault = {
         "* `outcome` - 1=YES, 2=NO",
         "* `collateral_minor` - Amount of USDC to pay (in minor units, 6 decimals)",
         "* `shares_minor` - Number of shares to receive (scaled by 1e6)",
-        "* `max_cost_minor` - Maximum acceptable cost (slippage protection)"
+        "* `max_cost_minor` - Maximum acceptable cost (slippage protection)",
+        "* `deadline_ts` - Latest unix timestamp for the tx to be valid"
       ],
       "discriminator": [
         222,
@@ -1541,6 +1782,307 @@ export type PredictionMarketVault = {
         {
           "name": "maxCostMinor",
           "type": "u64"
+        },
+        {
+          "name": "deadlineTs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "refundCancelled",
+      "docs": [
+        "Refund positions when a market is cancelled (outcome = 3).",
+        "Payout equals total shares held (YES + NO) since both sides are refunded."
+      ],
+      "discriminator": [
+        103,
+        244,
+        158,
+        83,
+        225,
+        80,
+        56,
+        62
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market.uuid",
+                "account": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdcMint",
+          "docs": [
+            "USDC mint - validated against config."
+          ]
+        },
+        {
+          "name": "userUsdcAta",
+          "docs": [
+            "User's USDC ATA (payout destination). User must already have an ATA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "user"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdcMint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "marketVaultAta",
+          "docs": [
+            "Market PDA's USDC ATA (payout source)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdcMint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "minPayoutMinor",
+          "type": "u64"
         }
       ]
     },
@@ -1626,7 +2168,8 @@ export type PredictionMarketVault = {
         "* `outcome` - 1=YES, 2=NO (which shares to sell)",
         "* `shares_minor` - Number of shares to sell (scaled by 1e6)",
         "* `payout_minor` - Amount of USDC to receive (in minor units)",
-        "* `min_payout_minor` - Minimum acceptable payout (slippage protection)"
+        "* `min_payout_minor` - Minimum acceptable payout (slippage protection)",
+        "* `deadline_ts` - Latest unix timestamp for the tx to be valid"
       ],
       "discriminator": [
         11,
@@ -1935,6 +2478,92 @@ export type PredictionMarketVault = {
         {
           "name": "minPayoutMinor",
           "type": "u64"
+        },
+        {
+          "name": "deadlineTs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "setPendingAuthority",
+      "docs": [
+        "Initiate a two-step authority transfer for the config."
+      ],
+      "discriminator": [
+        175,
+        71,
+        167,
+        223,
+        49,
+        144,
+        102,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authorityTransfer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121,
+                  95,
+                  116,
+                  114,
+                  97,
+                  110,
+                  115,
+                  102,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "newAuthority",
+          "type": "pubkey"
         }
       ]
     },
@@ -2214,6 +2843,19 @@ export type PredictionMarketVault = {
   ],
   "accounts": [
     {
+      "name": "authorityTransfer",
+      "discriminator": [
+        43,
+        243,
+        199,
+        71,
+        139,
+        255,
+        231,
+        113
+      ]
+    },
+    {
       "name": "config",
       "discriminator": [
         155,
@@ -2250,6 +2892,19 @@ export type PredictionMarketVault = {
         64,
         247,
         208
+      ]
+    },
+    {
+      "name": "userMarketCreation",
+      "discriminator": [
+        29,
+        219,
+        64,
+        250,
+        55,
+        163,
+        20,
+        195
       ]
     },
     {
@@ -2409,9 +3064,43 @@ export type PredictionMarketVault = {
       "code": 6009,
       "name": "arithmeticOverflow",
       "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6010,
+      "name": "rateLimitExceeded",
+      "msg": "Rate limit exceeded"
+    },
+    {
+      "code": 6011,
+      "name": "invalidAuthority",
+      "msg": "Invalid authority"
+    },
+    {
+      "code": 6012,
+      "name": "deadlineExceeded",
+      "msg": "Deadline exceeded"
     }
   ],
   "types": [
+    {
+      "name": "authorityTransfer",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pendingAuthority",
+            "docs": [
+              "Pending authority to accept ownership."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
     {
       "name": "betPlaced",
       "type": {
@@ -2439,6 +3128,10 @@ export type PredictionMarketVault = {
           {
             "name": "sharesMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2495,6 +3188,10 @@ export type PredictionMarketVault = {
           {
             "name": "newBalanceMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2515,6 +3212,10 @@ export type PredictionMarketVault = {
           {
             "name": "amountMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2565,6 +3266,13 @@ export type PredictionMarketVault = {
             "type": "u64"
           },
           {
+            "name": "totalClaimed",
+            "docs": [
+              "Total winnings claimed (in minor units)"
+            ],
+            "type": "u64"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -2586,6 +3294,10 @@ export type PredictionMarketVault = {
               "1=YES, 2=NO, 3=cancelled"
             ],
             "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2645,6 +3357,30 @@ export type PredictionMarketVault = {
           {
             "name": "payoutMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userMarketCreation",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "lastCreatedTs",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -2704,6 +3440,10 @@ export type PredictionMarketVault = {
           {
             "name": "payoutMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2727,6 +3467,10 @@ export type PredictionMarketVault = {
           {
             "name": "newBalanceMinor",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
