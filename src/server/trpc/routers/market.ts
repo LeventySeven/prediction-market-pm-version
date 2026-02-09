@@ -104,14 +104,16 @@ const encodePlaceBetIxData = (
   outcome: number,
   collateralMinor: bigint,
   sharesMinor: bigint,
-  maxCostMinor: bigint
+  maxCostMinor: bigint,
+  deadlineTs: bigint
 ): Buffer => {
-  const data = Buffer.alloc(8 + 1 + 8 + 8 + 8);
+  const data = Buffer.alloc(8 + 1 + 8 + 8 + 8 + 8);
   PLACE_BET_DISCRIMINATOR.copy(data, 0);
   data.writeUInt8(outcome, 8);
   data.writeBigUInt64LE(collateralMinor, 9);
   data.writeBigUInt64LE(sharesMinor, 17);
   data.writeBigUInt64LE(maxCostMinor, 25);
+  data.writeBigInt64LE(deadlineTs, 33);
   return data;
 };
 
@@ -119,14 +121,16 @@ const encodeSellPositionIxData = (
   outcome: number,
   sharesMinor: bigint,
   payoutMinor: bigint,
-  minPayoutMinor: bigint
+  minPayoutMinor: bigint,
+  deadlineTs: bigint
 ): Buffer => {
-  const data = Buffer.alloc(8 + 1 + 8 + 8 + 8);
+  const data = Buffer.alloc(8 + 1 + 8 + 8 + 8 + 8);
   SELL_POSITION_DISCRIMINATOR.copy(data, 0);
   data.writeUInt8(outcome, 8);
   data.writeBigUInt64LE(sharesMinor, 9);
   data.writeBigUInt64LE(payoutMinor, 17);
   data.writeBigUInt64LE(minPayoutMinor, 25);
+  data.writeBigInt64LE(deadlineTs, 33);
   return data;
 };
 
@@ -945,6 +949,7 @@ export const marketRouter = router({
       const sharesMinor = BigInt(Math.floor(sharesMajor * 1_000_000));
       const collateralMinor = BigInt(netMinor);
       const maxCostMinor = BigInt(netMinor);
+      const deadlineTs = BigInt(Math.floor(Date.now() / 1000) + 120);
 
       const programId = getPredictionMarketVaultProgramId();
       const userKey = new PublicKey(userPubkey);
@@ -1000,7 +1005,7 @@ export const marketRouter = router({
           { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
           { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         ],
-        data: encodePlaceBetIxData(outcome, collateralMinor, sharesMinor, maxCostMinor),
+        data: encodePlaceBetIxData(outcome, collateralMinor, sharesMinor, maxCostMinor, deadlineTs),
       });
 
       instructions.push(betIx);
@@ -1085,6 +1090,7 @@ export const marketRouter = router({
       const payoutMajor = calculateSellProceeds(qYes, qNo, b, side, shares);
       const payoutMinor = BigInt(toMinorUnits(payoutMajor, decimals));
       const minPayoutMinor = payoutMinor;
+      const deadlineTs = BigInt(Math.floor(Date.now() / 1000) + 120);
 
       const programId = getPredictionMarketVaultProgramId();
       const userKey = new PublicKey(userPubkey);
@@ -1120,7 +1126,7 @@ export const marketRouter = router({
           { pubkey: marketVaultAta, isSigner: false, isWritable: true },
           { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
         ],
-        data: encodeSellPositionIxData(outcome, sharesMinor, payoutMinor, minPayoutMinor),
+        data: encodeSellPositionIxData(outcome, sharesMinor, payoutMinor, minPayoutMinor, deadlineTs),
       });
 
       const connection = new Connection(getSolanaRpcUrl(), "confirmed");
