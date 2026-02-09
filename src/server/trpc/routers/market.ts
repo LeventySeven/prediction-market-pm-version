@@ -12,7 +12,12 @@ import { generateMarketContext } from "../../ai/marketContextAgent";
 import type { Database } from "../../../types/database";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import { getPredictionMarketVaultProgramId, getSolanaCluster, getSolanaRpcUrl, getUsdcMint } from "../../../../lib/solana/config";
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
@@ -54,6 +59,7 @@ const SOLANA_DECIMALS = 6;
 const MARKET_SEED = Buffer.from("market");
 const CONFIG_SEED = Buffer.from("config");
 const POSITION_SEED = Buffer.from("position");
+const MARKET_CREATION_SEED = Buffer.from("market_creation");
 
 const PLACE_BET_DISCRIMINATOR = (() => {
   const hash = createHash("sha256").update("global:place_bet").digest();
@@ -960,6 +966,10 @@ export const marketRouter = router({
         [POSITION_SEED, marketPda.toBuffer(), userKey.toBuffer()],
         programId
       );
+      const [userMarketCreationPda] = PublicKey.findProgramAddressSync(
+        [MARKET_CREATION_SEED, userKey.toBuffer()],
+        programId
+      );
       const usdcMint = getUsdcMint();
       const userUsdcAta = getAssociatedTokenAddressSync(usdcMint, userKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
       const marketVaultAta = getAssociatedTokenAddressSync(
@@ -969,11 +979,56 @@ export const marketRouter = router({
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
+      const feeRecipientAta = getAssociatedTokenAddressSync(
+        usdcMint,
+        configPda,
+        true,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
 
       const outcome = side === "YES" ? 1 : 2;
       const quoteAuthority = loadQuoteAuthorityKeypair();
 
       const connection = new Connection(getSolanaRpcUrl(), "confirmed");
+      const ataInfos = await connection.getMultipleAccountsInfo([userUsdcAta, marketVaultAta, feeRecipientAta]);
+      const ataInstructions: TransactionInstruction[] = [];
+      if (!ataInfos[0]) {
+        ataInstructions.push(
+          createAssociatedTokenAccountInstruction(
+            userKey,
+            userUsdcAta,
+            userKey,
+            usdcMint,
+            TOKEN_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
+      if (!ataInfos[1]) {
+        ataInstructions.push(
+          createAssociatedTokenAccountInstruction(
+            userKey,
+            marketVaultAta,
+            marketPda,
+            usdcMint,
+            TOKEN_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
+      if (!ataInfos[2]) {
+        ataInstructions.push(
+          createAssociatedTokenAccountInstruction(
+            userKey,
+            feeRecipientAta,
+            configPda,
+            usdcMint,
+            TOKEN_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
       const marketAccount = await connection.getAccountInfo(marketPda);
       const instructions: TransactionInstruction[] = [];
       if (!marketAccount) {
@@ -983,6 +1038,13 @@ export const marketRouter = router({
             keys: [
               { pubkey: userKey, isSigner: true, isWritable: true },
               { pubkey: marketPda, isSigner: false, isWritable: true },
+              { pubkey: userMarketCreationPda, isSigner: false, isWritable: true },
+              { pubkey: configPda, isSigner: false, isWritable: false },
+              { pubkey: userUsdcAta, isSigner: false, isWritable: true },
+              { pubkey: feeRecipientAta, isSigner: false, isWritable: true },
+              { pubkey: usdcMint, isSigner: false, isWritable: false },
+              { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+              { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
               { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
             ],
             data: encodeCreateMarketIxData(marketUuidBytes),
@@ -1008,6 +1070,7 @@ export const marketRouter = router({
         data: encodePlaceBetIxData(outcome, collateralMinor, sharesMinor, maxCostMinor, deadlineTs),
       });
 
+      instructions.unshift(...ataInstructions);
       instructions.push(betIx);
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
