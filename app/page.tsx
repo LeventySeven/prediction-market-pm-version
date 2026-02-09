@@ -684,14 +684,14 @@ export default function HomePage() {
             throw new Error("WALLET_SIGNATURE_MISSING");
           }
         }
-        const signature = await connection.sendRawTransaction(signed.serialize());
+        const signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
         if (!signature) {
           throw new Error("SIGNATURE_EMPTY");
         }
         return signature;
       }
 
-      const signature = await sendTransaction(tx, connection);
+      const signature = await sendTransaction(tx, connection, { skipPreflight: true });
       if (!signature) {
         throw new Error("SIGNATURE_EMPTY");
       }
