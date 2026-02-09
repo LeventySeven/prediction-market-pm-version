@@ -186,7 +186,7 @@ export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const silentRefreshInFlightRef = useRef<Promise<boolean> | null>(null);
   // Wallet state (Solana Wallet Adapter)
-  const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet();
+  const { publicKey, connected: isWalletConnected, sendTransaction, signTransaction } = useWallet();
   const { connection } = useConnection();
   const connectedWalletAddress = publicKey ? publicKey.toBase58() : null;
   type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
@@ -613,6 +613,43 @@ export default function HomePage() {
     setReloginRequired(false);
   }, []);
 
+  const sendOnchainTransaction = useCallback(
+    async (tx: Transaction) => {
+      const preservedSignatures = tx.signatures
+        .filter((sig) => sig.signature)
+        .map((sig) => ({ publicKey: sig.publicKey, signature: sig.signature as Buffer }));
+
+      if (typeof signTransaction === "function") {
+        const signed = await signTransaction(tx);
+        if (signed instanceof Transaction) {
+          for (const preserved of preservedSignatures) {
+            const existing = signed.signatures.find((sig) => sig.publicKey.equals(preserved.publicKey))?.signature;
+            if (!existing) {
+              signed.addSignature(preserved.publicKey, preserved.signature);
+            }
+          }
+          const signature = await connection.sendRawTransaction(signed.serialize());
+          if (!signature) {
+            throw new Error("SIGNATURE_EMPTY");
+          }
+          return signature;
+        }
+        const signature = await connection.sendRawTransaction(signed.serialize());
+        if (!signature) {
+          throw new Error("SIGNATURE_EMPTY");
+        }
+        return signature;
+      }
+
+      const signature = await sendTransaction(tx, connection);
+      if (!signature) {
+        throw new Error("SIGNATURE_EMPTY");
+      }
+      return signature;
+    },
+    [connection, sendTransaction, signTransaction]
+  );
+
   const handleTelegramLogin = useCallback(async (initData: string) => {
     const res = await trpcClient.auth.telegramLogin.mutate({ initData });
     clearRelogin();
@@ -665,6 +702,11 @@ export default function HomePage() {
       return lang === "RU"
         ? "Ончейн-ставки временно недоступны."
         : "On-chain bets are temporarily unavailable.";
+    }
+    if (upper.includes("SIGNATURE_EMPTY") || upper.includes("!SIGNATURE")) {
+      return lang === "RU"
+        ? "Кошелёк не вернул подпись транзакции. Переподключите кошелёк и попробуйте снова."
+        : "Wallet did not return a transaction signature. Reconnect your wallet and try again.";
     }
     if (upper.includes("WALLET_ALREADY_LINKED")) {
       return lang === "RU"
@@ -1731,7 +1773,7 @@ export default function HomePage() {
 
         debugStage = "sendTransaction";
         const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-        const signature = await sendTransaction(tx, connection);
+        const signature = await sendOnchainTransaction(tx);
         if (!signature) {
           throw new Error("SIGNATURE_EMPTY");
         }
@@ -2078,7 +2120,7 @@ export default function HomePage() {
           userPubkey: publicKey.toBase58(),
         });
         const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-        const signature = await sendTransaction(tx, connection);
+        const signature = await sendOnchainTransaction(tx);
         await connection.confirmTransaction(signature, "confirmed");
 
         const finalized = await trpcClient.market.finalizeSell.mutate({
@@ -2137,7 +2179,7 @@ export default function HomePage() {
       userPubkey: publicKey.toBase58(),
     });
     const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-    const signature = await sendTransaction(tx, connection);
+    const signature = await sendOnchainTransaction(tx);
     await connection.confirmTransaction(signature, "confirmed");
 
     const finalized = await trpcClient.market.finalizeClaim.mutate({
