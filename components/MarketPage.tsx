@@ -10,16 +10,50 @@ import { useOnChainMarketData } from '../lib/solana/hooks';
 type ErrorLike = string | Error | { message?: string } | null | undefined;
 
 const getErrorMessage = (error: ErrorLike, fallbackRu: string, fallbackEn: string, lang: 'RU' | 'EN') => {
-  if (typeof error === 'string') {
-    return error;
+  const raw =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : error && typeof error === 'object' && typeof (error as { message?: string }).message === 'string'
+          ? String((error as { message?: string }).message)
+          : '';
+  if (!raw) return lang === 'RU' ? fallbackRu : fallbackEn;
+
+  const upper = raw.toUpperCase();
+  if (upper.includes('DECLAREDPROGRAMIDMISMATCH') || upper.includes('CUSTOM":4100')) {
+    return lang === 'RU'
+      ? 'Версия смарт-контракта не совпадает с настройками приложения. Обновите приложение и повторите попытку.'
+      : 'Smart contract version does not match app configuration. Refresh/update the app and try again.';
   }
-  if (error instanceof Error) {
-    return error.message;
+  if (upper.includes('ACCOUNTNOTINITIALIZED') || upper.includes('CUSTOM":3012')) {
+    return lang === 'RU'
+      ? 'Ончейн-конфиг не инициализирован для текущего Program ID. Выполните initialize_config и повторите.'
+      : 'On-chain config is not initialized for the current Program ID. Run initialize_config and retry.';
   }
-  if (error && typeof error === 'object' && typeof (error as { message?: string }).message === 'string') {
-    return String((error as { message?: string }).message);
+  if (upper.includes('TX_FAILED_ONCHAIN')) {
+    return lang === 'RU'
+      ? 'Транзакция в сети Solana не прошла. Проверьте баланс USDC и попробуйте снова.'
+      : 'On-chain Solana transaction failed. Check your USDC balance and try again.';
   }
-  return lang === 'RU' ? fallbackRu : fallbackEn;
+  if (upper.includes('RATE_LIMIT_EXCEEDED')) {
+    return lang === 'RU'
+      ? 'Лимит создания рынков: до 3 новых рынков за 30 минут.'
+      : 'Market creation limit reached: up to 3 new markets per 30 minutes.';
+  }
+  if (upper.includes('SOLANA_WALLET_MISMATCH')) {
+    return lang === 'RU'
+      ? 'Кошелёк не привязан к аккаунту. Переподключите кошелёк.'
+      : 'Wallet not linked to your account. Please reconnect your wallet.';
+  }
+  if (upper.includes('MARKET_CLOSED') || upper.includes('MARKET_NOT_OPEN')) {
+    return lang === 'RU' ? 'Событие завершено, ставки закрыты.' : 'Market closed for trading.';
+  }
+  if (upper.includes('NOT_AUTHENTICATED') || upper.includes('UNAUTHORIZED')) {
+    return lang === 'RU' ? 'Требуется повторная авторизация.' : 'Re-authentication required.';
+  }
+
+  return raw;
 };
 
 interface MarketPageProps {

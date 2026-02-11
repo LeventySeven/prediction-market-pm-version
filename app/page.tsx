@@ -743,6 +743,16 @@ export default function HomePage() {
     if (upper.includes("INVALID_LIQUIDITY")) {
       return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
     }
+    if (upper.includes("DECLAREDPROGRAMIDMISMATCH") || upper.includes("CUSTOM\":4100")) {
+      return lang === "RU"
+        ? "Версия смарт-контракта не совпадает с настройками приложения. Обновите приложение и повторите попытку."
+        : "Smart contract version does not match app configuration. Refresh/update the app and try again.";
+    }
+    if (upper.includes("ACCOUNTNOTINITIALIZED") || upper.includes("CUSTOM\":3012")) {
+      return lang === "RU"
+        ? "Ончейн-конфиг не инициализирован для текущего Program ID. Выполните initialize_config и повторите."
+        : "On-chain config is not initialized for the current Program ID. Run initialize_config and retry.";
+    }
     if (upper.includes("RATE_LIMIT_EXCEEDED")) {
       return lang === "RU"
         ? "Лимит создания рынков: до 3 новых рынков за 30 минут."

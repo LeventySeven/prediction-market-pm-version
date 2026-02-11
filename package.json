@@ -13,6 +13,7 @@
     "start": "next start",
     "lint": "next lint",
     "solana:mint:devnet": "bun scripts/solana/create-devnet-usdc-mint.ts",
+    "solana:init:config": "bun scripts/solana/initialize-config.ts",
     "supabase:schema": "bun --env-file .env scripts/supabase/pull-schema.ts",
     "supabase:schema:check": "bun --env-file .env scripts/supabase/validate-schema.ts",
     "contracts:compile": "hardhat compile",
