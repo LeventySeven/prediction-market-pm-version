@@ -7,14 +7,16 @@ use anchor_spl::{
     token::{self, Mint, Token, TokenAccount, TransferChecked},
 };
 
-declare_id!("8dAZwmyro7FBPAKkpb2p1TjPCkvU3GCUL6aLuerxPanQ");
+declare_id!("Bbtri5Z5YZt7Cekq8Zb12UaTf8Tbj2c2yZfPPSGDUtop");
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Fee to create a market: 2 USDC (6 decimals).
-pub const CREATE_MARKET_FEE_MINOR: u64 = 2_000_000;
+/// Market creation throttle window in seconds (30 minutes).
+pub const MARKET_CREATION_WINDOW_SECONDS: i64 = 30 * 60;
+/// Max market creations allowed per window.
+pub const MARKET_CREATION_LIMIT: i64 = 3;
 /// Delay before a pending authority transfer can be accepted.
 pub const AUTHORITY_TRANSFER_DELAY_SECONDS: i64 = 3600;
 
@@ -72,6 +74,10 @@ impl UserVault {
 #[derive(InitSpace)]
 pub struct UserMarketCreation {
     pub user: Pubkey,
+    /// Packed rolling-window state:
+    /// - 0 => never created
+    /// - >0 => legacy format (single timestamp, pre-upgrade)
+    /// - <0 => -(window_start_ts * 10 + created_count)
     pub last_created_ts: i64,
     pub bump: u8,
 }
@@ -298,29 +304,58 @@ pub mod prediction_market_vault {
         Ok(())
     }
 
-    /// Create a market. Requires CREATE_MARKET_FEE_MINOR (2 USDC) transferred from payer to fee recipient.
+    /// Create a market.
+    /// Throttled to MARKET_CREATION_LIMIT creations per MARKET_CREATION_WINDOW_SECONDS.
     pub fn create_market(ctx: Context<CreateMarket>, market_uuid: [u8; 16]) -> Result<()> {
         let now_ts = Clock::get()?.unix_timestamp;
         let rate = &mut ctx.accounts.user_market_creation;
-        if rate.last_created_ts != 0 {
-            require!(
-                now_ts - rate.last_created_ts >= 600,
-                VaultError::RateLimitExceeded
-            );
-        }
-        rate.user = ctx.accounts.payer.key();
-        rate.last_created_ts = now_ts;
-        rate.bump = ctx.bumps.user_market_creation;
 
-        // Transfer 2 USDC fee from payer to config's ATA
-        let cpi_accounts = TransferChecked {
-            from: ctx.accounts.payer_usdc_ata.to_account_info(),
-            to: ctx.accounts.fee_recipient_ata.to_account_info(),
-            authority: ctx.accounts.payer.to_account_info(),
-            mint: ctx.accounts.usdc_mint.to_account_info(),
+        // Decode rolling-window state while supporting legacy positive timestamps.
+        let (mut window_start_ts, mut created_count) = if rate.last_created_ts < 0 {
+            let packed = rate
+                .last_created_ts
+                .checked_neg()
+                .ok_or(VaultError::ArithmeticOverflow)?;
+            (packed / 10, packed % 10)
+        } else if rate.last_created_ts > 0 {
+            // Legacy state (single timestamp) maps to one creation in the active window.
+            (rate.last_created_ts, 1)
+        } else {
+            (0, 0)
         };
-        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        token::transfer_checked(cpi_ctx, CREATE_MARKET_FEE_MINOR, 6)?;
+
+        // Defensive reset for malformed or future timestamps.
+        if window_start_ts > now_ts {
+            window_start_ts = 0;
+            created_count = 0;
+        }
+
+        if window_start_ts != 0 && now_ts - window_start_ts >= MARKET_CREATION_WINDOW_SECONDS {
+            window_start_ts = 0;
+            created_count = 0;
+        }
+
+        require!(
+            created_count < MARKET_CREATION_LIMIT,
+            VaultError::RateLimitExceeded
+        );
+
+        if window_start_ts == 0 {
+            window_start_ts = now_ts;
+        }
+        created_count = created_count
+            .checked_add(1)
+            .ok_or(VaultError::ArithmeticOverflow)?;
+
+        let packed_state = window_start_ts
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(created_count))
+            .and_then(|v| v.checked_neg())
+            .ok_or(VaultError::ArithmeticOverflow)?;
+
+        rate.user = ctx.accounts.payer.key();
+        rate.last_created_ts = packed_state;
+        rate.bump = ctx.bumps.user_market_creation;
 
         let m = &mut ctx.accounts.market;
         m.uuid = market_uuid;
@@ -912,31 +947,6 @@ pub struct CreateMarket<'info> {
     )]
     pub config: Box<Account<'info, Config>>,
 
-    /// Payer's USDC ATA (source of 2 USDC fee).
-    #[account(
-        mut,
-        associated_token::mint = usdc_mint,
-        associated_token::authority = payer,
-    )]
-    pub payer_usdc_ata: Box<Account<'info, TokenAccount>>,
-
-    /// Fee recipient USDC ATA (config PDA's ATA).
-    #[account(
-        mut,
-        associated_token::mint = usdc_mint,
-        associated_token::authority = config,
-        constraint = fee_recipient_ata.key() != payer_usdc_ata.key() @ VaultError::InvalidAmount
-    )]
-    pub fee_recipient_ata: Box<Account<'info, TokenAccount>>,
-
-    /// USDC mint - validated against config.
-    #[account(
-        constraint = usdc_mint.key() == config.usdc_mint @ VaultError::MintMismatch
-    )]
-    pub usdc_mint: Box<Account<'info, Mint>>,
-
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
