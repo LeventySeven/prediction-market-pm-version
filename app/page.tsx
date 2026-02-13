@@ -134,6 +134,63 @@ const toLocalDateTimeInput = (iso?: string | null) => {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
+const MARKET_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const slugifyTitle = (raw: string) =>
+  raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+const buildMarketPath = (marketId: string, title?: string | null) => {
+  const query = title ? `?title=${encodeURIComponent(slugifyTitle(title))}` : "";
+  return `/market/${encodeURIComponent(marketId)}${query}`;
+};
+
+const getPathForView = (view: ViewType) => {
+  switch (view) {
+    case "FRIENDS":
+      return "/leaderboard";
+    case "FEED":
+      return "/mybets";
+    case "PROFILE":
+      return "/profile";
+    case "CATALOG":
+    default:
+      return "/catalog";
+  }
+};
+
+const getViewFromLocation = (): ViewType => {
+  if (typeof window === "undefined") return "CATALOG";
+  const path = window.location.pathname.toLowerCase();
+  if (path === "/" || path.startsWith("/catalog")) return "CATALOG";
+  if (path.startsWith("/leaderboard") || path.startsWith("/friends")) return "FRIENDS";
+  if (path.startsWith("/mybets") || path.startsWith("/feed")) return "FEED";
+  if (path.startsWith("/profile")) return "PROFILE";
+  if (path.startsWith("/market/")) return "CATALOG";
+  return "CATALOG";
+};
+
+const getMarketIdFromLocation = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(window.location.href);
+    const fromQuery = (url.searchParams.get("marketId") || url.searchParams.get("m") || "").trim();
+    if (fromQuery && MARKET_ID_REGEX.test(fromQuery)) return fromQuery;
+
+    const path = url.pathname || "";
+    const match = path.match(/^\/market\/([^/?#]+)/i);
+    const candidate = match?.[1] ? decodeURIComponent(match[1]).trim() : "";
+    if (candidate && MARKET_ID_REGEX.test(candidate)) return candidate;
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
 export default function HomePage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -341,19 +398,7 @@ export default function HomePage() {
     return getTelegramInitDataFromUrl();
   }, [getTelegramInitDataFromUrl]);
 
-  const getMarketIdFromUrl = () => {
-    if (typeof window === "undefined") return null;
-    try {
-      const url = new URL(window.location.href);
-      const id = url.searchParams.get("marketId") || url.searchParams.get("m");
-      if (!id) return null;
-      const v = id.trim();
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-      return isUuid ? v : null;
-    } catch {
-      return null;
-    }
-  };
+  const getMarketIdFromUrl = () => getMarketIdFromLocation();
 
   // Deep link: open a market by URL (?marketId=...).
   useEffect(() => {
@@ -378,7 +423,37 @@ export default function HomePage() {
     setSelectedMarketId(marketId);
     setCurrentView("CATALOG");
   }, []);
-  const [currentView, setCurrentView] = useState<ViewType>("CATALOG");
+  const [currentView, setCurrentView] = useState<ViewType>(() => getViewFromLocation());
+  const navigateToMarketUrl = useCallback((marketId: string, title?: string | null) => {
+    if (typeof window === "undefined") return;
+    const next = buildMarketPath(marketId, title);
+    if (window.location.pathname + window.location.search === next) return;
+    window.history.pushState({ marketId }, "", next);
+  }, []);
+  const navigateToCatalogUrl = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (window.location.pathname === "/" && !window.location.search) return;
+    window.history.pushState({}, "", "/");
+  }, []);
+  const navigateToViewUrl = useCallback((view: ViewType) => {
+    if (typeof window === "undefined") return;
+    const next = getPathForView(view);
+    if (window.location.pathname === next && !window.location.search) return;
+    window.history.pushState({ view }, "", next);
+  }, []);
+
+  // Keep UI synced with browser back/forward when market URL is in history.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPopState = () => {
+      const marketId = getMarketIdFromLocation();
+      setSelectedMarketId(marketId);
+      setCurrentView(getViewFromLocation());
+      if (marketId) setCurrentView("CATALOG");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
   const shellSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [myPositions, setMyPositions] = useState<Position[]>([]);
@@ -840,6 +915,7 @@ export default function HomePage() {
       const pendingMarketId = localStorage.getItem("pending_market_id");
       if (pendingMarketId) {
         setSelectedMarketId(pendingMarketId);
+        navigateToMarketUrl(pendingMarketId);
         setCurrentView("CATALOG");
         localStorage.removeItem("pending_market_id");
       }
@@ -871,6 +947,7 @@ export default function HomePage() {
       const pendingMarketId = localStorage.getItem("pending_market_id");
       if (pendingMarketId) {
         setSelectedMarketId(pendingMarketId);
+        navigateToMarketUrl(pendingMarketId);
         setCurrentView("CATALOG");
         localStorage.removeItem("pending_market_id");
       }
@@ -1027,8 +1104,9 @@ export default function HomePage() {
       setCurrentView("CATALOG");
       setMarketBetIntent(null);
       setSelectedMarketId(null);
+      navigateToCatalogUrl();
     }
-  }, []);
+  }, [navigateToCatalogUrl]);
 
   const deriveLegacyBets = useCallback(
     (positions: Position[]): Bet[] =>
@@ -1569,6 +1647,7 @@ export default function HomePage() {
       setMarketBetIntent(null);
       setCatalogFiltersOpen(false);
       setCurrentView(view);
+      navigateToViewUrl(view);
       if (view === "FRIENDS") {
         void loadLeaderboard();
       } else if (view === "FEED" || view === "CATALOG") {
@@ -1576,7 +1655,7 @@ export default function HomePage() {
         void loadMarkets();
       }
     },
-    [loadLeaderboard, loadMarkets]
+    [loadLeaderboard, loadMarkets, navigateToViewUrl]
   );
 
   const handleShellTouchStart = useCallback((e: TouchEvent<HTMLDivElement>) => {
@@ -1959,14 +2038,17 @@ export default function HomePage() {
       }
       setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
       setSelectedMarketId(market.id);
+      navigateToMarketUrl(market.id, market.titleEn ?? market.titleRu ?? market.title);
     },
-    [openAuth, user, reloginRequired, refreshUser, attemptSilentRefresh]
+    [openAuth, user, reloginRequired, refreshUser, attemptSilentRefresh, navigateToMarketUrl]
   );
 
   const openMarketWithAuthCheck = useCallback(
-    async (marketId: string) => {
+    async (market: Market) => {
+      const marketId = market.id;
       if (!user) {
         setSelectedMarketId(marketId);
+        navigateToMarketUrl(marketId, market.titleEn ?? market.titleRu ?? market.title);
         return;
       }
       if (reloginRequired) {
@@ -1989,8 +2071,9 @@ export default function HomePage() {
         if (!refreshed) return;
       }
       setSelectedMarketId(marketId);
+      navigateToMarketUrl(marketId, market.titleEn ?? market.titleRu ?? market.title);
     },
-    [user, reloginRequired, refreshUser, attemptSilentRefresh]
+    [user, reloginRequired, refreshUser, attemptSilentRefresh, navigateToMarketUrl]
   );
 
   const creatorHasBets = useMemo(() => {
@@ -2029,12 +2112,13 @@ export default function HomePage() {
       setDeleteMarketOpen(false);
       setEditMarketTarget(null);
       setSelectedMarketId(null);
+      navigateToCatalogUrl();
       await loadMarkets();
     } catch (err) {
       console.error("deleteMarket failed", err);
       setDeleteMarketError(getErrorMessage(err));
     }
-  }, [editMarketTarget, loadMarkets]);
+  }, [editMarketTarget, loadMarkets, navigateToCatalogUrl]);
 
   const handleOpenCreateMarket = useCallback(() => {
     if (!user) {
@@ -2153,6 +2237,8 @@ export default function HomePage() {
       const action = postAuthAction;
       setPostAuthAction(null);
       setSelectedMarketId(action.marketId);
+      const market = markets.find((m) => m.id === action.marketId);
+      navigateToMarketUrl(action.marketId, market?.titleEn ?? market?.titleRu ?? market?.title);
       setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
       return;
     }
@@ -2160,6 +2246,7 @@ export default function HomePage() {
       const action = postAuthAction;
       setPostAuthAction(null);
       setSelectedMarketId(action.marketId);
+      navigateToMarketUrl(action.marketId, action.marketTitle);
       void handlePlaceBet({
         amount: action.amount,
         marketId: action.marketId,
@@ -2167,7 +2254,7 @@ export default function HomePage() {
         marketTitle: action.marketTitle,
       });
     }
-  }, [user, postAuthAction, marketCategories.length, loadingMarketCategories, loadMarketCategories]);
+  }, [user, postAuthAction, marketCategories.length, loadingMarketCategories, loadMarketCategories, markets, navigateToMarketUrl]);
 
   /**
    * Handle selling a position (cash out)
@@ -2405,6 +2492,7 @@ export default function HomePage() {
             onLogoClick={() => {
               setSelectedMarketId(null);
               setCurrentView("CATALOG");
+              navigateToCatalogUrl();
               void loadMarkets();
             }}
             lang={lang}
@@ -2419,6 +2507,7 @@ export default function HomePage() {
               onBack={() => {
                 setMarketBetIntent(null);
                 setSelectedMarketId(null);
+                navigateToCatalogUrl();
                 void loadMarkets();
               }}
               onLogin={() => openAuth("SIGN_IN")}
@@ -2486,6 +2575,7 @@ export default function HomePage() {
               setMarketBetIntent(null);
               if (selectedMarketId !== null) {
                 setSelectedMarketId(null);
+                navigateToCatalogUrl();
                 void loadMarkets();
               }
               goToView(view);
@@ -2504,6 +2594,7 @@ export default function HomePage() {
               setMarketBetIntent(null);
               setSelectedMarketId(null);
               setCurrentView("CATALOG");
+              navigateToCatalogUrl();
             }}
             lang={lang}
             onToggleLang={handleToggleLang}
@@ -2622,7 +2713,7 @@ export default function HomePage() {
                               bookmarked={bookmarkedMarketIds.has(market.id)}
                               onClick={() => {
                                 setMarketBetIntent(null);
-                                void openMarketWithAuthCheck(market.id);
+                                void openMarketWithAuthCheck(market);
                               }}
                               onQuickBet={(side) => handleOpenMarketBet(market, side)}
                               lang={lang}
@@ -2662,7 +2753,7 @@ export default function HomePage() {
                                 bookmarked
                                 onClick={() => {
                                   setMarketBetIntent(null);
-                                  void openMarketWithAuthCheck(market.id);
+                                  void openMarketWithAuthCheck(market);
                                 }}
                                 onQuickBet={(side) => handleOpenMarketBet(market, side)}
                                 lang={lang}
@@ -2700,7 +2791,7 @@ export default function HomePage() {
                               bookmarked={bookmarkedMarketIds.has(market.id)}
                               onClick={() => {
                                 setMarketBetIntent(null);
-                                void openMarketWithAuthCheck(market.id);
+                                void openMarketWithAuthCheck(market);
                               }}
                               onQuickBet={(side) => handleOpenMarketBet(market, side)}
                               lang={lang}
@@ -2749,7 +2840,14 @@ export default function HomePage() {
                     onLoadComments={() => void loadMyComments()}
                     onMarketClick={(marketId) => {
                       setMarketBetIntent(null); // Clear bet intent when clicking from profile
-                      void openMarketWithAuthCheck(marketId);
+                      const market = markets.find((m) => m.id === marketId);
+                      if (market) {
+                        void openMarketWithAuthCheck(market);
+                        return;
+                      }
+                      // Fallback for stale profile lists where market cache has not refreshed yet.
+                      setSelectedMarketId(marketId);
+                      navigateToMarketUrl(marketId);
                     }}
                   />
                 </div>
@@ -2996,7 +3094,13 @@ export default function HomePage() {
         onMarketClick={(marketId) => {
           closePublicProfile();
           setMarketBetIntent(null);
-          void openMarketWithAuthCheck(marketId);
+          const market = markets.find((m) => m.id === marketId);
+          if (market) {
+            void openMarketWithAuthCheck(market);
+          } else {
+            setSelectedMarketId(marketId);
+            navigateToMarketUrl(marketId);
+          }
           setCurrentView("CATALOG");
         }}
       />

@@ -76,7 +76,7 @@ export const generateMetadata = async ({ params }: PageProps): Promise<Metadata>
 export default async function ShareMarketPage({ params }: PageProps) {
   const { marketId } = await params;
   const baseUrl = await getBaseUrl();
-  const fallback = baseUrl ? `${baseUrl}/?marketId=${encodeURIComponent(marketId)}` : `/?marketId=${encodeURIComponent(marketId)}`;
+  const fallback = baseUrl ? `${baseUrl}/market/${encodeURIComponent(marketId)}` : `/market/${encodeURIComponent(marketId)}`;
   const target = fallback;
   const valid = isUuid(marketId);
   const preview = valid ? await fetchMarketPreview(marketId) : null;

@@ -519,7 +519,15 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const buildShareUrl = () => {
     if (typeof window === "undefined") return "";
     const origin = window.location.origin;
-    return `${origin}/market/${encodeURIComponent(market.id)}`;
+    const titleSource = market.titleEn ?? market.titleRu ?? market.title;
+    const titleSlug = String(titleSource ?? "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
+    const query = titleSlug ? `?title=${encodeURIComponent(titleSlug)}` : "";
+    return `${origin}/market/${encodeURIComponent(market.id)}${query}`;
   };
 
   const copyMarketLink = async () => {
