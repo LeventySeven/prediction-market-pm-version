@@ -43,8 +43,8 @@ const getErrorMessage = (error: ErrorLike, fallbackRu: string, fallbackEn: strin
   }
   if (upper.includes('INSUFFICIENT_USDC_ONCHAIN')) {
     return lang === 'RU'
-      ? 'Недостаточно USDC в подключенном кошельке.'
-      : 'Insufficient USDC in the connected wallet.';
+      ? 'Недостаточно USDC нужного mint в подключенном кошельке. Проверьте, что токен совпадает с USDC mint приложения.'
+      : 'Insufficient USDC for the required mint in the connected wallet. Verify the token mint matches app USDC mint.';
   }
   if (upper.includes('CUSTOM":1')) {
     return lang === 'RU'
@@ -279,6 +279,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const displayedChance = Number.isFinite(market.chance)
     ? market.chance
     : Math.round(Number(market.yesPrice ?? 0.5) * 100);
+  const chartAccentColor = displayedChance > 50 ? 'rgba(190,255,29,1)' : '#ffffff';
 
   useEffect(() => {
     const update = () => {
@@ -1089,8 +1090,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 <AreaChart data={chartSeries}>
                   <defs>
                     <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ffffff" stopOpacity={0.14}/>
-                      <stop offset="95%" stopColor="#ffffff" stopOpacity={0}/>
+                      <stop offset="5%" stopColor={chartAccentColor} stopOpacity={0.14}/>
+                      <stop offset="95%" stopColor={chartAccentColor} stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <XAxis 
@@ -1126,7 +1127,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   <Area 
                     type="monotone" 
                     dataKey="value" 
-                    stroke="#ffffff" 
+                    stroke={chartAccentColor}
                     strokeWidth={2}
                     fillOpacity={1} 
                     fill="url(#colorValue)" 

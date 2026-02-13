@@ -1019,7 +1019,7 @@ export const marketRouter = router({
       if (userUsdcBalanceMinor < collateralMinor) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "INSUFFICIENT_USDC_ONCHAIN",
+          message: `INSUFFICIENT_USDC_ONCHAIN: required_minor=${collateralMinor.toString()} available_minor=${userUsdcBalanceMinor.toString()} mint=${usdcMint.toBase58()} ata=${userUsdcAta.toBase58()}`,
         });
       }
 

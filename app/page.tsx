@@ -735,8 +735,8 @@ export default function HomePage() {
     }
     if (upper.includes("INSUFFICIENT_USDC_ONCHAIN")) {
       return lang === "RU"
-        ? "Недостаточно USDC в подключенном кошельке."
-        : "Insufficient USDC in the connected wallet.";
+        ? "Недостаточно USDC нужного mint в подключенном кошельке. Проверьте, что токен совпадает с USDC mint приложения."
+        : "Insufficient USDC for the required mint in the connected wallet. Verify the token mint matches app USDC mint.";
     }
     if (upper.includes("MARKET_RESOLVED")) {
       return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";

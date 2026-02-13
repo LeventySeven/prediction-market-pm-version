@@ -19,6 +19,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
   const isResolved = Boolean(market.outcome);
   const winningYes = market.outcome === 'YES';
   const displayChance = isResolved ? (winningYes ? 100 : 0) : market.chance;
+  const isAboveMidpoint = displayChance > 50;
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
   const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
@@ -103,9 +104,12 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
           </span>
         </div>
 
-        {/* Minimalist probability line (white); colors are reserved for YES/NO labels + prices */}
+        {/* Probability color follows market tilt: >50% YES is green */}
         <div className="w-full h-1.5 bg-white/10 rounded-full mb-3 overflow-hidden">
-          <div className="h-full bg-[rgba(245,68,166,0.85)]" style={{ width: `${displayChance}%` }} />
+          <div
+            className={isAboveMidpoint ? "h-full bg-[rgba(190,255,29,1)]" : "h-full bg-[rgba(245,68,166,0.85)]"}
+            style={{ width: `${displayChance}%` }}
+          />
         </div>
 
         {/* Quick bet buttons - only show if market is active */}
@@ -117,7 +121,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
                 e.stopPropagation();
                 onQuickBet?.("YES");
               }}
-              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
+              className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(190,255,29,1)] hover:text-[rgba(190,255,29,1)] active:border-[rgba(190,255,29,1)] active:text-[rgba(190,255,29,1)] active:bg-[rgba(190,255,29,0.08)] transition-colors flex items-center justify-between tabular-nums"
               aria-label={`${yesLabel} ${market.chance}%`}
             >
               <span>{yesLabel}</span>
