@@ -1462,14 +1462,14 @@ export const marketRouter = router({
       const nextQNo = outcome === 2 ? qNo + sharesMajor : qNo;
       const { priceYes: priceAfterYes } = calculateBoundedPrices(nextQYes, nextQNo, b);
 
-      const { data: rpcData, error } = await client.rpc("place_bet_onchain_tx", {
+      const { data: rpcData, error } = await client.rpc("place_bet_onchain_service_tx", {
+        p_user_id: authUser.id,
         p_market_id: marketId,
         p_side: outcome === 1 ? "YES" : "NO",
         p_collateral_minor: Number(collateralMinor),
         p_shares: sharesMajor,
         p_price_before: priceBeforeYes,
         p_price_after: priceAfterYes,
-        p_user_id: authUser.id,
       });
       if (error) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
@@ -1594,14 +1594,14 @@ export const marketRouter = router({
       const nextQNo = outcome === 2 ? qNo - sharesMajor : qNo;
       const { priceYes: priceAfterYes } = calculateBoundedPrices(nextQYes, nextQNo, b);
 
-      const { data: rpcData, error } = await client.rpc("sell_position_onchain_tx", {
+      const { data: rpcData, error } = await client.rpc("sell_position_onchain_service_tx", {
+        p_user_id: authUser.id,
         p_market_id: marketId,
         p_side: outcome === 1 ? "YES" : "NO",
         p_shares: sharesMajor,
         p_payout_minor: Number(payoutMinor),
         p_price_before: priceBeforeYes,
         p_price_after: priceAfterYes,
-        p_user_id: authUser.id,
       });
       if (error) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });

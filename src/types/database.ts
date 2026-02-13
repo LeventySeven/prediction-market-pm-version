@@ -924,6 +924,24 @@ export interface Database {
           price_after: number;
         };
       };
+      place_bet_onchain_service_tx: {
+        Args: {
+          p_user_id: string;
+          p_market_id: string;
+          p_side: string; // 'YES' | 'NO'
+          p_collateral_minor: number;
+          p_shares: number;
+          p_price_before: number;
+          p_price_after: number;
+        };
+        Returns: {
+          trade_id: string;
+          new_balance_minor: number;
+          shares_bought: number;
+          price_before: number;
+          price_after: number;
+        };
+      };
       sell_position_onchain_tx: {
         Args: {
           p_market_id: string;
@@ -933,6 +951,25 @@ export interface Database {
           p_price_before: number;
           p_price_after: number;
           p_user_id?: string | null;
+        };
+        Returns: {
+          trade_id: string;
+          payout_net_minor: number;
+          new_balance_minor: number;
+          shares_sold: number;
+          price_before: number;
+          price_after: number;
+        };
+      };
+      sell_position_onchain_service_tx: {
+        Args: {
+          p_user_id: string;
+          p_market_id: string;
+          p_side: string; // 'YES' | 'NO'
+          p_shares: number;
+          p_payout_minor: number;
+          p_price_before: number;
+          p_price_after: number;
         };
         Returns: {
           trade_id: string;
