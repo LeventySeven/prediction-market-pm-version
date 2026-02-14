@@ -127,10 +127,10 @@ begin
    where market_id = p_market_id;
 
   insert into wallet_balances (user_id, asset_code, balance_minor, updated_at)
-  values (v_user_id, v_asset.code, -p_collateral_minor, v_now)
+  values (v_user_id, v_asset.code, 0, v_now)
   on conflict (user_id, asset_code)
   do update set
-    balance_minor = wallet_balances.balance_minor - p_collateral_minor,
+    balance_minor = greatest(wallet_balances.balance_minor - p_collateral_minor, 0),
     updated_at = v_now
   returning balance_minor into v_new_balance_minor;
 
