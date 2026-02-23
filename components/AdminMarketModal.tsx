@@ -126,6 +126,12 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
     }
   }, [isOpen, mode, initialValues]);
 
+  const randomChartColor = () => {
+    const rand = () => Math.floor(Math.random() * 200) + 30;
+    const toHex = (v: number) => v.toString(16).padStart(2, "0");
+    return `#${toHex(rand())}${toHex(rand())}${toHex(rand())}`.toUpperCase();
+  };
+
   const extractColorFromFile = async (file: File): Promise<string | null> => {
     try {
       const imageUrl = URL.createObjectURL(file);
@@ -337,6 +343,9 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
               throw new Error(body.error || "OPTION_ICON_UPLOAD_FAILED");
             }
             finalOptionIcon = body.imageUrl;
+          }
+          if (!finalChartColor) {
+            finalChartColor = randomChartColor();
           }
           preparedOptions.push({
             title,

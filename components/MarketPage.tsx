@@ -293,6 +293,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
         id: o.id,
         title: o.title,
         color: o.chartColor ?? fallbackOutcomeColor(`${market.id}:${o.id}`),
+        sortOrder: o.sortOrder ?? 0,
       }));
       const byTs = new Map<number, { ts: number; label: string; spansMultipleDays: boolean; values: Record<string, number> }>();
       priceCandles.forEach((c) => {
@@ -305,7 +306,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
       const data = Array.from(byTs.values())
         .sort((a, b) => a.ts - b.ts)
         .map((row) => ({ ...row, ...row.values }));
-      return { mode: 'multi' as const, data, lines: outcomeLines };
+      return { mode: 'multi' as const, data, lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder) };
     }
 
     const fallbackChance = Number.isFinite(market.chance)
@@ -757,6 +758,11 @@ const MarketPage: React.FC<MarketPageProps> = ({
                             ) : (
                               <span className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-700" />
                             )}
+                            <span
+                              className="w-2.5 h-2.5 rounded-full border border-zinc-800/80"
+                              style={{ backgroundColor: o.chartColor ?? fallbackOutcomeColor(`${market.id}:${o.id}`) }}
+                              aria-hidden="true"
+                            />
                             <span className="truncate">{o.title}</span>
                           </span>
                           <span className="font-mono">${o.price.toFixed(2)} • {(o.probability * 100).toFixed(1)}%</span>
@@ -1188,6 +1194,16 @@ const MarketPage: React.FC<MarketPageProps> = ({
               <span className="absolute top-6 right-6 text-[11px] uppercase text-zinc-500 tracking-wider">
                 {lang === 'RU' ? 'Обновление...' : 'Updating...'}
               </span>
+            )}
+            {chartSeries.mode === 'multi' && chartSeries.lines.length > 0 && (
+              <div className="absolute top-12 right-6 z-10 rounded-xl border border-zinc-900 bg-black/80 backdrop-blur px-3 py-2 space-y-1">
+                {chartSeries.lines.map((line) => (
+                  <div key={`legend-${line.id}`} className="flex items-center gap-2 text-[10px] text-zinc-300 max-w-[180px]">
+                    <span className="w-2.5 h-2.5 rounded-full border border-zinc-800/80 shrink-0" style={{ backgroundColor: line.color }} />
+                    <span className="truncate">{line.title}</span>
+                  </div>
+                ))}
+              </div>
             )}
             {chartSeries.data.length > 0 ? (
               <ResponsiveContainer width="100%" height="80%">
