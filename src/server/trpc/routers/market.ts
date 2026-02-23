@@ -321,19 +321,6 @@ const normalizeHexColor = (value: string | null | undefined): string | null => {
   return null;
 };
 
-const colorFromSeed = (seed: string): string => {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  const r = 40 + (Math.abs(hash) % 180);
-  const g = 40 + (Math.abs(hash >> 8) % 180);
-  const b = 40 + (Math.abs(hash >> 16) % 180);
-  const toHex = (v: number) => v.toString(16).padStart(2, "0");
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
-};
-
 const recordOutcomeCandle = async (params: {
   supabaseService: SupabaseDbClient;
   marketId: string;
@@ -453,7 +440,7 @@ const fetchOutcomesByMarketIds = async (
         slug: o.slug,
         title: o.title,
         iconUrl: o.icon_url ?? null,
-        chartColor: normalizeHexColor(o.chart_color) ?? colorFromSeed(`${o.market_id}:${o.id}`),
+        chartColor: normalizeHexColor(o.chart_color),
         sortOrder: Number(o.sort_order ?? 0),
         isActive: Boolean(o.is_active),
         probability: Number.isFinite(prob) ? prob : 0,
@@ -3234,7 +3221,7 @@ export const marketRouter = router({
           slug: `${o.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || `option-${idx + 1}`}-${idx + 1}`,
           title: o.title,
           icon_url: o.iconUrl,
-          chart_color: o.chartColor ?? colorFromSeed(`${market.id}:${o.title}:${idx}`),
+          chart_color: o.chartColor ?? null,
           sort_order: o.sortOrder,
           is_active: true,
         }));

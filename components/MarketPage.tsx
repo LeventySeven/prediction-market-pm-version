@@ -6,7 +6,6 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { formatTimeRemaining } from '../lib/time';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useOnChainMarketData } from '../lib/solana/hooks';
-import { trpcClient } from '../src/utils/trpcClient';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
 
@@ -248,7 +247,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
     ? (userPositions.find((p) => p.outcomeId === selectedOutcomeId)?.shares ?? 0)
     : (tradeType === 'YES' ? (userYesPosition?.shares ?? 0) : (userNoPosition?.shares ?? 0));
   const sellablePositions = userPositions.filter((p) => (p.shares ?? 0) > 0);
-  const [outcomeColorOverrides, setOutcomeColorOverrides] = useState<Record<string, string>>({});
 
   const fallbackOutcomeColor = (seed: string) => {
     let hash = 2166136261;
@@ -262,71 +260,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
     const toHex = (v: number) => v.toString(16).padStart(2, "0");
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
   };
-
-  const extractColorFromImageUrl = async (src: string): Promise<string | null> => {
-    try {
-      const img = new window.Image();
-      img.crossOrigin = "anonymous";
-      img.decoding = "async";
-      img.referrerPolicy = "no-referrer";
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("IMG_LOAD_ERROR"));
-        img.src = src;
-      });
-      const canvas = document.createElement("canvas");
-      const size = 24;
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) return null;
-      ctx.drawImage(img, 0, 0, size, size);
-      const data = ctx.getImageData(0, 0, size, size).data;
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let count = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        const alpha = data[i + 3] ?? 0;
-        if (alpha < 24) continue;
-        r += data[i] ?? 0;
-        g += data[i + 1] ?? 0;
-        b += data[i + 2] ?? 0;
-        count += 1;
-      }
-      if (count === 0) return null;
-      r = Math.round(r / count);
-      g = Math.round(g / count);
-      b = Math.round(b / count);
-      const toHex = (v: number) => v.toString(16).padStart(2, "0");
-      return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
-    } catch {
-      return null;
-    }
-  };
-
-  useEffect(() => {
-    if (!isMulti || !Array.isArray(market.outcomes) || market.outcomes.length === 0) return;
-    let cancelled = false;
-    void (async () => {
-      for (const outcome of market.outcomes ?? []) {
-        if (!outcome.id || outcome.chartColor) continue;
-        if (outcomeColorOverrides[outcome.id]) continue;
-        const sampled = outcome.iconUrl ? await extractColorFromImageUrl(outcome.iconUrl) : null;
-        const color = sampled ?? fallbackOutcomeColor(`${market.id}:${outcome.id}`);
-        if (cancelled) return;
-        setOutcomeColorOverrides((prev) => ({ ...prev, [outcome.id]: color }));
-        try {
-          await trpcClient.market.setOutcomeChartColor.mutate({ outcomeId: outcome.id, color });
-        } catch {
-          // Best-effort persistence; UI still uses local color.
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isMulti, market.id, market.outcomes, outcomeColorOverrides]);
 
   const chartSeries = useMemo(() => {
     const times = priceCandles
@@ -359,7 +292,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
       const outcomeLines = (market.outcomes ?? []).map((o) => ({
         id: o.id,
         title: o.title,
-        color: outcomeColorOverrides[o.id] ?? o.chartColor ?? fallbackOutcomeColor(`${market.id}:${o.id}`),
+        color: o.chartColor ?? fallbackOutcomeColor(`${market.id}:${o.id}`),
       }));
       const byTs = new Map<number, { ts: number; label: string; spansMultipleDays: boolean; values: Record<string, number> }>();
       priceCandles.forEach((c) => {
@@ -389,7 +322,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
       })
       .filter((v): v is { ts: number; label: string; value: number; spansMultipleDays: boolean } => Boolean(v));
     return { mode: 'binary' as const, data, lines: [] };
-  }, [priceCandles, lang, market.chance, market.yesPrice, isMulti, market.outcomes, market.id, fallbackOutcomeColor, outcomeColorOverrides]);
+  }, [priceCandles, lang, market.chance, market.yesPrice, isMulti, market.outcomes, market.id]);
 
   const displayedChance = isMulti
     ? Math.round(Number((selectedOutcome?.price ?? 0) * 100))
