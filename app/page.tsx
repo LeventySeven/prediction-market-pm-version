@@ -69,6 +69,19 @@ type MarketApiRow = {
   createdAt: string;
   closesAt: string;
   expiresAt: string;
+  marketType?: "binary" | "multi_choice";
+  resolvedOutcomeId?: string | null;
+  outcomes?: Array<{
+    id: string;
+    marketId: string;
+    slug: string;
+    title: string;
+    iconUrl: string | null;
+    sortOrder: number;
+    isActive: boolean;
+    probability: number;
+    price: number;
+  }>;
   outcome: "YES" | "NO" | null;
   createdBy?: string | null;
   categoryId?: string | null;
@@ -96,6 +109,9 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     titleRu: m.titleRu,
     titleEn: m.titleEn,
     state: m.state as Market["state"],
+    marketType: m.marketType ?? "binary",
+    resolvedOutcomeId: m.resolvedOutcomeId ?? null,
+    outcomes: Array.isArray(m.outcomes) ? m.outcomes : [],
     outcome: m.outcome,
     createdBy: m.createdBy ?? null,
     creatorName: m.creatorName ?? null,
@@ -210,7 +226,7 @@ export default function HomePage() {
   const [leaderboardSortOpen, setLeaderboardSortOpen] = useState(false);
   type PostAuthAction =
     | { type: "OPEN_CREATE_MARKET" }
-    | { type: "PLACE_BET"; marketId: string; side: "YES" | "NO"; amount: number; marketTitle: string }
+  | { type: "PLACE_BET"; marketId: string; side?: "YES" | "NO"; outcomeId?: string; amount: number; marketTitle: string }
     | { type: "OPEN_MARKET_BET"; marketId: string; side: "YES" | "NO" }
     | null;
   const [postAuthAction, setPostAuthAction] = useState<PostAuthAction>(null);
@@ -477,7 +493,7 @@ export default function HomePage() {
     errorMessage?: string | null;
     isLoading?: boolean;
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
-  type MarketBetIntent = { marketId: string; side: "YES" | "NO"; nonce: number } | null;
+  type MarketBetIntent = { marketId: string; side?: "YES" | "NO"; outcomeId?: string; nonce: number } | null;
   const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
@@ -1177,13 +1193,16 @@ export default function HomePage() {
 
       const positions: Position[] = positionsParsed.map((p) => ({
         marketId: requireValue(p.marketId, "POSITION_MARKET_ID_MISSING"),
-        outcome: requireValue(p.outcome, "POSITION_OUTCOME_MISSING"),
+        outcome: p.outcome ?? null,
+        outcomeId: p.outcomeId ?? null,
+        outcomeTitle: p.outcomeTitle ?? null,
         shares: requireValue(p.shares, "POSITION_SHARES_MISSING"),
         avgEntryPrice: p.avgEntryPrice ?? null,
         marketTitleRu: requireValue(p.marketTitleRu, "POSITION_TITLE_RU_MISSING"),
         marketTitleEn: requireValue(p.marketTitleEn, "POSITION_TITLE_EN_MISSING"),
         marketState: requireValue(p.marketState, "POSITION_STATE_MISSING"),
         marketOutcome: p.marketOutcome ?? null,
+        marketResolvedOutcomeId: p.marketResolvedOutcomeId ?? null,
         closesAt: p.closesAt ?? null,
         expiresAt: p.expiresAt ?? null,
       }));
@@ -1192,7 +1211,9 @@ export default function HomePage() {
         id: requireValue(t.id, "TRADE_ID_MISSING"),
         marketId: requireValue(t.marketId, "TRADE_MARKET_ID_MISSING"),
         action: requireValue(t.action, "TRADE_ACTION_MISSING"),
-        outcome: requireValue(t.outcome, "TRADE_OUTCOME_MISSING"),
+        outcome: t.outcome ?? null,
+        outcomeId: t.outcomeId ?? null,
+        outcomeTitle: t.outcomeTitle ?? null,
         collateralGross: requireValue(t.collateralGross, "TRADE_GROSS_MISSING"),
         fee: requireValue(t.fee, "TRADE_FEE_MISSING"),
         collateralNet: requireValue(t.collateralNet, "TRADE_NET_MISSING"),
@@ -1204,6 +1225,7 @@ export default function HomePage() {
         marketTitleEn: requireValue(t.marketTitleEn, "TRADE_TITLE_EN_MISSING"),
         marketState: requireValue(t.marketState, "TRADE_STATE_MISSING"),
         marketOutcome: t.marketOutcome ?? null,
+        marketResolvedOutcomeId: t.marketResolvedOutcomeId ?? null,
         avgEntryPrice: t.avgEntryPrice ?? null,
         avgExitPrice: t.avgExitPrice ?? null,
         realizedPnl: t.realizedPnl ?? null,
@@ -1761,7 +1783,9 @@ export default function HomePage() {
             id: requireValue(t.id, "PUBLIC_TRADE_ID_MISSING"),
             marketId: requireValue(t.marketId, "PUBLIC_TRADE_MARKET_ID_MISSING"),
             action: requireValue(t.action, "PUBLIC_TRADE_ACTION_MISSING"),
-            outcome: requireValue(t.outcome, "PUBLIC_TRADE_OUTCOME_MISSING"),
+            outcome: t.outcome ?? null,
+            outcomeId: t.outcomeId ?? null,
+            outcomeTitle: t.outcomeTitle ?? null,
             collateralGross: requireValue(t.collateralGross, "PUBLIC_TRADE_GROSS_MISSING"),
             sharesDelta: requireValue(t.sharesDelta, "PUBLIC_TRADE_SHARES_MISSING"),
             priceBefore: requireValue(t.priceBefore, "PUBLIC_TRADE_PRICE_BEFORE_MISSING"),
@@ -1838,19 +1862,22 @@ export default function HomePage() {
     amount,
     marketId,
     side,
+    outcomeId,
     marketTitle,
   }: {
     amount: number;
     marketId: string;
-    side: "YES" | "NO";
+    side?: "YES" | "NO";
+    outcomeId?: string;
     marketTitle: string;
   }) => {
+    const safeSide: "YES" | "NO" = side ?? "YES";
     try {
       // Open the modal immediately so UX is snappy; we’ll flip it to success/error when done.
       setBetConfirm({
         open: true,
         marketTitle,
-        side,
+        side: safeSide,
         amount,
         newBalance: undefined,
         errorMessage: null,
@@ -1862,7 +1889,7 @@ export default function HomePage() {
         setBetConfirm({
           open: true,
           marketTitle,
-          side,
+          side: safeSide,
           amount,
           newBalance: undefined,
           errorMessage: lang === "RU" ? "Войдите, чтобы сделать ставку." : "Please log in to place a bet.",
@@ -1886,7 +1913,7 @@ export default function HomePage() {
           setBetConfirm({
             open: true,
             marketTitle,
-            side,
+            side: safeSide,
             amount,
             newBalance: undefined,
             errorMessage: lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.",
@@ -1901,7 +1928,7 @@ export default function HomePage() {
           setBetConfirm({
             open: true,
             marketTitle,
-            side,
+            side: safeSide,
             amount,
             newBalance: undefined,
             errorMessage:
@@ -1917,7 +1944,7 @@ export default function HomePage() {
           setBetConfirm({
             open: true,
             marketTitle,
-            side,
+            side: safeSide,
             amount,
             newBalance: undefined,
             errorMessage:
@@ -1934,7 +1961,7 @@ export default function HomePage() {
           setBetConfirm({
             open: true,
             marketTitle,
-            side,
+            side: safeSide,
             amount,
             newBalance: undefined,
             errorMessage: hasLinkedWallet
@@ -1949,6 +1976,9 @@ export default function HomePage() {
           return;
         }
 
+      if (!side) {
+        throw new Error("SIDE_REQUIRED_FOR_ONCHAIN");
+      }
       const res = await trpcClient.market.prepareBet.mutate({
           marketId,
           side,
@@ -1980,7 +2010,7 @@ export default function HomePage() {
         setBetConfirm({
           open: true,
           marketTitle,
-          side,
+          side: safeSide,
           amount,
           newBalance: newBalanceMajor,
           errorMessage: null,
@@ -1994,6 +2024,7 @@ export default function HomePage() {
         amount,
         marketId,
         side,
+        outcomeId,
       });
 
       // Update user balance from response (minor units -> major)
@@ -2008,7 +2039,7 @@ export default function HomePage() {
       setBetConfirm({
         open: true,
         marketTitle,
-        side,
+        side: safeSide,
         amount,
         newBalance: newBalanceMajor,
         errorMessage: null,
@@ -2023,7 +2054,7 @@ export default function HomePage() {
       setBetConfirm({
         open: true,
         marketTitle,
-        side,
+        side: safeSide,
         amount,
         newBalance: refreshedUser?.balance ?? user?.balance,
         errorMessage: friendly,
@@ -2265,6 +2296,7 @@ export default function HomePage() {
         amount: action.amount,
         marketId: action.marketId,
         side: action.side,
+        outcomeId: action.outcomeId,
         marketTitle: action.marketTitle,
       });
     }
@@ -2276,10 +2308,12 @@ export default function HomePage() {
   const handleSellPosition = async ({
     marketId,
     side,
+    outcomeId,
     shares,
   }: {
     marketId: string;
-    side: "YES" | "NO";
+    side?: "YES" | "NO";
+    outcomeId?: string;
     shares: number;
   }) => {
     if (!user) return;
@@ -2293,6 +2327,9 @@ export default function HomePage() {
       const isOnChain = settlementAsset === "USDC" || settlementAsset === "USDT";
 
       if (isOnChain) {
+        if (!side) {
+          throw new Error("SIDE_REQUIRED_FOR_ONCHAIN");
+        }
         if (!user.isAdmin) {
           throw new Error("ONCHAIN_UNAVAILABLE");
         }
@@ -2328,6 +2365,7 @@ export default function HomePage() {
       const res = await trpcClient.market.sellPosition.mutate({
         marketId,
         side,
+        outcomeId,
         shares,
       });
 
@@ -2533,6 +2571,7 @@ export default function HomePage() {
                   type: "PLACE_BET",
                   marketId: params.marketId,
                   side: params.side,
+                  outcomeId: params.outcomeId,
                   amount: params.amount,
                   marketTitle: params.marketTitle,
                 });

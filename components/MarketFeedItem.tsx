@@ -23,8 +23,12 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
   );
 
   const isResolved = Boolean(market.outcome) || market.state === 'resolved';
+  const isMulti = market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 0;
+  const sortedOutcomes = isMulti ? [...(market.outcomes ?? [])].sort((a, b) => b.probability - a.probability) : [];
   const winningYes = market.outcome === 'YES';
-  const displayChance = isResolved ? (winningYes ? 100 : 0) : market.chance;
+  const displayChance = isMulti
+    ? Math.round((sortedOutcomes[0]?.probability ?? 0) * 100)
+    : (isResolved ? (winningYes ? 100 : 0) : market.chance);
 
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
@@ -63,7 +67,7 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
                   <Clock size={12} />
                   {timeLeft}
                 </span>
-                {isResolved && (
+                {isResolved && !isMulti && (
                   <span className="text-zinc-600">
                     {lang === 'RU'
                       ? `Исход: ${winningYes ? 'ДА' : 'НЕТ'}`
@@ -81,14 +85,31 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
             </div>
           </div>
 
-          <div className="mt-2 flex items-center gap-4 text-xs text-zinc-400 tabular-nums">
-            <span>
-              {yesLabel} ${formatPrice(market.yesPrice)}
-            </span>
-            <span>
-              {noLabel} ${formatPrice(market.noPrice)}
-            </span>
-          </div>
+          {isMulti ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              {sortedOutcomes.slice(0, 3).map((o) => (
+                <span key={o.id} className="inline-flex items-center gap-1 rounded-full border border-zinc-900 px-2 py-0.5">
+                  {o.iconUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={o.iconUrl} alt={o.title} className="w-3.5 h-3.5 rounded-full object-cover" />
+                  ) : (
+                    <span className="w-3.5 h-3.5 rounded-full bg-zinc-800" />
+                  )}
+                  <span className="truncate max-w-[100px]">{o.title}</span>
+                  <span className="font-mono">{(o.probability * 100).toFixed(1)}%</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-2 flex items-center gap-4 text-xs text-zinc-400 tabular-nums">
+              <span>
+                {yesLabel} ${formatPrice(market.yesPrice)}
+              </span>
+              <span>
+                {noLabel} ${formatPrice(market.noPrice)}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </button>

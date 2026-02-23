@@ -120,3 +120,97 @@ export function calculatePrices(poolYes: number, poolNo: number): { priceYes: nu
   const priceNo = no / total;
   return { priceYes, priceNo };
 }
+
+/**
+ * Stable softmax probabilities for N-outcome markets.
+ * Prices are interpreted as probabilities in [0, 1] summing to 1.
+ */
+export function calculateSoftmaxProbabilities(q: number[], b: number): number[] {
+  if (!Array.isArray(q) || q.length === 0) return [];
+  if (!Number.isFinite(b) || b <= 0) {
+    const fallback = 1 / q.length;
+    return q.map(() => fallback);
+  }
+
+  const logits = q.map((qi) => (PRICE_K * (Number.isFinite(qi) ? qi : 0)) / b);
+  const maxLogit = Math.max(...logits);
+  const exps = logits.map((z) => Math.exp(clampExpInput(z - maxLogit)));
+  const denom = exps.reduce((sum, v) => sum + v, 0);
+  if (!Number.isFinite(denom) || denom <= 0) {
+    const fallback = 1 / q.length;
+    return q.map(() => fallback);
+  }
+  return exps.map((v) => v / denom);
+}
+
+/**
+ * N-outcome LMSR-like convex potential using log-sum-exp.
+ * The derivative wrt q_i is softmax probability.
+ */
+export function multiOutcomeCost(q: number[], b: number): number {
+  if (!Array.isArray(q) || q.length === 0) return 0;
+  if (!Number.isFinite(b) || b <= 0) return 0;
+
+  const logits = q.map((qi) => (PRICE_K * (Number.isFinite(qi) ? qi : 0)) / b);
+  const maxLogit = Math.max(...logits);
+  const sumExp = logits.reduce((sum, z) => sum + Math.exp(clampExpInput(z - maxLogit)), 0);
+  return (b / PRICE_K) * (maxLogit + Math.log(Math.max(sumExp, 1e-30)));
+}
+
+export function calculateMultiOutcomeBuyCost(
+  q: number[],
+  outcomeIndex: number,
+  shares: number,
+  b: number
+): number {
+  if (!Array.isArray(q) || q.length === 0) return 0;
+  if (outcomeIndex < 0 || outcomeIndex >= q.length) return 0;
+  if (!Number.isFinite(shares) || shares <= 0) return 0;
+  const before = multiOutcomeCost(q, b);
+  const next = [...q];
+  next[outcomeIndex] = (next[outcomeIndex] ?? 0) + shares;
+  const after = multiOutcomeCost(next, b);
+  return after - before;
+}
+
+export function calculateMultiOutcomeSellProceeds(
+  q: number[],
+  outcomeIndex: number,
+  shares: number,
+  b: number
+): number {
+  if (!Array.isArray(q) || q.length === 0) return 0;
+  if (outcomeIndex < 0 || outcomeIndex >= q.length) return 0;
+  if (!Number.isFinite(shares) || shares <= 0) return 0;
+  const before = multiOutcomeCost(q, b);
+  const next = [...q];
+  next[outcomeIndex] = (next[outcomeIndex] ?? 0) - shares;
+  const after = multiOutcomeCost(next, b);
+  return before - after;
+}
+
+/**
+ * Solve shares from target collateral via binary search.
+ */
+export function solveSharesForBuyCost(
+  q: number[],
+  outcomeIndex: number,
+  targetCost: number,
+  b: number
+): number {
+  if (targetCost <= 0 || !Number.isFinite(targetCost)) return 0;
+  let lo = 0;
+  let hi = Math.max(targetCost, 1e-6);
+  while (calculateMultiOutcomeBuyCost(q, outcomeIndex, hi, b) < targetCost) {
+    hi *= 2;
+    if (hi > 1e12) break;
+  }
+  for (let i = 0; i < 60; i += 1) {
+    const mid = (lo + hi) / 2;
+    const cost = calculateMultiOutcomeBuyCost(q, outcomeIndex, mid, b);
+    if (Math.abs(cost - targetCost) <= 1e-9) return mid;
+    if (cost < targetCost) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}

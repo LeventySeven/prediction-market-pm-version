@@ -32,6 +32,12 @@ type AdminMarketModalProps = {
     categoryId: string;
     imageUrl?: string | null;
     settlementAssetCode: "VCOIN" | "USDC";
+    marketType?: "binary" | "multi_choice";
+    options?: Array<{
+      title: string;
+      iconUrl?: string | null;
+      sortOrder?: number;
+    }>;
   }) => Promise<void>;
   onUpdate?: (payload: {
     marketId: string;
@@ -68,6 +74,11 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [settlementAssetCode, setSettlementAssetCode] = useState<"VCOIN" | "USDC">("VCOIN");
+  const [marketType, setMarketType] = useState<"binary" | "multi_choice">("binary");
+  const [options, setOptions] = useState<Array<{ title: string; iconFile: File | null; iconUrl: string | null }>>([
+    { title: "", iconFile: null, iconUrl: null },
+    { title: "", iconFile: null, iconUrl: null },
+  ]);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -96,6 +107,7 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       setImageUrl(initialValues.imageUrl ?? null);
       setImageFile(null);
       setSettlementAssetCode("VCOIN");
+      setMarketType("binary");
     } else if (mode === "create") {
       setTitleEn("");
       setDescription("");
@@ -105,6 +117,11 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       setImageFile(null);
       setImageUrl(null);
       setSettlementAssetCode("VCOIN");
+      setMarketType("binary");
+      setOptions([
+        { title: "", iconFile: null, iconUrl: null },
+        { title: "", iconFile: null, iconUrl: null },
+      ]);
     }
   }, [isOpen, mode, initialValues]);
 
@@ -165,8 +182,19 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
       issues.push(t("Выбрана некорректная категория", "Selected category is invalid"));
     }
 
+    if (marketType === "multi_choice") {
+      const normalizedTitles = options.map((o) => o.title.trim()).filter((v) => v.length > 0);
+      if (normalizedTitles.length < 2) {
+        issues.push(t("Минимум 2 варианта ответа", "At least 2 answer options are required"));
+      }
+      const uniqueCount = new Set(normalizedTitles.map((v) => v.toLowerCase())).size;
+      if (uniqueCount !== normalizedTitles.length) {
+        issues.push(t("Варианты ответа должны быть уникальными", "Answer options must be unique"));
+      }
+    }
+
     return issues;
-  }, [titleEn, description, source, expiresAt, categoryId, categoriesLoading, categoriesStrict, t]);
+  }, [titleEn, description, source, expiresAt, categoryId, categoriesLoading, categoriesStrict, marketType, options, t]);
 
   const canSubmit = validationIssues.length === 0 && !loading;
 
@@ -231,6 +259,32 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
         finalImageUrl = uploadData.imageUrl;
       }
 
+      let preparedOptions: Array<{ title: string; iconUrl?: string | null; sortOrder?: number }> = [];
+      if (marketType === "multi_choice") {
+        preparedOptions = [];
+        for (let idx = 0; idx < options.length; idx += 1) {
+          const o = options[idx];
+          const title = o.title.trim();
+          if (!title) continue;
+          let finalOptionIcon = o.iconUrl;
+          if (o.iconFile) {
+            const fd = new FormData();
+            fd.append("file", o.iconFile);
+            const resp = await fetch("/api/market-image/upload", { method: "POST", body: fd });
+            const body = (await resp.json()) as { imageUrl?: string; error?: string };
+            if (!resp.ok || !body.imageUrl) {
+              throw new Error(body.error || "OPTION_ICON_UPLOAD_FAILED");
+            }
+            finalOptionIcon = body.imageUrl;
+          }
+          preparedOptions.push({
+            title,
+            iconUrl: finalOptionIcon,
+            sortOrder: idx,
+          });
+        }
+      }
+
       const payload = {
         titleEn: titleEn.trim(),
         description: description.trim() || null,
@@ -239,6 +293,8 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
         categoryId,
         imageUrl: finalImageUrl,
         settlementAssetCode: isAdmin ? settlementAssetCode : "VCOIN",
+        marketType,
+        options: preparedOptions,
       };
 
       if (mode === "edit") {
@@ -255,6 +311,11 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
         setCategoryId("");
         setImageFile(null);
         setImageUrl(null);
+        setMarketType("binary");
+        setOptions([
+          { title: "", iconFile: null, iconUrl: null },
+          { title: "", iconFile: null, iconUrl: null },
+        ]);
       }
       onClose();
     } catch (error) {
@@ -439,6 +500,80 @@ const AdminMarketModal: React.FC<AdminMarketModalProps> = ({
                     )}
                   </p>
                 )}
+              </div>
+            )}
+            {mode === "create" && (
+              <div>
+                <label className="block text-xs font-bold text-white mb-2">{t("Тип рынка", "Market type")}</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMarketType("binary")}
+                    className={`h-10 rounded-xl border text-sm font-semibold ${
+                      marketType === "binary"
+                        ? "border-[rgba(245,68,166,1)] text-white bg-[rgba(245,68,166,0.10)]"
+                        : "border-zinc-900 text-zinc-300 hover:text-white hover:border-zinc-700"
+                    }`}
+                  >
+                    {t("Да / Нет", "Yes / No")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMarketType("multi_choice")}
+                    className={`h-10 rounded-xl border text-sm font-semibold ${
+                      marketType === "multi_choice"
+                        ? "border-[rgba(245,68,166,1)] text-white bg-[rgba(245,68,166,0.10)]"
+                        : "border-zinc-900 text-zinc-300 hover:text-white hover:border-zinc-700"
+                    }`}
+                  >
+                    {t("Много вариантов", "Multiple options")}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {mode === "create" && marketType === "multi_choice" && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-white">{t("Варианты ответа", "Answer options")}</label>
+                  <button
+                    type="button"
+                    onClick={() => setOptions((curr) => [...curr, { title: "", iconFile: null, iconUrl: null }])}
+                    className="text-xs text-zinc-300 hover:text-white"
+                  >
+                    {t("+ Добавить", "+ Add")}
+                  </button>
+                </div>
+                {options.map((o, idx) => (
+                  <div key={`option-${idx}`} className="rounded-xl border border-zinc-900 p-3 space-y-2">
+                    <input
+                      value={o.title}
+                      onChange={(e) =>
+                        setOptions((curr) => curr.map((it, i) => (i === idx ? { ...it, title: e.target.value } : it)))
+                      }
+                      placeholder={t(`Вариант ${idx + 1}`, `Option ${idx + 1}`)}
+                      className="w-full bg-zinc-950/40 border border-zinc-900 rounded-xl p-2 text-white focus:border-zinc-700 focus:outline-none"
+                    />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        setOptions((curr) => curr.map((it, i) => (i === idx ? { ...it, iconFile: file } : it)));
+                      }}
+                      className="w-full text-xs text-zinc-400"
+                    />
+                    {options.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setOptions((curr) => curr.filter((_, i) => i !== idx))}
+                        className="text-xs text-zinc-500 hover:text-red-400"
+                      >
+                        {t("Удалить вариант", "Remove option")}
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 

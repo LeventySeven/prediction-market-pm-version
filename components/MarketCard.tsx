@@ -17,8 +17,14 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
       ? market.titleRu ?? market.titleEn ?? market.title
       : market.titleEn ?? market.titleRu ?? market.title;
   const isResolved = Boolean(market.outcome);
+  const isMulti = market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 0;
+  const sortedOutcomes = isMulti
+    ? [...(market.outcomes ?? [])].sort((a, b) => b.probability - a.probability)
+    : [];
   const winningYes = market.outcome === 'YES';
-  const displayChance = isResolved ? (winningYes ? 100 : 0) : market.chance;
+  const displayChance = isMulti
+    ? Math.round((sortedOutcomes[0]?.probability ?? 0) * 100)
+    : (isResolved ? (winningYes ? 100 : 0) : market.chance);
   const isAboveMidpoint = displayChance > 50;
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
@@ -55,7 +61,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
               NEW
           </div>
       )}
-      {isResolved && (
+      {isResolved && !isMulti && (
           <div
             className="absolute top-3 right-3 border border-zinc-800 text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider text-zinc-200 bg-black/60"
           >
@@ -112,8 +118,27 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
           />
         </div>
 
+        {isMulti && sortedOutcomes.length > 0 && (
+          <div className="space-y-1.5">
+            {sortedOutcomes.slice(0, 3).map((o) => (
+              <div key={o.id} className="flex items-center justify-between text-xs text-zinc-300">
+                <span className="flex items-center gap-2 min-w-0">
+                  {o.iconUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={o.iconUrl} alt={o.title} className="w-4 h-4 rounded-full object-cover border border-zinc-800" />
+                  ) : (
+                    <span className="w-4 h-4 rounded-full bg-zinc-800 border border-zinc-700" />
+                  )}
+                  <span className="truncate">{o.title}</span>
+                </span>
+                <span className="font-mono text-zinc-400">{(o.probability * 100).toFixed(1)}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Quick bet buttons - only show if market is active */}
-        {!isExpired && (
+        {!isExpired && !isMulti && (
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"

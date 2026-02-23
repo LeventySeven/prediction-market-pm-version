@@ -32,6 +32,19 @@ export interface UserCommentSummary {
 }
 
 export type MarketState = "open" | "closed" | "resolved" | "cancelled";
+export type MarketType = "binary" | "multi_choice";
+
+export interface MarketOutcome {
+  id: string;
+  marketId: string;
+  slug: string;
+  title: string;
+  iconUrl: string | null;
+  sortOrder: number;
+  probability: number;
+  price: number;
+  isActive: boolean;
+}
 
 export interface Market {
   id: string;
@@ -39,6 +52,9 @@ export interface Market {
   titleRu: string | null;
   titleEn: string;
   state: MarketState;
+  marketType?: MarketType;
+  resolvedOutcomeId?: string | null;
+  outcomes?: MarketOutcome[];
   outcome: "YES" | "NO" | null;
   createdBy?: string | null;
   creatorName?: string | null;
@@ -70,13 +86,16 @@ export interface Market {
  */
 export interface Position {
   marketId: string;
-  outcome: "YES" | "NO";
+  outcome: "YES" | "NO" | null;
+  outcomeId?: string | null;
+  outcomeTitle?: string | null;
   shares: number;
   avgEntryPrice: number | null;
   marketTitleRu: string;
   marketTitleEn: string;
   marketState: MarketState;
   marketOutcome: "YES" | "NO" | null;
+  marketResolvedOutcomeId?: string | null;
   closesAt: string | null;
   expiresAt: string | null;
 }
@@ -88,7 +107,9 @@ export interface Trade {
   id: string;
   marketId: string;
   action: "buy" | "sell";
-  outcome: "YES" | "NO";
+  outcome: "YES" | "NO" | null;
+  outcomeId?: string | null;
+  outcomeTitle?: string | null;
   collateralGross: number;
   fee: number;
   collateralNet: number;
@@ -100,6 +121,7 @@ export interface Trade {
   marketTitleEn: string;
   marketState: MarketState;
   marketOutcome: "YES" | "NO" | null;
+  marketResolvedOutcomeId?: string | null;
   avgEntryPrice?: number | null;
   avgExitPrice?: number | null;
   realizedPnl?: number | null;
@@ -165,7 +187,9 @@ export interface PublicTrade {
   id: string;
   marketId: string;
   action: "buy" | "sell";
-  outcome: "YES" | "NO";
+  outcome: "YES" | "NO" | null;
+  outcomeId?: string | null;
+  outcomeTitle?: string | null;
   collateralGross: number;
   sharesDelta: number;
   priceBefore: number;

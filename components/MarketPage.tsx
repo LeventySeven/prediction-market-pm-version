@@ -78,10 +78,10 @@ interface MarketPageProps {
   onLogin: () => void;
   bookmarked?: boolean;
   onToggleBookmark?: (params: { marketId: string; bookmarked: boolean }) => void;
-  betIntent?: { side: 'YES' | 'NO'; nonce: number } | null;
-  onRequireBetAuth?: (params: { marketId: string; side: 'YES' | 'NO'; amount: number; marketTitle: string }) => void;
-  onPlaceBet: (params: { side: 'YES' | 'NO'; amount: number; marketId: string; marketTitle: string }) => Promise<void>;
-  onSellPosition?: (params: { marketId: string; side: 'YES' | 'NO'; shares: number }) => Promise<void>;
+  betIntent?: { side?: 'YES' | 'NO'; outcomeId?: string; nonce: number } | null;
+  onRequireBetAuth?: (params: { marketId: string; side?: 'YES' | 'NO'; outcomeId?: string; amount: number; marketTitle: string }) => void;
+  onPlaceBet: (params: { side?: 'YES' | 'NO'; outcomeId?: string; amount: number; marketId: string; marketTitle: string }) => Promise<void>;
+  onSellPosition?: (params: { marketId: string; side?: 'YES' | 'NO'; outcomeId?: string; shares: number }) => Promise<void>;
   onClaimWinnings?: (params: { marketId: string; assetCode: 'USDC' | 'USDT' }) => Promise<void>;
   onResolveOutcome?: (params: { marketId: string; outcome: 'YES' | 'NO' }) => Promise<void>;
   comments: Comment[];
@@ -144,6 +144,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [commentText, setCommentText] = useState('');
   const [commentSendError, setCommentSendError] = useState<string | null>(null);
   const [tradeType, setTradeType] = useState<'YES' | 'NO'>('YES');
+  const isMulti = market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 0;
+  const [selectedOutcomeId, setSelectedOutcomeId] = useState<string | null>(isMulti ? (market.outcomes?.[0]?.id ?? null) : null);
   const [amount, setAmount] = useState('');
   const [timeLeft, setTimeLeft] = useState('');
   const [placeError, setPlaceError] = useState<string | null>(null);
@@ -178,10 +180,25 @@ const MarketPage: React.FC<MarketPageProps> = ({
 
   useEffect(() => {
     if (!betIntent) return;
-    setTradeType(betIntent.side);
+    if (betIntent.side) {
+      setTradeType(betIntent.side);
+    }
+    if (betIntent.outcomeId) {
+      setSelectedOutcomeId(betIntent.outcomeId);
+    }
     const el = document.getElementById("bid-section");
     el?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [betIntent?.nonce]);
+
+  useEffect(() => {
+    if (!isMulti) {
+      setSelectedOutcomeId(null);
+      return;
+    }
+    if (!selectedOutcomeId && market.outcomes && market.outcomes.length > 0) {
+      setSelectedOutcomeId(market.outcomes[0].id);
+    }
+  }, [isMulti, selectedOutcomeId, market.outcomes]);
 
   // Use closesAt for trading deadline, expiresAt for event end
   const tradingDeadline = market.closesAt || market.expiresAt;
@@ -225,7 +242,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
   // User's current position for this market
   const userYesPosition = userPositions.find(p => p.outcome === 'YES');
   const userNoPosition = userPositions.find(p => p.outcome === 'NO');
-  const userShares = tradeType === 'YES' ? (userYesPosition?.shares ?? 0) : (userNoPosition?.shares ?? 0);
+  const selectedOutcome = isMulti ? (market.outcomes ?? []).find((o) => o.id === selectedOutcomeId) ?? null : null;
+  const userShares = isMulti
+    ? (userPositions.find((p) => p.outcomeId === selectedOutcomeId)?.shares ?? 0)
+    : (tradeType === 'YES' ? (userYesPosition?.shares ?? 0) : (userNoPosition?.shares ?? 0));
   const sellablePositions = userPositions.filter((p) => (p.shares ?? 0) > 0);
 
   const chartSeries = useMemo(() => {
@@ -344,7 +364,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
   }, [comments]);
 
   const numericAmount = Number(amount || 0);
-  const currentPrice = tradeType === 'YES' ? market.yesPrice : market.noPrice;
+  const currentPrice = isMulti
+    ? Number(selectedOutcome?.price ?? 0)
+    : (tradeType === 'YES' ? market.yesPrice : market.noPrice);
   // Estimated shares to receive
   const estimatedShares = currentPrice > 0 ? numericAmount / currentPrice : 0;
   // Potential return if prediction is correct ($1 per share)
@@ -381,12 +403,17 @@ const MarketPage: React.FC<MarketPageProps> = ({
       setPlaceError(lang === 'RU' ? 'Введите сумму числом больше 0' : 'Enter a numeric amount greater than 0');
       return;
     }
+    if (isMulti && !selectedOutcomeId) {
+      setPlaceError(lang === 'RU' ? 'Выберите вариант ответа' : 'Select an outcome option');
+      return;
+    }
     if (!user) {
       setPlaceError(null);
       if (onRequireBetAuth) {
         onRequireBetAuth({
           marketId: market.id,
-          side: tradeType,
+          side: isMulti ? undefined : tradeType,
+          outcomeId: isMulti ? selectedOutcomeId ?? undefined : undefined,
           amount: numeric,
           marketTitle: market.title,
         });
@@ -399,7 +426,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
     setPlacing(true);
     try {
       await onPlaceBet({
-        side: tradeType,
+        side: isMulti ? undefined : tradeType,
+        outcomeId: isMulti ? selectedOutcomeId ?? undefined : undefined,
         amount: numeric,
         marketId: market.id,
         marketTitle: market.title,
@@ -430,7 +458,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
     try {
       await onSellPosition({
         marketId: market.id,
-        side: tradeType,
+        side: isMulti ? undefined : tradeType,
+        outcomeId: isMulti ? selectedOutcomeId ?? undefined : undefined,
         shares: userShares,
       });
     } catch (error) {
@@ -678,28 +707,59 @@ const MarketPage: React.FC<MarketPageProps> = ({
               </div>
             ) : (
               <>
-                <div className="bg-zinc-950 rounded-full p-1 flex mb-6 border border-zinc-900">
-                  <button
-                    onClick={() => setTradeType('YES')}
-                    className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
-                      tradeType === 'YES'
-                        ? 'bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.18)]'
-                        : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                    }`}
-                  >
-                    {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
-                  </button>
-                  <button
-                    onClick={() => setTradeType('NO')}
-                    className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
-                      tradeType === 'NO'
-                        ? 'bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.20)]'
-                        : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                    }`}
-                  >
-                    {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}
-                  </button>
-                </div>
+                {isMulti ? (
+                  <div className="mb-6 space-y-2">
+                    {(market.outcomes ?? []).map((o) => {
+                      const active = selectedOutcomeId === o.id;
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => setSelectedOutcomeId(o.id)}
+                          className={`w-full rounded-xl border px-3 py-2 flex items-center justify-between text-sm ${
+                            active
+                              ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
+                              : "border-zinc-900 text-zinc-300 hover:text-white hover:border-zinc-700"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2 min-w-0">
+                            {o.iconUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={o.iconUrl} alt={o.title} className="w-5 h-5 rounded-full object-cover border border-zinc-800" />
+                            ) : (
+                              <span className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-700" />
+                            )}
+                            <span className="truncate">{o.title}</span>
+                          </span>
+                          <span className="font-mono">${o.price.toFixed(2)} • {(o.probability * 100).toFixed(1)}%</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="bg-zinc-950 rounded-full p-1 flex mb-6 border border-zinc-900">
+                    <button
+                      onClick={() => setTradeType('YES')}
+                      className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
+                        tradeType === 'YES'
+                          ? 'bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.18)]'
+                          : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
+                      }`}
+                    >
+                      {lang === 'RU' ? 'ДА' : 'YES'} ${market.yesPrice.toFixed(2)}
+                    </button>
+                    <button
+                      onClick={() => setTradeType('NO')}
+                      className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-full transition-all ${
+                        tradeType === 'NO'
+                          ? 'bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.20)]'
+                          : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
+                      }`}
+                    >
+                      {lang === 'RU' ? 'НЕТ' : 'NO'} ${market.noPrice.toFixed(2)}
+                    </button>
+                  </div>
+                )}
 
                 <div className="space-y-6">
                   {isOnChainMarket && (
@@ -830,8 +890,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         ? 'Зарегистрируйтесь, чтобы торговать'
                         : 'Sign up to trade'
                       : lang === 'RU'
-                      ? `Купить ${tradeType === 'YES' ? 'ДА' : 'НЕТ'}`
-                      : `BUY ${tradeType}`}
+                      ? isMulti
+                        ? 'Купить опцию'
+                        : `Купить ${tradeType === 'YES' ? 'ДА' : 'НЕТ'}`
+                      : isMulti
+                        ? 'BUY OPTION'
+                        : `BUY ${tradeType}`}
                   </Button>
                   {showFee && (
                     <p className="text-center text-[10px] uppercase text-zinc-600 tracking-wider">
@@ -848,7 +912,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     <div className="space-y-3">
                       {sellablePositions.map((position) => (
                         <div
-                          key={`${position.marketId}-${position.outcome}`}
+                          key={`${position.marketId}-${position.outcomeId ?? position.outcome ?? "unknown"}`}
                           className="bg-zinc-950/40 border border-zinc-900 rounded-2xl p-3"
                         >
                           <div className="flex items-center justify-between text-sm">
@@ -857,10 +921,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
                                 className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm ${
                                   position.outcome === 'YES'
                                     ? 'bg-[rgba(190,255,29,1)] border border-[rgba(190,255,29,1)] text-black'
-                                    : 'bg-[rgba(245,68,166,1)] border border-[rgba(245,68,166,1)] text-white'
+                                    : position.outcome === 'NO'
+                                      ? 'bg-[rgba(245,68,166,1)] border border-[rgba(245,68,166,1)] text-white'
+                                      : 'bg-zinc-800 border border-zinc-700 text-white'
                                 }`}
                               >
-                                {position.outcome}
+                                {position.outcomeTitle ?? position.outcome ?? (lang === 'RU' ? 'Опция' : 'Option')}
                               </span>
                               <span className="font-medium">
                                 {lang === 'RU' ? 'Ставка' : 'Position'}
@@ -885,14 +951,15 @@ const MarketPage: React.FC<MarketPageProps> = ({
                             onClick={() =>
                               onSellPosition({
                                 marketId: market.id,
-                                side: position.outcome,
+                                side: position.outcome ?? undefined,
+                                outcomeId: position.outcomeId ?? undefined,
                                 shares: position.shares ?? 0,
                               })
                             }
                           >
                             {lang === 'RU'
-                              ? `Продать ${position.outcome === 'YES' ? 'ДА' : 'НЕТ'}`
-                              : `Sell ${position.outcome}`}
+                              ? `Продать ${position.outcomeTitle ?? (position.outcome === 'YES' ? 'ДА' : position.outcome === 'NO' ? 'НЕТ' : 'опцию')}`
+                              : `Sell ${position.outcomeTitle ?? position.outcome ?? 'option'}`}
                           </Button>
                         </div>
                       ))}
@@ -1502,7 +1569,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     >
                       <div>
                         <p className="font-semibold text-white">
-                          {label} • {trade.outcome}
+                          {label} • {trade.outcomeTitle ?? trade.outcome ?? (lang === 'RU' ? 'Опция' : 'Option')}
                         </p>
                         <p className="text-[11px] text-neutral-500 uppercase tracking-wider">
                           {formattedTime}

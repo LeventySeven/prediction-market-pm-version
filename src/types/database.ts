@@ -311,6 +311,8 @@ export interface Database {
           closes_at: string;
           expires_at: string;
           resolve_outcome: OutcomeSide | null;
+          resolved_outcome_id: string | null;
+          market_type: string;
           settlement_asset_code: string;
           fee_bps: number;
           liquidity_b: number;
@@ -333,6 +335,8 @@ export interface Database {
           closes_at: string;
           expires_at: string;
           resolve_outcome?: OutcomeSide | null;
+          resolved_outcome_id?: string | null;
+          market_type?: string;
           settlement_asset_code?: string;
           fee_bps?: number;
           liquidity_b?: number;
@@ -355,6 +359,8 @@ export interface Database {
           closes_at?: string;
           expires_at?: string;
           resolve_outcome?: OutcomeSide | null;
+          resolved_outcome_id?: string | null;
+          market_type?: string;
           settlement_asset_code?: string;
           fee_bps?: number;
           liquidity_b?: number;
@@ -431,34 +437,106 @@ export interface Database {
           { foreignKeyName: "market_amm_state_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"]; isOneToOne: true }
         ];
       };
+      market_outcomes: {
+        Row: {
+          id: string;
+          market_id: string;
+          slug: string;
+          title: string;
+          icon_url: string | null;
+          sort_order: number;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          market_id: string;
+          slug: string;
+          title: string;
+          icon_url?: string | null;
+          sort_order?: number;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          market_id?: string;
+          slug?: string;
+          title?: string;
+          icon_url?: string | null;
+          sort_order?: number;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "market_outcomes_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] }
+        ];
+      };
+      market_outcome_amm_state: {
+        Row: {
+          market_id: string;
+          outcome_id: string;
+          q: number;
+          last_price: number;
+          updated_at: string;
+        };
+        Insert: {
+          market_id: string;
+          outcome_id: string;
+          q?: number;
+          last_price?: number;
+          updated_at?: string;
+        };
+        Update: {
+          market_id?: string;
+          outcome_id?: string;
+          q?: number;
+          last_price?: number;
+          updated_at?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "market_outcome_amm_state_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] },
+          { foreignKeyName: "market_outcome_amm_state_outcome_id_fkey"; columns: ["outcome_id"]; referencedRelation: "market_outcomes"; referencedColumns: ["id"] }
+        ];
+      };
       positions: {
         Row: {
+          id: string;
           user_id: string;
           market_id: string;
-          outcome: OutcomeSide;
+          outcome: OutcomeSide | null;
+          outcome_id: string | null;
           shares: number;
           avg_entry_price: number | null;
           updated_at: string;
         };
         Insert: {
+          id?: string;
           user_id: string;
           market_id: string;
-          outcome: OutcomeSide;
+          outcome?: OutcomeSide | null;
+          outcome_id?: string | null;
           shares?: number;
           avg_entry_price?: number | null;
           updated_at?: string;
         };
         Update: {
+          id?: string;
           user_id?: string;
           market_id?: string;
-          outcome?: OutcomeSide;
+          outcome?: OutcomeSide | null;
+          outcome_id?: string | null;
           shares?: number;
           avg_entry_price?: number | null;
           updated_at?: string;
         };
         Relationships: [
           { foreignKeyName: "positions_user_id_fkey"; columns: ["user_id"]; referencedRelation: "users"; referencedColumns: ["id"] },
-          { foreignKeyName: "positions_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] }
+          { foreignKeyName: "positions_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] },
+          { foreignKeyName: "positions_outcome_id_fkey"; columns: ["outcome_id"]; referencedRelation: "market_outcomes"; referencedColumns: ["id"] }
         ];
       };
       trades: {
@@ -467,7 +545,8 @@ export interface Database {
           market_id: string;
           user_id: string;
           action: TradeAction;
-          outcome: OutcomeSide;
+          outcome: OutcomeSide | null;
+          outcome_id: string | null;
           asset_code: string;
           collateral_gross_minor: number;
           fee_minor: number;
@@ -482,7 +561,8 @@ export interface Database {
           market_id: string;
           user_id: string;
           action: TradeAction;
-          outcome: OutcomeSide;
+          outcome?: OutcomeSide | null;
+          outcome_id?: string | null;
           asset_code: string;
           collateral_gross_minor: number;
           fee_minor?: number;
@@ -497,7 +577,8 @@ export interface Database {
           market_id?: string;
           user_id?: string;
           action?: TradeAction;
-          outcome?: OutcomeSide;
+          outcome?: OutcomeSide | null;
+          outcome_id?: string | null;
           asset_code?: string;
           collateral_gross_minor?: number;
           fee_minor?: number;
@@ -510,7 +591,8 @@ export interface Database {
         Relationships: [
           { foreignKeyName: "trades_market_id_fkey"; columns: ["market_id"]; referencedRelation: "markets"; referencedColumns: ["id"] },
           { foreignKeyName: "trades_user_id_fkey"; columns: ["user_id"]; referencedRelation: "users"; referencedColumns: ["id"] },
-          { foreignKeyName: "trades_asset_code_fkey"; columns: ["asset_code"]; referencedRelation: "assets"; referencedColumns: ["code"] }
+          { foreignKeyName: "trades_asset_code_fkey"; columns: ["asset_code"]; referencedRelation: "assets"; referencedColumns: ["code"] },
+          { foreignKeyName: "trades_outcome_id_fkey"; columns: ["outcome_id"]; referencedRelation: "market_outcomes"; referencedColumns: ["id"] }
         ];
       };
       market_price_candles: {
@@ -875,10 +957,39 @@ export interface Database {
           price_after: number;
         };
       };
+      place_bet_multi_tx: {
+        Args: {
+          p_market_id: string;
+          p_outcome_id: string;
+          p_amount: number;
+        };
+        Returns: {
+          trade_id: string;
+          new_balance_minor: number;
+          shares_bought: number;
+          price_before: number;
+          price_after: number;
+        };
+      };
       sell_position_tx: {
         Args: {
           p_market_id: string;
           p_side: string; // 'YES' | 'NO'
+          p_shares: number;
+        };
+        Returns: {
+          trade_id: string;
+          payout_net_minor: number;
+          new_balance_minor: number;
+          shares_sold: number;
+          price_before: number;
+          price_after: number;
+        };
+      };
+      sell_position_multi_tx: {
+        Args: {
+          p_market_id: string;
+          p_outcome_id: string;
           p_shares: number;
         };
         Returns: {
@@ -999,6 +1110,18 @@ export interface Database {
         Returns: {
           market_id: string;
           outcome: string;
+          total_payout_minor: number;
+          winners_count: number;
+        };
+      };
+      resolve_market_multi_service_tx: {
+        Args: {
+          p_market_id: string;
+          p_winning_outcome_id: string;
+        };
+        Returns: {
+          market_id: string;
+          winning_outcome_id: string;
           total_payout_minor: number;
           winners_count: number;
         };

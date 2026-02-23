@@ -5,6 +5,7 @@ import {
   calculateBoundedPrices,
   calculateBuyCost,
   calculateSellProceeds,
+  calculateSoftmaxProbabilities,
   toMajorUnits,
   toMinorUnits,
 } from "../helpers/pricing";
@@ -34,6 +35,22 @@ type DbUserRow = Database["public"]["Tables"]["users"]["Row"];
 type AmmStateRow = Database["public"]["Tables"]["market_amm_state"]["Row"];
 type PositionRow = Database["public"]["Tables"]["positions"]["Row"];
 type TradeRow = Database["public"]["Tables"]["trades"]["Row"];
+type MarketOutcomeReadRow = {
+  id: string;
+  market_id: string;
+  slug: string;
+  title: string;
+  icon_url: string | null;
+  sort_order: number;
+  is_active: boolean;
+};
+
+type MarketOutcomeAmmReadRow = {
+  market_id: string;
+  outcome_id: string;
+  q: number;
+  last_price: number;
+};
 
 // We intentionally do NOT rely on markets.category_label_ru/en being present in the DB schema
 // (some deployments may not have these columns). Make them optional in the type used for reads.
@@ -212,12 +229,22 @@ const shouldSimulateSolanaTx = (): boolean => {
   return false;
 };
 
+type MarketRelationRead = Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome"> & {
+  closes_at?: string;
+  expires_at?: string;
+  resolved_outcome_id?: string | null;
+};
+
 type PositionWithMarket = PositionRow & {
-  markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome" | "closes_at" | "expires_at"> | null;
+  outcome_id?: string | null;
+  market_outcomes?: Pick<MarketOutcomeReadRow, "title"> | null;
+  markets: MarketRelationRead | null;
 };
 
 type TradeWithMarket = TradeRow & {
-  markets: Pick<MarketRow, "title_rus" | "title_eng" | "state" | "resolve_outcome"> | null;
+  outcome_id?: string | null;
+  market_outcomes?: Pick<MarketOutcomeReadRow, "title"> | null;
+  markets: MarketRelationRead | null;
 };
 
 // RPC return types
@@ -286,16 +313,122 @@ const deriveVolumeMajor = (amm: AmmStateRow | null, feeBps?: number | null) => {
   return toMajorUnits(volumeMinor, VCOIN_DECIMALS);
 };
 
+const fetchOutcomesByMarketIds = async (
+  supabaseService: SupabaseDbClient,
+  marketIds: string[],
+  liquidityByMarketId: Map<string, number>
+) => {
+  const outcomesByMarketId = new Map<
+    string,
+    Array<{
+      id: string;
+      marketId: string;
+      slug: string;
+      title: string;
+      iconUrl: string | null;
+      sortOrder: number;
+      isActive: boolean;
+      probability: number;
+      price: number;
+    }>
+  >();
+
+  if (marketIds.length === 0) return outcomesByMarketId;
+
+  const [{ data: outcomeRows }, { data: ammRows }] = await Promise.all([
+    supabaseService
+      .from("market_outcomes")
+      .select("id, market_id, slug, title, icon_url, sort_order, is_active")
+      .in("market_id", marketIds),
+    supabaseService
+      .from("market_outcome_amm_state")
+      .select("market_id, outcome_id, q, last_price")
+      .in("market_id", marketIds),
+  ]);
+
+  const outcomes = (outcomeRows ?? []) as MarketOutcomeReadRow[];
+  const amm = (ammRows ?? []) as MarketOutcomeAmmReadRow[];
+
+  const qByMarketOutcome = new Map<string, number>();
+  const priceByMarketOutcome = new Map<string, number>();
+  amm.forEach((row) => {
+    const key = `${row.market_id}:${row.outcome_id}`;
+    qByMarketOutcome.set(key, Number(row.q ?? 0));
+    priceByMarketOutcome.set(key, Number(row.last_price ?? 0));
+  });
+
+  const outcomesGrouped = new Map<string, MarketOutcomeReadRow[]>();
+  outcomes.forEach((o) => {
+    const list = outcomesGrouped.get(o.market_id) ?? [];
+    list.push(o);
+    outcomesGrouped.set(o.market_id, list);
+  });
+
+  outcomesGrouped.forEach((list, marketId) => {
+    const sorted = [...list].sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));
+    const q = sorted.map((o) => qByMarketOutcome.get(`${marketId}:${o.id}`) ?? 0);
+    const b = liquidityByMarketId.get(marketId) ?? 0;
+    const probs = calculateSoftmaxProbabilities(q, b);
+
+    const mapped = sorted.map((o, idx) => {
+      const key = `${marketId}:${o.id}`;
+      const prob = Number.isFinite(probs[idx]) ? probs[idx] : Number(priceByMarketOutcome.get(key) ?? 0);
+      const price = Number.isFinite(prob) ? prob : Number(priceByMarketOutcome.get(key) ?? 0);
+      return {
+        id: o.id,
+        marketId: o.market_id,
+        slug: o.slug,
+        title: o.title,
+        iconUrl: o.icon_url ?? null,
+        sortOrder: Number(o.sort_order ?? 0),
+        isActive: Boolean(o.is_active),
+        probability: Number.isFinite(prob) ? prob : 0,
+        price: Number.isFinite(price) ? price : 0,
+      };
+    });
+    outcomesByMarketId.set(marketId, mapped);
+  });
+
+  return outcomesByMarketId;
+};
+
 const mapMarketRow = (
   row: MarketWithAmm,
   categoryLabelsById?: Map<string, Pick<MarketCategoryRow, "label_ru" | "label_en">>,
   creatorById?: Map<string, CreatorMeta>,
-  volumeMajorOverride?: number
+  volumeMajorOverride?: number,
+  outcomesByMarketId?: Map<
+    string,
+    Array<{
+      id: string;
+      marketId: string;
+      slug: string;
+      title: string;
+      iconUrl: string | null;
+      sortOrder: number;
+      isActive: boolean;
+      probability: number;
+      price: number;
+    }>
+  >
 ) => {
   const amm = row.market_amm_state;
-  const { priceYes, priceNo } = amm
-    ? calculateBoundedPrices(Number(amm.q_yes), Number(amm.q_no), Number(amm.b))
-    : { priceYes: 0.5, priceNo: 0.5 };
+  const marketType = ((row as MarketRowForRead & { market_type?: string | null }).market_type ?? "binary") as "binary" | "multi_choice";
+  const multiOutcomes = outcomesByMarketId?.get(row.id) ?? [];
+
+  const { priceYes, priceNo } = marketType === "multi_choice"
+    ? (() => {
+      if (multiOutcomes.length === 0) return { priceYes: 0.5, priceNo: 0.5 };
+      const sorted = [...multiOutcomes].sort((a, b) => a.sortOrder - b.sortOrder);
+      const p0 = Number(sorted[0]?.price ?? 0);
+      return {
+        priceYes: Number.isFinite(p0) ? p0 : 0.5,
+        priceNo: Number.isFinite(1 - p0) ? 1 - p0 : 0.5,
+      };
+    })()
+    : (amm
+      ? calculateBoundedPrices(Number(amm.q_yes), Number(amm.q_no), Number(amm.b))
+      : { priceYes: 0.5, priceNo: 0.5 });
 
   const categoryId = row.category_id ?? null;
   const categoryLabels = categoryId ? categoryLabelsById?.get(categoryId) : undefined;
@@ -310,6 +443,9 @@ const mapMarketRow = (
     source: row.source ?? null,
     imageUrl: row.image_url ?? "",
     state: row.state,
+    marketType,
+    resolvedOutcomeId: (row as MarketRowForRead & { resolved_outcome_id?: string | null }).resolved_outcome_id ?? null,
+    outcomes: multiOutcomes,
     createdAt: new Date(row.created_at).toISOString(),
     closesAt: new Date(row.closes_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(),
@@ -338,12 +474,15 @@ const mapPositionRow = (row: PositionWithMarket, decimals: number) => {
   return {
     marketId: row.market_id,
     outcome: row.outcome,
+    outcomeId: row.outcome_id ?? null,
+    outcomeTitle: row.market_outcomes?.title ?? null,
     shares: Number(row.shares),
     avgEntryPrice: row.avg_entry_price ? Number(row.avg_entry_price) : null,
     marketTitleRu: row.markets?.title_rus ?? row.markets?.title_eng ?? "",
     marketTitleEn: row.markets?.title_eng ?? "",
     marketState: row.markets?.state ?? "open",
     marketOutcome: row.markets?.resolve_outcome ?? null,
+    marketResolvedOutcomeId: row.markets?.resolved_outcome_id ?? null,
     closesAt: row.markets?.closes_at ? new Date(row.markets.closes_at).toISOString() : null,
     expiresAt: row.markets?.expires_at ? new Date(row.markets.expires_at).toISOString() : null,
   };
@@ -355,6 +494,8 @@ const mapTradeRow = (row: TradeWithMarket, decimals: number) => {
     marketId: row.market_id,
     action: row.action,
     outcome: row.outcome,
+    outcomeId: row.outcome_id ?? null,
+    outcomeTitle: row.market_outcomes?.title ?? null,
     collateralGross: toMajorUnits(Number(row.collateral_gross_minor), decimals),
     fee: toMajorUnits(Number(row.fee_minor), decimals),
     collateralNet: toMajorUnits(Number(row.collateral_net_minor), decimals),
@@ -366,19 +507,23 @@ const mapTradeRow = (row: TradeWithMarket, decimals: number) => {
     marketTitleEn: row.markets?.title_eng ?? "",
     marketState: row.markets?.state ?? "open",
     marketOutcome: row.markets?.resolve_outcome ?? null,
+    marketResolvedOutcomeId: row.markets?.resolved_outcome_id ?? null,
   };
 };
 
 // Zod schemas for output
 const positionSummary = z.object({
   marketId: z.string(),
-  outcome: z.enum(["YES", "NO"]),
+  outcome: z.enum(["YES", "NO"]).nullable(),
+  outcomeId: z.string().nullable().optional(),
+  outcomeTitle: z.string().nullable().optional(),
   shares: z.number(),
   avgEntryPrice: z.number().nullable(),
   marketTitleRu: z.string(),
   marketTitleEn: z.string(),
   marketState: z.string(),
   marketOutcome: z.enum(["YES", "NO"]).nullable(),
+  marketResolvedOutcomeId: z.string().nullable().optional(),
   closesAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
 });
@@ -387,7 +532,9 @@ const tradeSummary = z.object({
   id: z.string(),
   marketId: z.string(),
   action: z.enum(["buy", "sell"]),
-  outcome: z.enum(["YES", "NO"]),
+  outcome: z.enum(["YES", "NO"]).nullable(),
+  outcomeId: z.string().nullable().optional(),
+  outcomeTitle: z.string().nullable().optional(),
   collateralGross: z.number(),
   fee: z.number(),
   collateralNet: z.number(),
@@ -399,6 +546,7 @@ const tradeSummary = z.object({
   marketTitleEn: z.string(),
   marketState: z.string(),
   marketOutcome: z.enum(["YES", "NO"]).nullable(),
+  marketResolvedOutcomeId: z.string().nullable().optional(),
 });
 
 const marketCommentOutput = z.object({
@@ -423,6 +571,21 @@ const marketOutput = z.object({
   source: z.string().nullable(),
   imageUrl: z.string(),
   state: z.string(),
+  marketType: z.enum(["binary", "multi_choice"]).default("binary"),
+  resolvedOutcomeId: z.string().nullable(),
+  outcomes: z.array(
+    z.object({
+      id: z.string(),
+      marketId: z.string(),
+      slug: z.string(),
+      title: z.string(),
+      iconUrl: z.string().nullable(),
+      sortOrder: z.number(),
+      isActive: z.boolean(),
+      probability: z.number(),
+      price: z.number(),
+    })
+  ).default([]),
   createdAt: z.string(),
   closesAt: z.string(),
   expiresAt: z.string(),
@@ -495,7 +658,7 @@ export const marketRouter = router({
         .from("markets")
         .select(`
           id, title_rus, title_eng, description, source, image_url, state, closes_at, expires_at, created_by,
-          resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          resolve_outcome, resolved_outcome_id, market_type, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
         `)
@@ -514,6 +677,14 @@ export const marketRouter = router({
       }
 
       const rows: MarketWithAmm[] = data ?? [];
+      const liquidityByMarketId = new Map<string, number>(
+        rows.map((r) => [r.id, Number(r.liquidity_b ?? 0)])
+      );
+      const outcomesByMarketId = await fetchOutcomesByMarketIds(
+        supabaseService as SupabaseDbClient,
+        rows.map((r) => r.id),
+        liquidityByMarketId
+      );
 
       // Compute market volume from candle aggregates (always use market_price_candles).
       const volumeByMarketId = new Map<string, number>();
@@ -577,7 +748,15 @@ export const marketRouter = router({
         }
       }
 
-      return rows.map((r) => mapMarketRow(r, labelsById, creatorsById, volumeByMarketId.get(r.id)));
+      return rows.map((r) =>
+        mapMarketRow(
+          r,
+          labelsById,
+          creatorsById,
+          volumeByMarketId.get(r.id),
+          outcomesByMarketId
+        )
+      );
     }),
 
   getMarket: publicProcedure
@@ -590,7 +769,7 @@ export const marketRouter = router({
         .from("markets")
         .select(`
           id, title_rus, title_eng, description, source, image_url, state, closes_at, expires_at, created_by,
-          resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          resolve_outcome, resolved_outcome_id, market_type, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
         `)
@@ -602,6 +781,11 @@ export const marketRouter = router({
       }
 
       const row: MarketWithAmm = data;
+      const outcomesByMarketId = await fetchOutcomesByMarketIds(
+        supabaseService as SupabaseDbClient,
+        [input.marketId],
+        new Map<string, number>([[input.marketId, Number(row.liquidity_b ?? 0)]])
+      );
 
       // Compute total volume from candle aggregates (always use market_price_candles).
       let volumeMajor: number | undefined = undefined;
@@ -650,7 +834,7 @@ export const marketRouter = router({
         }
       }
 
-      return mapMarketRow(row, labelsById, creatorById, volumeMajor);
+      return mapMarketRow(row, labelsById, creatorById, volumeMajor, outcomesByMarketId);
     }),
 
   generateMarketContext: publicProcedure
@@ -761,7 +945,8 @@ export const marketRouter = router({
     .input(
       z.object({
         marketId: z.string().uuid(),
-        side: z.enum(["YES", "NO"]),
+        side: z.enum(["YES", "NO"]).optional(),
+        outcomeId: z.string().uuid().optional(),
         amount: z.number().positive(),
       })
     )
@@ -776,7 +961,7 @@ export const marketRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { supabase, supabaseService, authUser, cookies } = ctx;
-      const { marketId, side, amount } = input;
+      const { marketId, side, outcomeId, amount } = input;
 
       if (!authUser) {
         // Log for debugging
@@ -784,6 +969,20 @@ export const marketRouter = router({
         const hasSbAccessToken = Boolean(cookies?.sb_access_token);
         console.warn("[placeBet] authUser is null", { hasAuthToken, hasSbAccessToken, cookiesKeys: cookies ? Object.keys(cookies) : [] });
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+
+      const { data: marketTypeRow } = await (supabaseService as SupabaseDbClient)
+        .from("markets")
+        .select("id, market_type")
+        .eq("id", marketId)
+        .maybeSingle();
+      const marketType = (marketTypeRow as { market_type?: string | null } | null)?.market_type ?? "binary";
+
+      if (marketType === "multi_choice" && !outcomeId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "OUTCOME_ID_REQUIRED" });
+      }
+      if (marketType !== "multi_choice" && !side) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SIDE_REQUIRED" });
       }
 
       // Ensure we have a Supabase session for the RPC call (it uses auth.uid() internally).
@@ -803,11 +1002,17 @@ export const marketRouter = router({
       let data: unknown = null;
       let error: { message?: string } | null = null;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
-        const rpcResult = await client.rpc("place_bet_tx", {
-          p_market_id: marketId,
-          p_side: side,
-          p_amount: amount,
-        });
+        const rpcResult = marketType === "multi_choice"
+          ? await client.rpc("place_bet_multi_tx", {
+            p_market_id: marketId,
+            p_outcome_id: outcomeId,
+            p_amount: amount,
+          })
+          : await client.rpc("place_bet_tx", {
+            p_market_id: marketId,
+            p_side: side,
+            p_amount: amount,
+          });
         data = rpcResult.data;
         error = rpcResult.error;
         if (!error) break;
@@ -1751,7 +1956,8 @@ export const marketRouter = router({
     .input(
       z.object({
         marketId: z.string().uuid(),
-        side: z.enum(["YES", "NO"]),
+        side: z.enum(["YES", "NO"]).optional(),
+        outcomeId: z.string().uuid().optional(),
         shares: z.number().positive(),
       })
     )
@@ -1767,26 +1973,45 @@ export const marketRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { supabase, supabaseService, authUser } = ctx;
-      const { marketId, side, shares } = input;
+      const { marketId, side, outcomeId, shares } = input;
 
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
 
+      const { data: marketTypeRow } = await (supabaseService as SupabaseDbClient)
+        .from("markets")
+        .select("id, market_type")
+        .eq("id", marketId)
+        .maybeSingle();
+      const marketType = (marketTypeRow as { market_type?: string | null } | null)?.market_type ?? "binary";
+      if (marketType === "multi_choice" && !outcomeId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "OUTCOME_ID_REQUIRED" });
+      }
+      if (marketType !== "multi_choice" && !side) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SIDE_REQUIRED" });
+      }
+
       const useService = supabaseService !== supabase;
       const client = useService ? (supabaseService as SupabaseDbClient) : (supabase as SupabaseDbClient);
-      const { data, error } = useService
-        ? await client.rpc("sell_position_service_tx", {
-            p_user_id: authUser.id,
+      const { data, error } = marketType === "multi_choice"
+        ? await client.rpc("sell_position_multi_tx", {
             p_market_id: marketId,
-            p_side: side,
+            p_outcome_id: outcomeId,
             p_shares: shares,
           })
-        : await client.rpc("sell_position_tx", {
-            p_market_id: marketId,
-            p_side: side,
-            p_shares: shares,
-          });
+        : useService
+          ? await client.rpc("sell_position_service_tx", {
+              p_user_id: authUser.id,
+              p_market_id: marketId,
+              p_side: side,
+              p_shares: shares,
+            })
+          : await client.rpc("sell_position_tx", {
+              p_market_id: marketId,
+              p_side: side,
+              p_shares: shares,
+            });
 
       if (error) {
         const msg = error.message || "";
@@ -1870,13 +2095,14 @@ export const marketRouter = router({
     .input(
       z.object({
         marketId: z.string().uuid(),
-        outcome: z.enum(["YES", "NO"]),
+        outcome: z.enum(["YES", "NO"]).optional(),
+        winningOutcomeId: z.string().uuid().optional(),
       })
     )
     .output(
       z.object({
         marketId: z.string(),
-        outcome: z.enum(["YES", "NO"]),
+        outcome: z.string(),
         totalPayoutMinor: z.number(),
         winnersCount: z.number(),
       })
@@ -1886,12 +2112,12 @@ export const marketRouter = router({
       if (!authUser) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       }
-      const { marketId, outcome } = input;
+      const { marketId, outcome, winningOutcomeId } = input;
 
       // Enforce creator-only resolution at the API layer (we call the RPC using service_role).
       const { data: marketRow, error: marketLoadError } = await supabaseService
         .from("markets")
-        .select("id, created_by, expires_at, resolve_outcome, state")
+        .select("id, created_by, expires_at, resolve_outcome, resolved_outcome_id, market_type, state")
         .eq("id", marketId)
         .single();
 
@@ -1912,15 +2138,32 @@ export const marketRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Event has not ended yet" });
       }
 
-      if ((marketRow as Pick<MarketRow, "resolve_outcome" | "state">).resolve_outcome || (marketRow as Pick<MarketRow, "state">).state === "resolved") {
+      const alreadyResolved =
+        Boolean((marketRow as Pick<MarketRow, "resolve_outcome">).resolve_outcome) ||
+        Boolean((marketRow as { resolved_outcome_id?: string | null }).resolved_outcome_id) ||
+        (marketRow as Pick<MarketRow, "state">).state === "resolved";
+      if (alreadyResolved) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Market already resolved" });
       }
 
       // Call the settlement RPC with service_role.
-      const { data, error } = await (supabaseService as SupabaseDbClient).rpc("resolve_market_service_tx", {
-        p_market_id: marketId,
-        p_outcome: outcome,
-      });
+      const marketType = (marketRow as { market_type?: string | null }).market_type ?? "binary";
+      if (marketType === "multi_choice" && !winningOutcomeId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "WINNING_OUTCOME_ID_REQUIRED" });
+      }
+      if (marketType !== "multi_choice" && !outcome) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "OUTCOME_REQUIRED" });
+      }
+
+      const { data, error } = marketType === "multi_choice"
+        ? await (supabaseService as SupabaseDbClient).rpc("resolve_market_multi_service_tx", {
+            p_market_id: marketId,
+            p_winning_outcome_id: winningOutcomeId,
+          })
+        : await (supabaseService as SupabaseDbClient).rpc("resolve_market_service_tx", {
+            p_market_id: marketId,
+            p_outcome: outcome,
+          });
 
       if (error) {
         throw new TRPCError({
@@ -1929,7 +2172,12 @@ export const marketRouter = router({
         });
       }
 
-      const result = (Array.isArray(data) ? data[0] : data) as ResolveMarketResult | null;
+      const result = (Array.isArray(data) ? data[0] : data) as ResolveMarketResult | {
+        market_id: string;
+        winning_outcome_id: string;
+        total_payout_minor: number;
+        winners_count: number;
+      } | null;
 
       if (!result) {
         throw new TRPCError({
@@ -1940,7 +2188,7 @@ export const marketRouter = router({
 
       return {
         marketId: String(result.market_id),
-        outcome: result.outcome as "YES" | "NO",
+        outcome: String((result as { outcome?: string; winning_outcome_id?: string }).outcome ?? (result as { winning_outcome_id?: string }).winning_outcome_id ?? ""),
         totalPayoutMinor: Number(result.total_payout_minor),
         winnersCount: Number(result.winners_count),
       };
@@ -1964,8 +2212,9 @@ export const marketRouter = router({
       const { data, error } = await supabaseService
         .from("positions")
         .select(`
-          user_id, market_id, outcome, shares, avg_entry_price, updated_at,
-          markets:market_id (title_rus, title_eng, state, resolve_outcome, closes_at, expires_at)
+          user_id, market_id, outcome, outcome_id, shares, avg_entry_price, updated_at,
+          markets:market_id (title_rus, title_eng, state, resolve_outcome, resolved_outcome_id, closes_at, expires_at),
+          market_outcomes:outcome_id (title)
         `)
         .eq("user_id", authUser.id)
         .gt("shares", 0)
@@ -2001,10 +2250,11 @@ export const marketRouter = router({
       const { data, error } = await supabaseService
         .from("trades")
         .select(`
-          id, market_id, user_id, action, outcome, asset_code,
+          id, market_id, user_id, action, outcome, outcome_id, asset_code,
           collateral_gross_minor, fee_minor, collateral_net_minor,
           shares_delta, price_before, price_after, created_at,
-          markets:market_id (title_rus, title_eng, state, resolve_outcome)
+          markets:market_id (title_rus, title_eng, state, resolve_outcome, resolved_outcome_id),
+          market_outcomes:outcome_id (title)
         `)
         .eq("user_id", authUser.id)
         .order("created_at", { ascending: false })
@@ -2037,7 +2287,7 @@ export const marketRouter = router({
         .from("markets")
         .select(`
           id, title_rus, title_eng, description, source, image_url, state, closes_at, expires_at, created_by,
-          resolve_outcome, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
+          resolve_outcome, resolved_outcome_id, market_type, settlement_asset_code, fee_bps, liquidity_b, amm_type, created_at,
           category_id,
           market_amm_state (market_id, b, q_yes, q_no, last_price_yes, fee_accumulated_minor, updated_at)
         `)
@@ -2104,8 +2354,14 @@ export const marketRouter = router({
         betMarketIds = new Set((trades ?? []).map((t) => String((t as { market_id: string }).market_id)));
       }
 
+      const outcomesByMarketId = await fetchOutcomesByMarketIds(
+        supabaseService as SupabaseDbClient,
+        marketIds,
+        new Map<string, number>(rows.map((r) => [r.id, Number(r.liquidity_b ?? 0)]))
+      );
+
       return rows.map((r) => {
-        const mapped = mapMarketRow(r, labelsById, creatorById);
+        const mapped = mapMarketRow(r, labelsById, creatorById, undefined, outcomesByMarketId);
         return {
           ...mapped,
           hasBets: betMarketIds.has(r.id),
@@ -2303,7 +2559,9 @@ export const marketRouter = router({
           id: z.string(),
           marketId: z.string(),
           action: z.enum(["buy", "sell"]),
-          outcome: z.enum(["YES", "NO"]),
+          outcome: z.enum(["YES", "NO"]).nullable(),
+          outcomeId: z.string().nullable().optional(),
+          outcomeTitle: z.string().nullable().optional(),
           collateralGross: z.number(),
           sharesDelta: z.number(),
           priceBefore: z.number(),
@@ -2318,8 +2576,8 @@ export const marketRouter = router({
       const { supabaseService } = ctx;
 
       let query = supabaseService
-        .from("trades_public")
-        .select("id, market_id, action, outcome, collateral_gross_minor, shares_delta, price_before, price_after, created_at")
+        .from("trades")
+        .select("id, market_id, action, outcome, outcome_id, collateral_gross_minor, shares_delta, price_before, price_after, created_at, market_outcomes:outcome_id (title)")
         .order("created_at", { ascending: false })
         .limit(input.limit);
 
@@ -2336,14 +2594,18 @@ export const marketRouter = router({
         });
       }
 
-      type PublicTradeRow = Database["public"]["Views"]["trades_public"]["Row"];
+      type PublicTradeRow = Database["public"]["Tables"]["trades"]["Row"] & {
+        market_outcomes?: { title?: string | null } | null;
+      };
       return (data ?? []).map((t) => {
         const trade = t as PublicTradeRow;
         return {
           id: trade.id,
           marketId: trade.market_id,
           action: trade.action as "buy" | "sell",
-          outcome: trade.outcome as "YES" | "NO",
+          outcome: trade.outcome,
+          outcomeId: trade.outcome_id ?? null,
+          outcomeTitle: trade.market_outcomes?.title ?? null,
           collateralGross: toMajorUnits(Number(trade.collateral_gross_minor), VCOIN_DECIMALS),
           sharesDelta: Number(trade.shares_delta),
           priceBefore: Number(trade.price_before),
@@ -2649,6 +2911,14 @@ export const marketRouter = router({
         categoryId: z.string().min(1),
         imageUrl: z.string().optional().nullable(), // Optional image URL from Supabase storage
         settlementAssetCode: z.enum(["VCOIN", "USDC"]).optional(),
+        marketType: z.enum(["binary", "multi_choice"]).optional(),
+        options: z.array(
+          z.object({
+            title: z.string().min(1),
+            iconUrl: z.string().optional().nullable(),
+            sortOrder: z.number().int().optional(),
+          })
+        ).optional(),
       })
     )
     .output(
@@ -2735,6 +3005,21 @@ export const marketRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "ASSET_DISABLED" });
       }
 
+      const marketType = input.marketType ?? "binary";
+      const options = (input.options ?? [])
+        .map((o, idx) => ({
+          title: o.title.trim(),
+          iconUrl: o.iconUrl?.trim() || null,
+          sortOrder: Number.isFinite(o.sortOrder ?? NaN) ? Number(o.sortOrder) : idx,
+        }))
+        .filter((o) => o.title.length > 0);
+
+      if (marketType === "multi_choice") {
+        if (options.length < 2) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "At least 2 options are required" });
+        }
+      }
+
       // Insert market - title_rus is optional (nullable) for English-only markets
       const { data: market, error: marketError } = await (supabaseService as SupabaseDbClient)
         .from("markets")
@@ -2753,6 +3038,7 @@ export const marketRouter = router({
           liquidity_b: 100,
           amm_type: "lmsr",
           category_id: cat.id,
+          market_type: marketType,
         })
         .select("id, title_rus, title_eng")
         .single();
@@ -2764,31 +3050,75 @@ export const marketRouter = router({
         });
       }
 
-      // Insert AMM state (use upsert with ignoreDuplicates to handle race conditions)
-      const { error: ammError } = await (supabaseService as SupabaseDbClient)
-        .from("market_amm_state")
-        .upsert(
-          {
-            market_id: market.id,
-            b: 100,
-            q_yes: 0,
-            q_no: 0,
-            last_price_yes: 0.5,
-            fee_accumulated_minor: 0,
-          },
-          {
-            onConflict: "market_id",
-            ignoreDuplicates: true, // Silently skip if already exists (handles race conditions)
-          }
-        );
+      if (marketType === "multi_choice") {
+        const normalized = options.map((o, idx) => ({
+          market_id: market.id,
+          slug: `${o.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || `option-${idx + 1}`}-${idx + 1}`,
+          title: o.title,
+          icon_url: o.iconUrl,
+          sort_order: o.sortOrder,
+          is_active: true,
+        }));
 
-      if (ammError) {
-        // Rollback by deleting market (not ideal, but simple)
-        await supabaseService.from("markets").delete().eq("id", market.id);
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: ammError.message,
-        });
+        const { data: insertedOutcomes, error: outcomesError } = await (supabaseService as SupabaseDbClient)
+          .from("market_outcomes")
+          .insert(normalized)
+          .select("id, market_id, sort_order");
+
+        if (outcomesError || !insertedOutcomes || insertedOutcomes.length === 0) {
+          await supabaseService.from("markets").delete().eq("id", market.id);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: outcomesError?.message ?? "Failed to create market outcomes",
+          });
+        }
+
+        const initPrice = 1 / insertedOutcomes.length;
+        const { error: multiAmmError } = await (supabaseService as SupabaseDbClient)
+          .from("market_outcome_amm_state")
+          .insert(
+            (insertedOutcomes as Array<{ id: string; market_id: string; sort_order: number }>).map((o) => ({
+              market_id: o.market_id,
+              outcome_id: o.id,
+              q: 0,
+              last_price: initPrice,
+            }))
+          );
+
+        if (multiAmmError) {
+          await supabaseService.from("markets").delete().eq("id", market.id);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: multiAmmError.message,
+          });
+        }
+      } else {
+        // Insert AMM state (use upsert with ignoreDuplicates to handle race conditions)
+        const { error: ammError } = await (supabaseService as SupabaseDbClient)
+          .from("market_amm_state")
+          .upsert(
+            {
+              market_id: market.id,
+              b: 100,
+              q_yes: 0,
+              q_no: 0,
+              last_price_yes: 0.5,
+              fee_accumulated_minor: 0,
+            },
+            {
+              onConflict: "market_id",
+              ignoreDuplicates: true, // Silently skip if already exists (handles race conditions)
+            }
+          );
+
+        if (ammError) {
+          // Rollback by deleting market (not ideal, but simple)
+          await supabaseService.from("markets").delete().eq("id", market.id);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: ammError.message,
+          });
+        }
       }
 
       return { id: market.id, titleRu: market.title_rus ?? market.title_eng, titleEn: market.title_eng };
