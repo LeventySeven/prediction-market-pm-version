@@ -7,13 +7,12 @@ import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
-import AdminMarketModal from "@/components/AdminMarketModal";
 import ProfilePage from "@/components/ProfilePage";
 import PublicUserProfileModal from "@/components/PublicUserProfileModal";
 import Button from "@/components/Button";
 import type { Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search, X, AlertCircle, Filter } from "lucide-react";
+import { Search, Filter, X } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
@@ -24,9 +23,7 @@ import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
-import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { Transaction } from "@solana/web3.js";
-import { Buffer } from "buffer";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { runDiagnostics } from "@/lib/debug/walletDiagnostics";
 
 // Expose diagnostics in development for easy console access
@@ -138,20 +135,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   };
 };
 
-const toLocalDateTimeInput = (iso?: string | null) => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const year = d.getFullYear();
-  const month = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  const hours = pad(d.getHours());
-  const minutes = pad(d.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-};
-
-const MARKET_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MARKET_ID_REGEX = /^[A-Za-z0-9:_-]{6,}$/;
 
 const slugifyTitle = (raw: string) =>
   raw
@@ -226,8 +210,7 @@ export default function HomePage() {
   const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
   const [leaderboardSortOpen, setLeaderboardSortOpen] = useState(false);
   type PostAuthAction =
-    | { type: "OPEN_CREATE_MARKET" }
-  | { type: "PLACE_BET"; marketId: string; side?: "YES" | "NO"; outcomeId?: string; amount: number; marketTitle: string }
+    | { type: "PLACE_BET"; marketId: string; side?: "YES" | "NO"; outcomeId?: string; amount: number; marketTitle: string }
     | { type: "OPEN_MARKET_BET"; marketId: string; side: "YES" | "NO" }
     | null;
   const [postAuthAction, setPostAuthAction] = useState<PostAuthAction>(null);
@@ -243,8 +226,7 @@ export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const silentRefreshInFlightRef = useRef<Promise<boolean> | null>(null);
   // Wallet state (Solana Wallet Adapter)
-  const { publicKey, connected: isWalletConnected, sendTransaction, signTransaction } = useWallet();
-  const { connection } = useConnection();
+  const { publicKey, connected: isWalletConnected } = useWallet();
   const connectedWalletAddress = publicKey ? publicKey.toBase58() : null;
   type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
   const normalizeSolanaCluster = (value: string): SolanaCluster => {
@@ -496,7 +478,6 @@ export default function HomePage() {
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   type MarketBetIntent = { marketId: string; side?: "YES" | "NO"; outcomeId?: string; nonce: number } | null;
   const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
-  const [showAdminModal, setShowAdminModal] = useState(false);
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
   type MarketContextPayload = { context: string; sources: string[]; updatedAt: string };
@@ -504,10 +485,6 @@ export default function HomePage() {
   const [marketContextLoadingId, setMarketContextLoadingId] = useState<string | null>(null);
   const [marketContextErrorById, setMarketContextErrorById] = useState<Record<string, string | null>>({});
   const [walletBalanceMajor, setWalletBalanceMajor] = useState<number | null>(null);
-  const [editMarketOpen, setEditMarketOpen] = useState(false);
-  const [editMarketTarget, setEditMarketTarget] = useState<Market | null>(null);
-  const [deleteMarketOpen, setDeleteMarketOpen] = useState(false);
-  const [deleteMarketError, setDeleteMarketError] = useState<string | null>(null);
   type MyMarket = Market & { hasBets: boolean };
   const [myCreatedMarkets, setMyCreatedMarkets] = useState<MyMarket[]>([]);
   const [marketComments, setMarketComments] = useState<MarketComment[]>([]);
@@ -547,7 +524,6 @@ export default function HomePage() {
   const [publicProfileComments, setPublicProfileComments] = useState<PublicProfileComment[]>([]);
   const [publicProfileBets, setPublicProfileBets] = useState<PublicProfileBet[]>([]);
   const publicProfileRequestIdRef = useRef(0);
-  const [lastOnchainTxBase64, setLastOnchainTxBase64] = useState<string | null>(null);
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
   const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
   const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
@@ -602,7 +578,10 @@ export default function HomePage() {
     setLoadingLeaderboard(true);
     setLeaderboardError(null);
     try {
-      const usersRaw = await trpcClient.user.leaderboard.query({ limit: 100, sortBy });
+      const usersRaw = await trpcClient.user.leaderboard.query({
+        limit: 100,
+        sortBy: sortBy === "PNL" ? "pnl" : "bets",
+      });
       const users: LeaderboardUser[] = leaderboardUsersSchema.parse(usersRaw);
       setLeaderboardUsers(users);
     } catch (err) {
@@ -690,232 +669,11 @@ export default function HomePage() {
     setReloginRequired(false);
   }, []);
 
-  const debugOnchainTx = useCallback(
-    async (txBase64?: string) => {
-      const base64 = (txBase64 || lastOnchainTxBase64 || "").trim();
-      if (!base64) {
-        console.warn("[debugOnchainTx] No transaction available. Place a USDC bet first.");
-        return null;
-      }
-      let tx: Transaction;
-      try {
-        tx = Transaction.from(Buffer.from(base64, "base64"));
-      } catch (err) {
-        console.error("[debugOnchainTx] Failed to parse txBase64", err);
-        return null;
-      }
-
-      console.log("\n========================================");
-      console.log("🔍 ONCHAIN TX DEBUG");
-      console.log("========================================\n");
-      console.log("Base64 length:", base64.length);
-      console.log("Fee payer:", tx.feePayer?.toBase58() || "N/A");
-      console.log("Recent blockhash:", tx.recentBlockhash || "N/A");
-      console.log("Instruction count:", tx.instructions.length);
-      console.log(
-        "Signatures:",
-        tx.signatures.map((s) => ({
-          pubkey: s.publicKey.toBase58(),
-          hasSignature: Boolean(s.signature),
-        }))
-      );
-
-      if (typeof signTransaction === "function") {
-        console.log("\nAttempting wallet signature (will prompt wallet)...");
-        try {
-          const preservedSignatures = tx.signatures
-            .filter((sig) => sig.signature)
-            .map((sig) => ({ publicKey: sig.publicKey, signature: sig.signature as Buffer }));
-          const signed: Transaction = await signTransaction(tx);
-          for (const preserved of preservedSignatures) {
-            const existing = signed.signatures.find((sig) => sig.publicKey.equals(preserved.publicKey))?.signature;
-            if (!existing) {
-              signed.addSignature(preserved.publicKey, preserved.signature);
-            }
-          }
-          const walletSigned = publicKey
-            ? Boolean(signed.signatures.find((sig) => sig.publicKey.equals(publicKey))?.signature)
-            : false;
-          console.log("Wallet signature present:", walletSigned);
-          console.log(
-            "Signed signatures:",
-            signed.signatures.map((s) => ({
-              pubkey: s.publicKey.toBase58(),
-              hasSignature: Boolean(s.signature),
-            }))
-          );
-        } catch (err) {
-          console.error("[debugOnchainTx] Wallet signing failed", err);
-        }
-      } else {
-        console.warn("[debugOnchainTx] signTransaction not available on this wallet adapter.");
-      }
-      console.log("\n========================================\n");
-
-      return tx;
-    },
-    [lastOnchainTxBase64, publicKey, signTransaction]
-  );
-
-  const sendOnchainTransaction = useCallback(
-    async (tx: Transaction) => {
-      const preservedSignatures = tx.signatures
-        .filter((sig) => sig.signature)
-        .map((sig) => ({ publicKey: sig.publicKey, signature: sig.signature as Buffer }));
-
-      if (typeof signTransaction === "function") {
-        const signed: Transaction = await signTransaction(tx);
-        for (const preserved of preservedSignatures) {
-          const existing = signed.signatures.find((sig) => sig.publicKey.equals(preserved.publicKey))?.signature;
-          if (!existing) {
-            signed.addSignature(preserved.publicKey, preserved.signature);
-          }
-        }
-        if (publicKey) {
-          const walletSignature = signed.signatures.find((sig) => sig.publicKey.equals(publicKey))?.signature;
-          if (!walletSignature) {
-            throw new Error("WALLET_SIGNATURE_MISSING");
-          }
-        }
-        const signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
-        if (!signature) {
-          throw new Error("SIGNATURE_EMPTY");
-        }
-        return signature;
-      }
-
-      const signature = await sendTransaction(tx, connection, { skipPreflight: true });
-      if (!signature) {
-        throw new Error("SIGNATURE_EMPTY");
-      }
-      return signature;
-    },
-    [connection, publicKey, sendTransaction, signTransaction]
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    (window as unknown as { debugOnchainTx?: typeof debugOnchainTx }).debugOnchainTx = debugOnchainTx;
-  }, [debugOnchainTx]);
-
   const handleTelegramLogin = useCallback(async (initData: string) => {
     const res = await trpcClient.auth.telegramLogin.mutate({ initData });
     clearRelogin();
     applyPublicUser(res.user);
   }, [applyPublicUser, clearRelogin]);
-
-  const formatBetError = (msg?: string) => {
-    if (!msg) return lang === "RU" ? "Не удалось поставить ставку" : "Failed to place bet";
-    const upper = msg.toUpperCase();
-    const simPrefix = "SOLANA_SIMULATION_FAILED:";
-    const simIdx = upper.indexOf(simPrefix);
-    const simDetails = simIdx >= 0 ? msg.slice(simIdx + simPrefix.length).trim() : null;
-    // Check for authentication errors first
-    if (upper.includes("UNAUTHORIZED") || upper.includes("NOT AUTHENTICATED") || upper.includes("NOT_AUTHENTICATED")) {
-      triggerRelogin();
-      return lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.";
-    }
-    if (upper.includes("MARKET_EXPIRED") || upper.includes("MARKET_CLOSED") || upper.includes("MARKET_NOT_OPEN")) {
-      return lang === "RU" ? "Событие завершено, ставки закрыты." : "Market closed for trading.";
-    }
-    if (upper.includes("INSUFFICIENT_BALANCE")) {
-      return lang === "RU" ? "Недостаточно средств на балансе." : "Insufficient balance.";
-    }
-    if (upper.includes("INSUFFICIENT_SOL_FOR_FEES") || upper.includes("NOT ENOUGH SOL")) {
-      return lang === "RU"
-        ? "Недостаточно SOL для комиссии сети и создания нужных аккаунтов."
-        : "Not enough SOL for network fees and required account creation.";
-    }
-    if (upper.includes("INSUFFICIENT_USDC_ONCHAIN")) {
-      return lang === "RU"
-        ? "Недостаточно USDC нужного mint в подключенном кошельке. Проверьте, что токен совпадает с USDC mint приложения."
-        : "Insufficient USDC for the required mint in the connected wallet. Verify the token mint matches app USDC mint.";
-    }
-    if (upper.includes("MARKET_RESOLVED")) {
-      return lang === "RU" ? "Событие уже разрешено." : "Market already resolved.";
-    }
-    if (upper.includes("AMOUNT_TOO_SMALL") || upper.includes("INVALID_AMOUNT")) {
-      return lang === "RU" ? "Сумма слишком мала." : "Amount is too small.";
-    }
-    if (upper.includes("AMOUNT_TOO_LARGE") || upper.includes("VALUE OUT OF RANGE")) {
-      return lang === "RU" ? "Слишком большая ставка, попробуйте меньше." : "Bet amount is too large, try a smaller size.";
-    }
-    if (upper.includes("BET_TOO_LARGE")) {
-      return lang === "RU" ? "Достигнут лимит максимальной ставки." : "Maximum bet limit reached.";
-    }
-    if (upper.includes("INVALID_LIQUIDITY")) {
-      return lang === "RU" ? "У рынка нет ликвидности для торговли." : "Market liquidity is invalid.";
-    }
-    if (upper.includes("DECLAREDPROGRAMIDMISMATCH") || upper.includes("CUSTOM\":4100")) {
-      return lang === "RU"
-        ? "Версия смарт-контракта не совпадает с настройками приложения. Обновите приложение и повторите попытку."
-        : "Smart contract version does not match app configuration. Refresh/update the app and try again.";
-    }
-    if (upper.includes("ACCOUNTNOTINITIALIZED") || upper.includes("CUSTOM\":3012")) {
-      return lang === "RU"
-        ? "Ончейн-конфиг не инициализирован для текущего Program ID. Выполните initialize_config и повторите."
-        : "On-chain config is not initialized for the current Program ID. Run initialize_config and retry.";
-    }
-    if (upper.includes("RATE_LIMIT_EXCEEDED")) {
-      return lang === "RU"
-        ? "Лимит создания рынков: до 3 новых рынков за 30 минут."
-        : "Market creation limit reached: up to 3 new markets per 30 minutes.";
-    }
-    if (upper.includes("TEMPORARY_DB_TIMEOUT") || upper.includes("STATEMENT TIMEOUT")) {
-      return lang === "RU"
-        ? "Сервер временно перегружен. Попробуйте поставить ставку еще раз через несколько секунд."
-        : "Server is temporarily busy. Please try placing the bet again in a few seconds.";
-    }
-    if (upper.includes("TX_FAILED_ONCHAIN")) {
-      return lang === "RU"
-        ? "Транзакция в сети Solana не прошла. Проверьте баланс USDC и попробуйте снова."
-        : "On-chain Solana transaction failed. Check your USDC balance and try again.";
-    }
-    if (upper.includes("CUSTOM\":1")) {
-      return lang === "RU"
-        ? "Транзакция отклонена: недостаточно токенов или слишком маленькая сумма."
-        : "Transaction rejected: insufficient tokens or amount too small.";
-    }
-    if (simDetails) {
-      return lang === "RU"
-        ? `Ошибка симуляции транзакции: ${simDetails}`
-        : `Transaction simulation failed: ${simDetails}`;
-    }
-    if (upper.includes("SOLANA_WALLET_MISMATCH")) {
-      return lang === "RU"
-        ? "Кошелёк не привязан к аккаунту. Переподключите кошелёк."
-        : "Wallet not linked to your account. Please reconnect your wallet.";
-    }
-    if (upper.includes("ADMIN_ONLY_ONCHAIN") || upper.includes("ONCHAIN_UNAVAILABLE")) {
-      return lang === "RU"
-        ? "Ончейн-ставки временно недоступны."
-        : "On-chain bets are temporarily unavailable.";
-    }
-    if (upper.includes("WALLET_SIGNATURE_MISSING")) {
-      return lang === "RU"
-        ? "Кошелёк не подписал транзакцию. Подтвердите подпись в кошельке и попробуйте снова."
-        : "Wallet did not sign the transaction. Approve the signature in your wallet and try again.";
-    }
-    if (upper.includes("SIGNATURE_EMPTY") || upper.includes("!SIGNATURE")) {
-      return lang === "RU"
-        ? "Кошелёк не вернул подпись транзакции. Переподключите кошелёк и попробуйте снова."
-        : "Wallet did not return a transaction signature. Reconnect your wallet and try again.";
-    }
-    if (upper.includes("WALLET_ALREADY_LINKED")) {
-      return lang === "RU"
-        ? "Этот кошелёк уже привязан к другому аккаунту."
-        : "This wallet is already linked to another account.";
-    }
-    if (upper.includes("ASSET_DISABLED")) {
-      return lang === "RU" ? "Этот актив сейчас недоступен." : "Settlement asset is disabled.";
-    }
-    if (upper.includes("UNEXPECTED TOKEN") && upper.includes("JSON")) {
-      return lang === "RU"
-        ? "Ошибка конфигурации Solana на сервере. Проверьте SOLANA_QUOTE_AUTHORITY_KEYPAIR."
-        : "Solana server config error. Check SOLANA_QUOTE_AUTHORITY_KEYPAIR.";
-    }
-    return msg;
-  };
 
   const handleSignUp = async (payload: {
     email: string;
@@ -1511,21 +1269,6 @@ export default function HomePage() {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [myTrades]);
 
-  const resolveMarketOutcome = useCallback(
-    async ({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) => {
-      if (!user) throw new Error("UNAUTHORIZED");
-      const market = markets.find((m) => m.id === marketId);
-      if (!market || !market.createdBy || market.createdBy !== user.id) {
-        throw new Error("FORBIDDEN");
-      }
-      await trpcClient.market.resolveMarket.mutate({ marketId, outcome });
-      await loadMarkets();
-      await loadMyBets();
-      await refreshUser();
-    },
-    [user, markets, loadMarkets, loadMyBets, refreshUser]
-  );
-
   // We load profile bets on navigation and after mutations; no periodic polling needed.
 
   const filteredMarkets = useMemo(
@@ -1881,7 +1624,6 @@ export default function HomePage() {
     amount,
     marketId,
     side,
-    outcomeId,
     marketTitle,
   }: {
     amount: number;
@@ -1891,195 +1633,28 @@ export default function HomePage() {
     marketTitle: string;
   }) => {
     const safeSide: "YES" | "NO" = side ?? "YES";
-    try {
-      // Open the modal immediately so UX is snappy; we’ll flip it to success/error when done.
-      setBetConfirm({
-        open: true,
-        marketTitle,
-        side: safeSide,
-        amount,
-        newBalance: undefined,
-        errorMessage: null,
-        isLoading: true,
-      });
+    const market =
+      selectedMarket && selectedMarket.id === marketId
+        ? selectedMarket
+        : markets.find((m) => m.id === marketId) ?? null;
+    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
 
-      if (!user) {
-        openAuth("SIGN_IN");
-        setBetConfirm({
-          open: true,
-          marketTitle,
-          side: safeSide,
-          amount,
-          newBalance: undefined,
-          errorMessage: lang === "RU" ? "Войдите, чтобы сделать ставку." : "Please log in to place a bet.",
-          isLoading: false,
-        });
-        return;
-      }
-
-      const marketForAsset =
-        selectedMarket && selectedMarket.id === marketId
-          ? selectedMarket
-          : feedMarkets.find((m) => m.id === marketId) || filteredMarkets.find((m) => m.id === marketId) || null;
-      const settlementAsset = String(marketForAsset?.settlementAsset || "VCOIN").toUpperCase();
-      const isOnChain = settlementAsset === "USDC" || settlementAsset === "USDT";
-
-      // Verify auth is still valid before placing bet (in case cookies expired or weren't set)
-      const authCheck = await refreshUser();
-      if (!authCheck) {
-        const refreshed = await attemptSilentRefresh();
-        if (!refreshed) {
-          setBetConfirm({
-            open: true,
-            marketTitle,
-            side: safeSide,
-            amount,
-            newBalance: undefined,
-            errorMessage: lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.",
-            isLoading: false,
-          });
-          return;
-        }
-      }
-
-      if (isOnChain) {
-        if (!user.isAdmin) {
-          setBetConfirm({
-            open: true,
-            marketTitle,
-            side: safeSide,
-            amount,
-            newBalance: undefined,
-            errorMessage:
-              lang === "RU"
-                ? "Ончейн-ставки временно недоступны."
-                : "On-chain bets are temporarily unavailable.",
-            isLoading: false,
-          });
-          return;
-        }
-
-        if (settlementAsset !== "USDC") {
-          setBetConfirm({
-            open: true,
-            marketTitle,
-            side: safeSide,
-            amount,
-            newBalance: undefined,
-            errorMessage:
-              lang === "RU"
-                ? "USDT-ончейн ставки пока не включены."
-                : "USDT on-chain bets are not enabled yet.",
-            isLoading: false,
-          });
-          return;
-        }
-
-        if (!isWalletConnected || !publicKey) {
-          const hasLinkedWallet = Boolean(user.solanaWalletAddress);
-          setBetConfirm({
-            open: true,
-            marketTitle,
-            side: safeSide,
-            amount,
-            newBalance: undefined,
-            errorMessage: hasLinkedWallet
-              ? lang === "RU"
-                ? "Кошелёк привязан в профиле, но не подключен сейчас. Нажмите Connect."
-                : "Wallet is linked in your profile, but not connected right now. Tap Connect to sign."
-              : lang === "RU"
-                ? "Подключите Solana-кошелёк."
-                : "Connect your Solana wallet.",
-            isLoading: false,
-          });
-          return;
-        }
-
-      if (!side) {
-        throw new Error("SIDE_REQUIRED_FOR_ONCHAIN");
-      }
-      const res = await trpcClient.market.prepareBet.mutate({
-          marketId,
-          side,
-          amount,
-          assetCode: "USDC",
-          userPubkey: publicKey.toBase58(),
-        });
-      setLastOnchainTxBase64(res.txBase64);
-
-        const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-        const signature = await sendOnchainTransaction(tx);
-        if (!signature) {
-          throw new Error("SIGNATURE_EMPTY");
-        }
-        await connection.confirmTransaction(signature, "confirmed");
-
-        const finalized = await trpcClient.market.finalizeBet.mutate({
-          marketId,
-          signature,
-        });
-        const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
-        setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
-        setWalletBalanceMajor(newBalanceMajor);
-
-        await loadMarkets();
-        await refreshUser();
-        await loadMyBets();
-
-        setBetConfirm({
-          open: true,
-          marketTitle,
-          side: safeSide,
-          amount,
-          newBalance: newBalanceMajor,
-          errorMessage: null,
-          isLoading: false,
-        });
-        return;
-      }
-
-      // Legacy VCOIN flow (unchanged)
-      const res = await trpcClient.market.placeBet.mutate({
-        amount,
-        marketId,
-        side,
-        outcomeId,
-      });
-
-      // Update user balance from response (minor units -> major)
-      const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
-      setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
-      setWalletBalanceMajor(newBalanceMajor);
-
-      await loadMarkets();
-      await refreshUser();
-      await loadMyBets();
-
-      setBetConfirm({
-        open: true,
-        marketTitle,
-        side: safeSide,
-        amount,
-        newBalance: newBalanceMajor,
-        errorMessage: null,
-        isLoading: false,
-      });
-    } catch (err) {
-      console.error("placeBet failed", err);
-      const friendly = formatBetError(getErrorMessage(err));
-      await loadMarkets();
-      const refreshedUser = await refreshUser();
-      await loadMyBets();
-      setBetConfirm({
-        open: true,
-        marketTitle,
-        side: safeSide,
-        amount,
-        newBalance: refreshedUser?.balance ?? user?.balance,
-        errorMessage: friendly,
-        isLoading: false,
-      });
+    if (typeof window !== "undefined") {
+      window.open(target, "_blank", "noopener,noreferrer");
     }
+
+    setBetConfirm({
+      open: true,
+      marketTitle,
+      side: safeSide,
+      amount,
+      newBalance: user?.balance,
+      errorMessage:
+        lang === "RU"
+          ? "Торги выполняются на стороне Polymarket. Мы открыли рынок в новой вкладке."
+          : "Trading is handled by Polymarket. We opened this market in a new tab.",
+      isLoading: false,
+    });
   };
 
   const handleOpenMarketBet = useCallback(
@@ -2147,57 +1722,12 @@ export default function HomePage() {
     return entry ? entry.hasBets : false;
   }, [selectedMarketId, selectedMarket?.createdBy, user, myCreatedMarkets]);
 
-  const handleUpdateMarket = useCallback(async (payload: {
-    marketId: string;
-    titleEn: string;
-    description?: string | null;
-    source?: string | null;
-    closesAt?: string | null;
-    expiresAt: string;
-    categoryId: string;
-    imageUrl?: string | null;
-  }) => {
-    try {
-      await trpcClient.market.updateMarket.mutate(payload);
-      await loadMarkets();
-      setEditMarketOpen(false);
-      setEditMarketTarget(null);
-    } catch (err) {
-      console.error("updateMarket failed", err);
-      throw err;
-    }
-  }, [loadMarkets]);
-
-  const handleDeleteMarket = useCallback(async () => {
-    if (!editMarketTarget) return;
-    setDeleteMarketError(null);
-    try {
-      await trpcClient.market.deleteMarket.mutate({ marketId: editMarketTarget.id });
-      setDeleteMarketOpen(false);
-      setEditMarketTarget(null);
-      setSelectedMarketId(null);
-      navigateToCatalogUrl();
-      await loadMarkets();
-    } catch (err) {
-      console.error("deleteMarket failed", err);
-      setDeleteMarketError(getErrorMessage(err));
-    }
-  }, [editMarketTarget, loadMarkets, navigateToCatalogUrl]);
-
   const handleOpenCreateMarket = useCallback(() => {
-    if (!user) {
-      setPostAuthAction({ type: "OPEN_CREATE_MARKET" });
-      if (marketCategories.length === 0 && !loadingMarketCategories) {
-        void loadMarketCategories();
-      }
-      openAuth("SIGN_IN");
-      return;
+    const target = process.env.NEXT_PUBLIC_POLYMARKET_CREATE_URL || "https://polymarket.com";
+    if (typeof window !== "undefined") {
+      window.open(target, "_blank", "noopener,noreferrer");
     }
-    if (marketCategories.length === 0 && !loadingMarketCategories) {
-      void loadMarketCategories();
-    }
-    setShowAdminModal(true);
-  }, [user, marketCategories.length, loadingMarketCategories, loadMarketCategories, openAuth]);
+  }, []);
 
   const handleSetBookmarked = useCallback(
     async (marketId: string, bookmarked: boolean) => {
@@ -2294,14 +1824,6 @@ export default function HomePage() {
   // Post-auth actions (run only after user becomes available).
   useEffect(() => {
     if (!user || !postAuthAction) return;
-    if (postAuthAction.type === "OPEN_CREATE_MARKET") {
-      setPostAuthAction(null);
-      if (marketCategories.length === 0 && !loadingMarketCategories) {
-        void loadMarketCategories();
-      }
-      setShowAdminModal(true);
-      return;
-    }
     if (postAuthAction.type === "OPEN_MARKET_BET") {
       const action = postAuthAction;
       setPostAuthAction(null);
@@ -2324,126 +1846,43 @@ export default function HomePage() {
         marketTitle: action.marketTitle,
       });
     }
-  }, [user, postAuthAction, marketCategories.length, loadingMarketCategories, loadMarketCategories, markets, navigateToMarketUrl]);
+  }, [user, postAuthAction, markets, navigateToMarketUrl]);
 
   /**
    * Handle selling a position (cash out)
    */
   const handleSellPosition = async ({
     marketId,
-    side,
-    outcomeId,
-    shares,
   }: {
     marketId: string;
     side?: "YES" | "NO";
     outcomeId?: string;
     shares: number;
   }) => {
-    if (!user) return;
-
-    try {
-      const marketForAsset =
-        selectedMarket && selectedMarket.id === marketId
-          ? selectedMarket
-          : feedMarkets.find((m) => m.id === marketId) || filteredMarkets.find((m) => m.id === marketId) || null;
-      const settlementAsset = String(marketForAsset?.settlementAsset || "VCOIN").toUpperCase();
-      const isOnChain = settlementAsset === "USDC" || settlementAsset === "USDT";
-
-      if (isOnChain) {
-        if (!side) {
-          throw new Error("SIDE_REQUIRED_FOR_ONCHAIN");
-        }
-        if (!user.isAdmin) {
-          throw new Error("ONCHAIN_UNAVAILABLE");
-        }
-        if (!isWalletConnected || !publicKey) {
-          throw new Error("WALLET_NOT_CONNECTED");
-        }
-        const res = await trpcClient.market.prepareSell.mutate({
-          marketId,
-          side,
-          shares,
-          assetCode: "USDC",
-          userPubkey: publicKey.toBase58(),
-        });
-        setLastOnchainTxBase64(res.txBase64);
-        const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-        const signature = await sendOnchainTransaction(tx);
-        await connection.confirmTransaction(signature, "confirmed");
-
-        const finalized = await trpcClient.market.finalizeSell.mutate({
-          marketId,
-          signature,
-        });
-        const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
-        setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
-        setWalletBalanceMajor(newBalanceMajor);
-
-        await loadMarkets();
-        await refreshUser();
-        await loadMyBets();
-        return;
-      }
-
-      const res = await trpcClient.market.sellPosition.mutate({
-        marketId,
-        side,
-        outcomeId,
-        shares,
-      });
-
-      const newBalanceMajor = toMajorUnits(res.newBalanceMinor);
-      setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
-      setWalletBalanceMajor(newBalanceMajor);
-
-      await loadMarkets();
-      await refreshUser();
-      await loadMyBets();
-    } catch (err) {
-      console.error("sellPosition failed", err);
-      await loadMarkets();
-      await refreshUser();
-      await loadMyBets();
-      throw err;
+    const market =
+      selectedMarket && selectedMarket.id === marketId
+        ? selectedMarket
+        : markets.find((m) => m.id === marketId) ?? null;
+    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+    if (typeof window !== "undefined") {
+      window.open(target, "_blank", "noopener,noreferrer");
     }
   };
 
   const handleClaimWinnings = async ({
     marketId,
-    assetCode,
   }: {
     marketId: string;
     assetCode: "USDC" | "USDT";
   }) => {
-    if (!user) return;
-    if (!user.isAdmin) {
-      throw new Error("ONCHAIN_UNAVAILABLE");
+    const market =
+      selectedMarket && selectedMarket.id === marketId
+        ? selectedMarket
+        : markets.find((m) => m.id === marketId) ?? null;
+    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+    if (typeof window !== "undefined") {
+      window.open(target, "_blank", "noopener,noreferrer");
     }
-    if (!isWalletConnected || !publicKey) {
-      throw new Error("WALLET_NOT_CONNECTED");
-    }
-    const res = await trpcClient.market.prepareClaim.mutate({
-      marketId,
-      assetCode: "USDC",
-      userPubkey: publicKey.toBase58(),
-    });
-    setLastOnchainTxBase64(res.txBase64);
-    const tx = Transaction.from(Buffer.from(res.txBase64, "base64"));
-    const signature = await sendOnchainTransaction(tx);
-    await connection.confirmTransaction(signature, "confirmed");
-
-    const finalized = await trpcClient.market.finalizeClaim.mutate({
-      marketId,
-      signature,
-    });
-    const newBalanceMajor = toMajorUnits(finalized.newBalanceMinor);
-    setUser((prev) => (prev ? { ...prev, balance: newBalanceMajor } : prev));
-    setWalletBalanceMajor(newBalanceMajor);
-
-    await loadMarkets();
-    await refreshUser();
-    await loadMyBets();
   };
 
   const handlePostMarketComment = useCallback(
@@ -2503,7 +1942,7 @@ export default function HomePage() {
     try {
       const res = await trpcClient.market.toggleMarketCommentLike.mutate({ commentId });
       setMarketComments((prev) =>
-        prev.map((c) => (c.id === res.commentId ? { ...c, likes: res.likesCount, likedByMe: res.likedByMe } : c))
+        prev.map((c) => (c.id === res.commentId ? { ...c, likes: res.likesCount, likedByMe: res.liked } : c))
       );
     } catch (err) {
       console.error("toggleMarketCommentLike failed", err);
@@ -2602,15 +2041,6 @@ export default function HomePage() {
                 openAuth("SIGN_UP");
               }}
               lang={lang}
-              onResolveOutcome={
-                user &&
-                selectedMarket.createdBy &&
-                selectedMarket.createdBy === user.id &&
-                Number.isFinite(Date.parse(selectedMarket.expiresAt)) &&
-                Date.now() >= Date.parse(selectedMarket.expiresAt)
-                  ? resolveMarketOutcome
-                  : undefined
-              }
               onPlaceBet={handlePlaceBet}
               onSellPosition={handleSellPosition}
               onClaimWinnings={handleClaimWinnings}
@@ -2631,14 +2061,6 @@ export default function HomePage() {
               marketContextError={marketContextErrorById[selectedMarket.id] ?? null}
               onFetchMarketContext={handleFetchMarketContext}
               creatorHasBets={creatorHasBets}
-              onEditMarket={() => {
-                setEditMarketTarget(selectedMarket);
-                setEditMarketOpen(true);
-              }}
-              onDeleteMarket={() => {
-                setEditMarketTarget(selectedMarket);
-                setDeleteMarketOpen(true);
-              }}
             />
           </main>
           <BottomMenu
@@ -3181,90 +2603,6 @@ export default function HomePage() {
           setCurrentView("CATALOG");
         }}
       />
-      <AdminMarketModal
-        isOpen={showAdminModal}
-        onClose={() => setShowAdminModal(false)}
-        lang={lang}
-        categories={marketCategories}
-        categoriesLoading={loadingMarketCategories}
-        onReloadCategories={loadMarketCategories}
-        isAdmin={Boolean(user?.isAdmin)}
-        onCreate={async (payload) => {
-          try {
-            await trpcClient.market.createMarket.mutate(payload);
-            await loadMarkets();
-            setShowAdminModal(false);
-          } catch (err) {
-            console.error("Failed to create market", err);
-            throw err;
-          }
-        }}
-      />
-      <AdminMarketModal
-        isOpen={editMarketOpen}
-        onClose={() => {
-          setEditMarketOpen(false);
-          setEditMarketTarget(null);
-        }}
-        lang={lang}
-        categories={marketCategories}
-        categoriesLoading={loadingMarketCategories}
-        onReloadCategories={loadMarketCategories}
-        isAdmin={Boolean(user?.isAdmin)}
-        mode="edit"
-        marketId={editMarketTarget?.id}
-        initialValues={
-          editMarketTarget
-            ? {
-                titleEn: editMarketTarget.titleEn ?? editMarketTarget.title,
-                description: editMarketTarget.description ?? null,
-                source: editMarketTarget.source ?? null,
-                closesAt: toLocalDateTimeInput(editMarketTarget.closesAt),
-                expiresAt: toLocalDateTimeInput(editMarketTarget.expiresAt),
-                categoryId: editMarketTarget.categoryId ?? "",
-                imageUrl: editMarketTarget.imageUrl ?? null,
-              }
-            : undefined
-        }
-        onCreate={async () => undefined}
-        onUpdate={handleUpdateMarket}
-      />
-      {deleteMarketOpen && editMarketTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setDeleteMarketOpen(false)} />
-          <div className="relative bg-black border border-zinc-900 w-full max-w-md rounded-2xl p-6 shadow-2xl animate-fade-in-up">
-            <button
-              onClick={() => setDeleteMarketOpen(false)}
-              className="absolute top-4 right-4 text-neutral-400 hover:text-white"
-              aria-label="Close"
-            >
-              <X size={22} />
-            </button>
-            <div className="flex items-center gap-3 mb-4">
-              <AlertCircle className="text-red-400" size={24} />
-              <h2 className="text-xl font-bold text-white">
-                {lang === "RU" ? "Удалить рынок?" : "Delete market?"}
-              </h2>
-            </div>
-            <p className="text-sm text-zinc-300 mb-6">
-              {lang === "RU"
-                ? "Рынок будет удален без возможности восстановления. Это возможно только если ставок еще нет."
-                : "This will permanently delete the market. This is only possible if there are no bets yet."}
-            </p>
-            {deleteMarketError && (
-              <div className="mb-4 text-xs text-red-400">{deleteMarketError}</div>
-            )}
-            <div className="flex items-center justify-between gap-3">
-              <Button variant="ghost" onClick={() => setDeleteMarketOpen(false)}>
-                {lang === "RU" ? "Отмена" : "Cancel"}
-              </Button>
-              <Button variant="destructive" onClick={handleDeleteMarket}>
-                {lang === "RU" ? "Удалить" : "Delete"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
