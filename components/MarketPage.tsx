@@ -2,10 +2,9 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment } from '../types';
 import Button from './Button';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart as RechartsLineChart, Line } from 'recharts';
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart as RechartsLineChart, Line } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { useOnChainMarketData } from '../lib/solana/hooks';
+import TradingViewCandles from './TradingViewCandles';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
 
@@ -158,25 +157,14 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Solana wallet state (on-chain USDC markets will be re-enabled after Anchor program is wired).
-  const { publicKey, connected: walletConnected } = useWallet();
-  const walletAddress = publicKey ? publicKey.toBase58() : null;
-  const isOnChainMarket = market.settlementAsset === 'USDC' || market.settlementAsset === 'USDT';
-  const onchainDisabled = process.env.NEXT_PUBLIC_ONCHAIN_DISABLED === 'true';
-  const onchainData = useOnChainMarketData(market.id, isOnChainMarket && !onchainDisabled);
-  const walletBalanceMajor = onchainData.walletBalance ?? null;
-  const vaultBalanceMajor = onchainData.vaultBalance ?? null;
-  const onchainYesShares = onchainData.sharesYes ?? null;
-  const onchainNoShares = onchainData.sharesNo ?? null;
-  const onchainLoadError = useMemo(() => {
-    if (!isOnChainMarket) return null;
-    if (onchainDisabled) {
-      return lang === 'RU'
-        ? 'Ончейн-данные временно недоступны: функция в разработке.'
-        : 'On-chain data is temporarily unavailable: feature in development.';
-    }
-    return onchainData.error ?? null;
-  }, [isOnChainMarket, onchainDisabled, onchainData.error, lang]);
+  // Wrapper mode: all market execution is performed on Polymarket.
+  const isOnChainMarket = false;
+  const walletConnected = false;
+  const walletBalanceMajor: number | null = null;
+  const vaultBalanceMajor: number | null = null;
+  const onchainYesShares: number | null = null;
+  const onchainNoShares: number | null = null;
+  const onchainLoadError: string | null = null;
 
   useEffect(() => {
     if (!betIntent) return;
@@ -366,13 +354,26 @@ const MarketPage: React.FC<MarketPageProps> = ({
       .map((c) => {
         const ts = Date.parse(String(c.bucket));
         if (!Number.isFinite(ts)) return null;
-        return { ts, label: labelFor(ts), value: Number((c.close * 100).toFixed(2)), spansMultipleDays };
+        const open = Number((c.open * 100).toFixed(2));
+        const high = Number((c.high * 100).toFixed(2));
+        const low = Number((c.low * 100).toFixed(2));
+        const close = Number((c.close * 100).toFixed(2));
+        return {
+          ts,
+          label: labelFor(ts),
+          value: close,
+          open,
+          high,
+          low,
+          close,
+          spansMultipleDays,
+        };
       })
-      .filter((v): v is { ts: number; label: string; value: number; spansMultipleDays: boolean } => Boolean(v))
+      .filter((v): v is { ts: number; label: string; value: number; open: number; high: number; low: number; close: number; spansMultipleDays: boolean } => Boolean(v))
       .sort((a, b) => a.ts - b.ts);
 
     if (rows.length === 0 || rows[0].ts > createdTs) {
-      rows.unshift({ ts: createdTs, label: labelFor(createdTs), value: 50, spansMultipleDays });
+      rows.unshift({ ts: createdTs, label: labelFor(createdTs), value: 50, open: 50, high: 50, low: 50, close: 50, spansMultipleDays });
     }
 
     const last = rows[rows.length - 1] ?? null;
@@ -381,6 +382,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
         ts: Math.max(nowTs, (last?.ts ?? 0) + 1),
         label: labelFor(nowTs),
         value: Number(fallbackChance.toFixed(2)),
+        open: Number((last?.close ?? fallbackChance).toFixed(2)),
+        high: Number(Math.max(last?.close ?? fallbackChance, fallbackChance).toFixed(2)),
+        low: Number(Math.min(last?.close ?? fallbackChance, fallbackChance).toFixed(2)),
+        close: Number(fallbackChance.toFixed(2)),
         spansMultipleDays,
       });
     }
@@ -571,10 +576,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const handleClaimClick = async () => {
     if (!isOnChainMarket || !onClaimWinnings) return;
     if (!user) return;
-    if (!walletConnected) {
-      setPlaceError(lang === 'RU' ? 'Подключите кошелек' : 'Connect your wallet');
-      return;
-    }
     try {
       setPlaceError(null);
       await onClaimWinnings({ marketId: market.id, assetCode: market.settlementAsset as 'USDC' | 'USDT' });
@@ -1244,7 +1245,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
           id="chart-section"
           className="scroll-mt-24 lg:col-span-8 lg:col-start-1 lg:row-start-2"
         >
-          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[380px] relative">
+          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[520px] relative">
             <div className="flex items-baseline gap-4 mb-8">
               <span className="text-4xl font-bold tracking-tight text-zinc-100">{displayedChance}%</span>
               <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
@@ -1269,8 +1270,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
               </div>
             )}
             {chartSeries.data.length > 0 ? (
-              <ResponsiveContainer width="100%" height="80%">
-                {chartSeries.mode === 'multi' ? (
+              chartSeries.mode === 'multi' ? (
+                <ResponsiveContainer width="100%" height="84%">
                   <RechartsLineChart data={chartSeries.data}>
                     <XAxis
                       dataKey="label"
@@ -1314,55 +1315,22 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       />
                     ))}
                   </RechartsLineChart>
-                ) : (
-                  <AreaChart data={chartSeries.data}>
-                    <defs>
-                      <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#ffffff" stopOpacity={0.14} />
-                        <stop offset="95%" stopColor="#ffffff" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis
-                      dataKey="label"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: '#52525b', fontSize: 10 }}
-                      tickFormatter={(value) => String(value)}
-                      minTickGap={40}
-                      dy={10}
-                    />
-                    <YAxis hide domain={[0, 100]} />
-                    <CartesianGrid vertical={false} stroke="#18181b" strokeDasharray="3 3" />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#000000', borderColor: '#27272a', borderRadius: '10px' }}
-                      itemStyle={{ color: '#ffffff', fontSize: '12px' }}
-                      labelStyle={{ color: '#71717a', fontSize: '10px', textTransform: 'uppercase' }}
-                      labelFormatter={(_, payload) => {
-                        const p = Array.isArray(payload) ? payload[0]?.payload : null;
-                        const ts = p && typeof p.ts === "number" ? p.ts : null;
-                        if (!ts) return "";
-                        return new Date(ts).toLocaleString(lang === 'RU' ? 'ru-RU' : 'en-US', {
-                          month: 'short',
-                          day: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        });
-                      }}
-                      formatter={(value: number) => [`${value}%`, lang === 'RU' ? 'Вероятность' : 'Chance']}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="value"
-                      stroke="#ffffff"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#colorValue)"
-                    />
-                  </AreaChart>
-                )}
-              </ResponsiveContainer>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[84%]">
+                  <TradingViewCandles
+                    data={chartSeries.data.slice(-300).map((row) => ({
+                      ts: row.ts,
+                      open: Number((row as { open?: number }).open ?? row.value ?? 0),
+                      high: Number((row as { high?: number }).high ?? row.value ?? 0),
+                      low: Number((row as { low?: number }).low ?? row.value ?? 0),
+                      close: Number((row as { close?: number }).close ?? row.value ?? 0),
+                    }))}
+                  />
+                </div>
+              )
             ) : (
-              <div className="flex h-[80%] items-center justify-center text-sm text-neutral-500">
+              <div className="flex h-[84%] items-center justify-center text-sm text-neutral-500">
                 {lang === 'RU' ? 'Нет данных для графика' : 'No chart data yet'}
               </div>
             )}

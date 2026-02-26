@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/api/recs/route.ts": {
+      "runtime": "edge"
+    }
+  },
   "git": {
     "productionBranch": "main",
     "deploymentEnabled": {

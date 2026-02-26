@@ -2,6 +2,7 @@ type RawMarket = Record<string, unknown>;
 
 export type PolymarketOutcome = {
   id: string;
+  tokenId: string | null;
   title: string;
   probability: number;
   price: number;
@@ -10,6 +11,7 @@ export type PolymarketOutcome = {
 
 export type PolymarketMarket = {
   id: string;
+  conditionId: string;
   slug: string;
   title: string;
   description: string | null;
@@ -21,11 +23,14 @@ export type PolymarketMarket = {
   createdAt: string;
   category: string | null;
   volume: number;
+  clobTokenIds: string[];
   outcomes: PolymarketOutcome[];
   resolvedOutcomeTitle: string | null;
 };
 
 const DEFAULT_BASE = "https://gamma-api.polymarket.com";
+const DEFAULT_CLOB_BASE = "https://clob.polymarket.com";
+const DEFAULT_DATA_BASE = "https://data-api.polymarket.com";
 const DEFAULT_IMAGE = "https://polymarket.com/favicon.ico";
 
 const asString = (value: unknown): string | null => {
@@ -60,6 +65,11 @@ const parseJsonArray = (value: unknown): unknown[] => {
   }
 };
 
+const parseStringArray = (value: unknown): string[] =>
+  parseJsonArray(value)
+    .map((v) => asString(v))
+    .filter((v): v is string => Boolean(v));
+
 const toProb = (value: unknown): number | null => {
   const n = asNumber(value);
   if (n === null) return null;
@@ -79,6 +89,22 @@ const normalizeState = (raw: RawMarket): PolymarketMarket["state"] => {
   return "open";
 };
 
+const parseClobTokenIds = (raw: RawMarket): string[] => {
+  const candidates = [
+    raw.clobTokenIds,
+    raw.clob_token_ids,
+    raw.clobTokens,
+    raw.tokens,
+    raw.tokenIds,
+    raw.token_ids,
+  ];
+  for (const c of candidates) {
+    const ids = parseStringArray(c);
+    if (ids.length > 0) return ids;
+  }
+  return [];
+};
+
 const parseOutcomes = (raw: RawMarket, marketId: string): PolymarketOutcome[] => {
   const titlesRaw = parseJsonArray(raw.outcomes);
   const pricesRaw = parseJsonArray(raw.outcomePrices);
@@ -88,6 +114,7 @@ const parseOutcomes = (raw: RawMarket, marketId: string): PolymarketOutcome[] =>
   const titles = titlesRaw
     .map((v) => asString(v))
     .filter((v): v is string => Boolean(v));
+  const tokenIds = parseClobTokenIds(raw);
 
   if (titles.length > 0) {
     return titles.map((title, idx) => {
@@ -97,7 +124,8 @@ const parseOutcomes = (raw: RawMarket, marketId: string): PolymarketOutcome[] =>
         (titles.length === 2 ? (idx === 0 ? fallbackYes : 1 - fallbackYes) : 1 / titles.length);
       const bounded = Math.max(0, Math.min(1, probability));
       return {
-        id: `${marketId}:${idx}`,
+        id: tokenIds[idx] ?? `${marketId}:${idx}`,
+        tokenId: tokenIds[idx] ?? null,
         title,
         probability: bounded,
         price: bounded,
@@ -107,20 +135,32 @@ const parseOutcomes = (raw: RawMarket, marketId: string): PolymarketOutcome[] =>
   }
 
   return [
-    { id: `${marketId}:0`, title: "YES", probability: fallbackYes, price: fallbackYes, sortOrder: 0 },
-    { id: `${marketId}:1`, title: "NO", probability: 1 - fallbackYes, price: 1 - fallbackYes, sortOrder: 1 },
+    { id: tokenIds[0] ?? `${marketId}:0`, tokenId: tokenIds[0] ?? null, title: "YES", probability: fallbackYes, price: fallbackYes, sortOrder: 0 },
+    { id: tokenIds[1] ?? `${marketId}:1`, tokenId: tokenIds[1] ?? null, title: "NO", probability: 1 - fallbackYes, price: 1 - fallbackYes, sortOrder: 1 },
   ];
 };
 
+const isLikelyNoisyMarket = (raw: RawMarket, mappedTitle: string, volume: number): boolean => {
+  const title = mappedTitle.toLowerCase();
+  const hasRealQuestion = title.includes("?") || title.length >= 12;
+  const noisyPattern = /(test|testing|demo|sample|lorem|asdf|qwerty|dummy)/i;
+  const hidden = Boolean(raw.enableOrderBook === false) || Boolean(raw.archived);
+  if (hidden) return true;
+  if (!hasRealQuestion && volume < 50) return true;
+  if (noisyPattern.test(mappedTitle) && volume < 1_000) return true;
+  return false;
+};
+
 const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
-  const id =
-    asString(raw.id) ??
+  const conditionId =
     asString(raw.conditionId) ??
     asString(raw.condition_id) ??
-    asString(raw.slug);
-  if (!id) return null;
+    asString(raw.market) ??
+    asString(raw.id);
+  if (!conditionId) return null;
 
-  const slug = asString(raw.slug) ?? id;
+  const id = conditionId;
+  const slug = asString(raw.slug) ?? conditionId;
   const title =
     asString(raw.question) ??
     asString(raw.title) ??
@@ -132,9 +172,13 @@ const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
     (slug ? `https://polymarket.com/event/${encodeURIComponent(slug)}` : null);
   const outcomes = parseOutcomes(raw, id);
   const winningTitle = asString(raw.winningOutcome) ?? null;
+  const clobTokenIds = parseClobTokenIds(raw);
+  const volume = asNumber(raw.volumeNum ?? raw.volume) ?? 0;
+  if (isLikelyNoisyMarket(raw, title, volume)) return null;
 
   return {
     id,
+    conditionId,
     slug,
     title,
     description: asString(raw.description),
@@ -145,17 +189,93 @@ const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
     expiresAt: toIso(raw.endDate ?? raw.end_date ?? raw.expirationDate),
     createdAt: toIso(raw.createdAt ?? raw.created_at ?? raw.startDate),
     category: asString(raw.category) ?? asString(raw.group) ?? null,
-    volume: asNumber(raw.volumeNum ?? raw.volume) ?? 0,
+    volume,
+    clobTokenIds,
     outcomes,
     resolvedOutcomeTitle: winningTitle,
   };
 };
 
 const getBaseUrl = () => (process.env.POLYMARKET_API_BASE_URL || DEFAULT_BASE).replace(/\/+$/, "");
+const getClobBaseUrl = () => (process.env.POLYMARKET_CLOB_API_BASE_URL || DEFAULT_CLOB_BASE).replace(/\/+$/, "");
+const getDataBaseUrl = () => (process.env.POLYMARKET_DATA_API_BASE_URL || DEFAULT_DATA_BASE).replace(/\/+$/, "");
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const asRecord = (value: unknown): Record<string, unknown> | null => (isObject(value) ? value : null);
+
+const parsePriceMap = (value: unknown): Map<string, number> => {
+  const map = new Map<string, number>();
+  if (!isObject(value)) return map;
+  for (const [k, v] of Object.entries(value)) {
+    const n = asNumber(v);
+    if (n !== null) map.set(k, Math.max(0, Math.min(1, n)));
+  }
+  return map;
+};
+
+const hydrateWithMidpoints = async (markets: PolymarketMarket[]): Promise<PolymarketMarket[]> => {
+  const tokenIds = Array.from(
+    new Set(
+      markets.flatMap((m) =>
+        m.outcomes
+          .map((o) => o.tokenId)
+          .filter((v): v is string => Boolean(v))
+      )
+    )
+  );
+  if (tokenIds.length === 0) return markets;
+
+  const base = getClobBaseUrl();
+  const chunks: string[][] = [];
+  for (let i = 0; i < tokenIds.length; i += 250) chunks.push(tokenIds.slice(i, i + 250));
+
+  const midpointMap = new Map<string, number>();
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const url = `${base}/midpoints?token_ids=${encodeURIComponent(chunk.join(","))}`;
+      try {
+        const res = await fetch(url, { next: { revalidate: 10 } });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const map = parsePriceMap(payload);
+        for (const [k, v] of map) midpointMap.set(k, v);
+      } catch {
+        // Best-effort only.
+      }
+    })
+  );
+  if (midpointMap.size === 0) return markets;
+
+  return markets.map((m) => {
+    const outcomes = m.outcomes.map((o) => {
+      const next = o.tokenId ? midpointMap.get(o.tokenId) : undefined;
+      if (next === undefined) return o;
+      return { ...o, price: next, probability: next };
+    });
+
+    if (outcomes.length === 2) {
+      const a = outcomes[0];
+      const b = outcomes[1];
+      if (a && b) {
+        const aHas = a.tokenId ? midpointMap.has(a.tokenId) : false;
+        const bHas = b.tokenId ? midpointMap.has(b.tokenId) : false;
+        if (aHas && !bHas) {
+          outcomes[1] = { ...b, price: 1 - a.price, probability: 1 - a.probability };
+        }
+        if (!aHas && bHas) {
+          outcomes[0] = { ...a, price: 1 - b.price, probability: 1 - b.probability };
+        }
+      }
+    }
+    return { ...m, outcomes };
+  });
+};
 
 async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
   const base = getBaseUrl();
-  const url = `${base}/markets?limit=${limit}&closed=false`;
+  const url = `${base}/markets?limit=${limit}&active=true&closed=false&archived=false&order=volume&ascending=false`;
   const response = await fetch(url, { next: { revalidate: 30 } });
   if (!response.ok) return [];
   const payload = (await response.json()) as unknown;
@@ -164,32 +284,185 @@ async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
 
 export async function listPolymarketMarkets(limit = 200): Promise<PolymarketMarket[]> {
   const rows = await fetchMarkets(limit);
-  return rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
+  const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
+  return hydrateWithMidpoints(mapped);
+}
+
+export async function searchPolymarketMarkets(query: string, limit = 80): Promise<PolymarketMarket[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const base = getBaseUrl();
+  const params = new URLSearchParams();
+  params.set("q", q);
+  params.set("limit_per_type", String(Math.max(10, Math.min(100, limit))));
+  params.set("search_profiles", "false");
+  params.set("search_tags", "false");
+  params.set("cache", "true");
+  params.set("optimized", "true");
+  params.set("keep_closed_markets", "0");
+  const url = `${base}/public-search?${params.toString()}`;
+  try {
+    const res = await fetch(url, { next: { revalidate: 15 } });
+    if (!res.ok) return [];
+    const payload = await res.json();
+    const obj = asRecord(payload);
+    const events = Array.isArray(obj?.events) ? obj.events : [];
+    const marketsRaw: RawMarket[] = [];
+    for (const ev of events) {
+      const eventObj = asRecord(ev);
+      const eventMarkets = Array.isArray(eventObj?.markets) ? eventObj?.markets : [];
+      for (const m of eventMarkets) {
+        if (m && typeof m === "object" && !Array.isArray(m)) marketsRaw.push(m as RawMarket);
+      }
+    }
+    const seen = new Set<string>();
+    const mapped = marketsRaw
+      .map(mapMarket)
+      .filter((m): m is PolymarketMarket => Boolean(m))
+      .filter((m) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
+      })
+      .slice(0, limit);
+    return hydrateWithMidpoints(mapped);
+  } catch {
+    return [];
+  }
 }
 
 export async function getPolymarketMarketById(marketId: string): Promise<PolymarketMarket | null> {
   const target = marketId.trim();
   if (!target) return null;
 
-  const directUrl = `${getBaseUrl()}/markets/${encodeURIComponent(target)}`;
+  const base = getBaseUrl();
+  const directUrl = `${base}/markets/${encodeURIComponent(target)}`;
   try {
     const direct = await fetch(directUrl, { next: { revalidate: 30 } });
     if (direct.ok) {
       const payload = (await direct.json()) as unknown;
       if (payload && typeof payload === "object" && !Array.isArray(payload)) {
         const mapped = mapMarket(payload as RawMarket);
-        if (mapped) return mapped;
+        if (mapped) {
+          const [hydrated] = await hydrateWithMidpoints([mapped]);
+          return hydrated ?? mapped;
+        }
       }
     }
   } catch {
     // Fallback to list scan below.
   }
 
+  try {
+    const params = new URLSearchParams();
+    params.set("limit", "1");
+    if (target.startsWith("0x")) params.set("condition_ids", target);
+    else if (/^\d+$/.test(target)) params.set("id", target);
+    else params.set("slug", target);
+    const byQuery = await fetch(`${base}/markets?${params.toString()}`, { next: { revalidate: 30 } });
+    if (byQuery.ok) {
+      const payload = (await byQuery.json()) as unknown;
+      const first = Array.isArray(payload) ? payload[0] : null;
+      const mapped = first ? mapMarket(first as RawMarket) : null;
+      if (mapped) {
+        const [hydrated] = await hydrateWithMidpoints([mapped]);
+        return hydrated ?? mapped;
+      }
+    }
+  } catch {
+    // Fallback below.
+  }
+
   const rows = await listPolymarketMarkets(400);
   return (
     rows.find((m) => m.id === target) ??
+    rows.find((m) => m.conditionId === target) ??
     rows.find((m) => m.slug === target) ??
     null
   );
+}
+
+export type PolymarketPricePoint = { ts: number; price: number };
+
+export async function getPolymarketPriceHistory(tokenId: string): Promise<PolymarketPricePoint[]> {
+  const clean = tokenId.trim();
+  if (!clean) return [];
+  const base = getClobBaseUrl();
+  const url = `${base}/prices-history?market=${encodeURIComponent(clean)}&interval=1w&fidelity=15`;
+  try {
+    const res = await fetch(url, { next: { revalidate: 20 } });
+    if (!res.ok) return [];
+    const payload = await res.json();
+    const obj = asRecord(payload);
+    const history = obj?.history;
+    if (!Array.isArray(history)) return [];
+    return history
+      .map((row) => {
+        const rec = asRecord(row);
+        const t = asNumber(rec?.t);
+        const p = asNumber(rec?.p);
+        if (t === null || p === null) return null;
+        return { ts: t, price: Math.max(0, Math.min(1, p)) };
+      })
+      .filter((v): v is PolymarketPricePoint => Boolean(v));
+  } catch {
+    return [];
+  }
+}
+
+export type PolymarketPublicTrade = {
+  id: string;
+  conditionId: string;
+  side: "BUY" | "SELL";
+  outcome: string | null;
+  size: number;
+  price: number;
+  timestamp: number;
+};
+
+export async function getPolymarketPublicTrades(
+  conditionId: string,
+  limit = 50
+): Promise<PolymarketPublicTrade[]> {
+  const clean = conditionId.trim();
+  if (!clean) return [];
+  const base = getDataBaseUrl();
+  const params = new URLSearchParams();
+  params.set("market", clean);
+  params.set("limit", String(Math.max(1, Math.min(500, limit))));
+  params.set("offset", "0");
+  params.set("takerOnly", "true");
+  const url = `${base}/trades?${params.toString()}`;
+  try {
+    const res = await fetch(url, { next: { revalidate: 10 } });
+    if (!res.ok) return [];
+    const payload = await res.json();
+    if (!Array.isArray(payload)) return [];
+    return payload
+      .map((row) => {
+        const rec = asRecord(row);
+        const sideRaw = asString(rec?.side)?.toUpperCase();
+        if (sideRaw !== "BUY" && sideRaw !== "SELL") return null;
+        const price = asNumber(rec?.price);
+        const size = asNumber(rec?.size);
+        const ts = asNumber(rec?.timestamp);
+        if (price === null || size === null || ts === null) return null;
+        const txHash = asString(rec?.transactionHash);
+        const asset = asString(rec?.asset);
+        const id = txHash ?? `${clean}:${asset ?? "asset"}:${ts}:${price}:${size}`;
+        return {
+          id,
+          conditionId: asString(rec?.conditionId) ?? clean,
+          side: sideRaw,
+          outcome: asString(rec?.outcome),
+          size,
+          price: Math.max(0, Math.min(1, price)),
+          timestamp: ts,
+        } as PolymarketPublicTrade;
+      })
+      .filter((v): v is PolymarketPublicTrade => Boolean(v));
+  } catch {
+    return [];
+  }
 }
 

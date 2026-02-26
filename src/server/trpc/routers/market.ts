@@ -2,7 +2,12 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { generateMarketContext } from "../../ai/marketContextAgent";
-import { getPolymarketMarketById, listPolymarketMarkets } from "../../polymarket/client";
+import {
+  getPolymarketMarketById,
+  getPolymarketPriceHistory,
+  getPolymarketPublicTrades,
+  listPolymarketMarkets,
+} from "../../polymarket/client";
 
 const marketCategoryOutput = z.object({
   id: z.string(),
@@ -51,43 +56,6 @@ const marketOutput = z.object({
   chance: z.number().nullable().optional(),
   creatorName: z.string().nullable().optional(),
   creatorAvatarUrl: z.string().nullable().optional(),
-});
-
-const positionSummary = z.object({
-  marketId: z.string(),
-  outcome: z.enum(["YES", "NO"]).nullable(),
-  outcomeId: z.string().nullable().optional(),
-  outcomeTitle: z.string().nullable().optional(),
-  shares: z.number(),
-  avgEntryPrice: z.number().nullable(),
-  marketTitleRu: z.string(),
-  marketTitleEn: z.string(),
-  marketState: z.enum(["open", "closed", "resolved", "cancelled"]),
-  marketOutcome: z.enum(["YES", "NO"]).nullable(),
-  marketResolvedOutcomeId: z.string().nullable().optional(),
-  closesAt: z.string().nullable(),
-  expiresAt: z.string().nullable(),
-});
-
-const tradeSummary = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  action: z.enum(["buy", "sell"]),
-  outcome: z.enum(["YES", "NO"]).nullable(),
-  outcomeId: z.string().nullable().optional(),
-  outcomeTitle: z.string().nullable().optional(),
-  collateralGross: z.number(),
-  fee: z.number(),
-  collateralNet: z.number(),
-  sharesDelta: z.number(),
-  priceBefore: z.number(),
-  priceAfter: z.number(),
-  createdAt: z.string(),
-  marketTitleRu: z.string(),
-  marketTitleEn: z.string(),
-  marketState: z.enum(["open", "closed", "resolved", "cancelled"]),
-  marketOutcome: z.enum(["YES", "NO"]).nullable(),
-  marketResolvedOutcomeId: z.string().nullable().optional(),
 });
 
 const marketBookmarkOutput = z.object({
@@ -191,10 +159,13 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   const labels = categoryLabelMap.get(categoryKey) ?? t("Разное", "General");
 
   let resolved: "YES" | "NO" | null = null;
+  let resolvedOutcomeId: string | null = null;
   if (market.state === "resolved" && market.resolvedOutcomeTitle) {
     const normalized = market.resolvedOutcomeTitle.toLowerCase();
     if (normalized.includes("yes")) resolved = "YES";
     if (normalized.includes("no")) resolved = "NO";
+    const matched = outcomes.find((o) => o.title.toLowerCase() === normalized);
+    resolvedOutcomeId = matched?.id ?? null;
   }
 
   return {
@@ -209,7 +180,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     closesAt: market.closesAt,
     expiresAt: market.expiresAt,
     marketType: outcomes.length > 2 ? ("multi_choice" as const) : ("binary" as const),
-    resolvedOutcomeId: null,
+    resolvedOutcomeId,
     outcomes,
     outcome: resolved,
     createdBy: null,
@@ -227,12 +198,6 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     creatorAvatarUrl: null,
   };
 };
-
-const tradeOnPolymarketError = () =>
-  new TRPCError({
-    code: "BAD_REQUEST",
-    message: "TRADE_ON_POLYMARKET",
-  });
 
 export const marketRouter = router({
   listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async () => {
@@ -314,168 +279,6 @@ export const marketRouter = router({
       };
     }),
 
-  creatorMarketMeta: publicProcedure
-    .input(z.object({ marketId: z.string().min(1) }))
-    .output(z.object({ hasBets: z.boolean() }))
-    .query(async () => ({ hasBets: true })),
-
-  placeBet: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        side: z.enum(["YES", "NO"]).optional(),
-        outcomeId: z.string().optional(),
-        amount: z.number().positive(),
-      })
-    )
-    .output(
-      z.object({
-        tradeId: z.string(),
-        newBalanceMinor: z.number(),
-        sharesBought: z.number(),
-        priceBefore: z.number(),
-        priceAfter: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  prepareBet: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        side: z.enum(["YES", "NO"]),
-        amount: z.number().positive(),
-        assetCode: z.enum(["USDC"]),
-        userPubkey: z.string().min(16),
-      })
-    )
-    .output(z.object({ solanaCluster: z.enum(["devnet", "testnet", "mainnet-beta"]), txBase64: z.string() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  finalizeBet: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), signature: z.string().min(1) }))
-    .output(
-      z.object({
-        tradeId: z.string(),
-        txSig: z.string(),
-        newBalanceMinor: z.number(),
-        sharesBought: z.number(),
-        priceBefore: z.number(),
-        priceAfter: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  prepareSell: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        side: z.enum(["YES", "NO"]),
-        shares: z.number().positive(),
-        assetCode: z.enum(["USDC"]),
-        userPubkey: z.string().min(16),
-      })
-    )
-    .output(z.object({ solanaCluster: z.enum(["devnet", "testnet", "mainnet-beta"]), txBase64: z.string() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  finalizeSell: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), signature: z.string().min(1) }))
-    .output(
-      z.object({
-        tradeId: z.string(),
-        txSig: z.string(),
-        payoutNetMinor: z.number(),
-        newBalanceMinor: z.number(),
-        sharesSold: z.number(),
-        priceBefore: z.number(),
-        priceAfter: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  prepareClaim: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        assetCode: z.enum(["USDC"]),
-        userPubkey: z.string().min(16),
-      })
-    )
-    .output(z.object({ solanaCluster: z.enum(["devnet", "testnet", "mainnet-beta"]), txBase64: z.string() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  finalizeClaim: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), signature: z.string().min(1) }))
-    .output(
-      z.object({
-        txSig: z.string(),
-        newBalanceMinor: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  sellPosition: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        side: z.enum(["YES", "NO"]).optional(),
-        outcomeId: z.string().optional(),
-        shares: z.number().positive(),
-      })
-    )
-    .output(
-      z.object({
-        tradeId: z.string(),
-        payoutNetMinor: z.number(),
-        newBalanceMinor: z.number(),
-        sharesSold: z.number(),
-        priceBefore: z.number(),
-        priceAfter: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  resolveMarket: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        outcome: z.enum(["YES", "NO"]).optional(),
-        winningOutcomeId: z.string().optional(),
-      })
-    )
-    .output(
-      z.object({
-        marketId: z.string(),
-        outcome: z.string(),
-        totalPayoutMinor: z.number(),
-        winnersCount: z.number(),
-      })
-    )
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  myPositions: publicProcedure.output(z.array(positionSummary)).query(async () => []),
-  myTrades: publicProcedure.output(z.array(tradeSummary)).query(async () => []),
-  myMarkets: publicProcedure.output(z.array(marketOutput.extend({ hasBets: z.boolean() }))).query(async () => []),
-
   myBookmarks: publicProcedure
     .output(z.array(marketBookmarkOutput))
     .query(async ({ ctx }) => {
@@ -518,66 +321,114 @@ export const marketRouter = router({
       return { marketId: input.marketId, bookmarked: input.bookmarked };
     }),
 
-  myWalletBalance: publicProcedure
-    .output(
-      z.object({
-        balanceMinor: z.number(),
-        balanceMajor: z.number(),
-        assetCode: z.string(),
-        decimals: z.number(),
-      })
-    )
-    .query(async () => ({
-      balanceMinor: 0,
-      balanceMajor: 0,
-      assetCode: "USD",
-      decimals: 2,
-    })),
-
   getPriceCandles: publicProcedure
     .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(1000).optional() }))
     .output(z.array(priceCandleOutput))
     .query(async ({ input }) => {
       const market = await getPolymarketMarketById(input.marketId);
       if (!market) return [];
-      const yes = market.outcomes[0]?.price ?? 0.5;
-      return [
-        {
-          bucket: market.createdAt,
-          outcomeId: null,
-          outcomeTitle: null,
-          outcomeColor: null,
-          open: yes,
-          high: yes,
-          low: yes,
-          close: yes,
-          volume: market.volume,
-          tradesCount: 0,
-        },
-        {
-          bucket: new Date().toISOString(),
-          outcomeId: null,
-          outcomeTitle: null,
-          outcomeColor: null,
-          open: yes,
-          high: yes,
-          low: yes,
-          close: yes,
-          volume: market.volume,
-          tradesCount: 0,
-        },
-      ];
-    }),
+      const limit = input.limit ?? 200;
+      const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
+      if (withToken.length === 0) {
+        const fallback = market.outcomes[0]?.price ?? 0.5;
+        return [
+          {
+            bucket: new Date().toISOString(),
+            outcomeId: market.outcomes[0]?.id ?? null,
+            outcomeTitle: market.outcomes[0]?.title ?? null,
+            outcomeColor: null,
+            open: fallback,
+            high: fallback,
+            low: fallback,
+            close: fallback,
+            volume: market.volume,
+            tradesCount: 0,
+          },
+        ];
+      }
 
-  setOutcomeChartColor: publicProcedure
-    .input(z.object({ outcomeId: z.string().min(1), chartColor: z.string().nullable() }))
-    .output(z.object({ ok: z.boolean() }))
-    .mutation(async () => ({ ok: true })),
+      const isBinary = market.outcomes.length <= 2;
+      const yesOutcome =
+        market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
+        market.outcomes.find((o) => o.sortOrder === 0) ??
+        market.outcomes[0] ??
+        null;
+      const targetOutcomes = isBinary
+        ? withToken.filter((o) => o.id === yesOutcome?.id)
+        : withToken;
+
+      const histories = await Promise.all(
+        targetOutcomes.map(async (o) => ({
+          outcome: o,
+          history: await getPolymarketPriceHistory(String(o.tokenId)),
+        }))
+      );
+
+      const candles = histories
+        .flatMap(({ outcome, history }) => {
+          const deduped = history
+            .slice()
+            .sort((a, b) => a.ts - b.ts)
+            .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
+
+          return deduped.map((point, idx) => {
+            const prev = deduped[idx - 1] ?? point;
+            const open = prev.price;
+            const close = point.price;
+            return {
+              bucket: new Date(point.ts * 1000).toISOString(),
+              outcomeId: outcome.id,
+              outcomeTitle: outcome.title,
+              outcomeColor: null,
+              open,
+              high: Math.max(open, close),
+              low: Math.min(open, close),
+              close,
+              volume: 0,
+              tradesCount: 0,
+            };
+          });
+        })
+        .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
+      if (candles.length === 0) return [];
+      return candles.slice(Math.max(0, candles.length - limit));
+    }),
 
   getPublicTrades: publicProcedure
     .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(200).optional() }))
     .output(z.array(publicTradeOutput))
-    .query(async () => []),
+    .query(async ({ input }) => {
+      const market = await getPolymarketMarketById(input.marketId);
+      if (!market) return [];
+      const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
+      const outcomesByTitle = new Map(
+        market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
+      );
+      return rows.map((t) => {
+        const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
+        const outcome = outcomesByTitle.get(normalizedOutcome);
+        const action = t.side === "SELL" ? "sell" : "buy";
+        const yn =
+          normalizedOutcome === "yes"
+            ? ("YES" as const)
+            : normalizedOutcome === "no"
+              ? ("NO" as const)
+              : null;
+        return {
+          id: t.id,
+          marketId: market.id,
+          action,
+          outcome: yn,
+          outcomeId: outcome?.id ?? null,
+          outcomeTitle: outcome?.title ?? (t.outcome ?? null),
+          collateralGross: t.size * t.price,
+          sharesDelta: t.size,
+          priceBefore: t.price,
+          priceAfter: t.price,
+          createdAt: new Date(t.timestamp * 1000).toISOString(),
+        };
+      });
+    }),
 
   getMarketComments: publicProcedure
     .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(200).optional() }))
@@ -768,25 +619,4 @@ export const marketRouter = router({
       });
     }),
 
-  createMarket: publicProcedure
-    .input(z.any())
-    .output(z.object({ id: z.string(), titleRu: z.string().nullable(), titleEn: z.string().nullable() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  updateMarket: publicProcedure
-    .input(z.any())
-    .output(z.object({ id: z.string(), titleRu: z.string().nullable(), titleEn: z.string().nullable() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
-
-  deleteMarket: publicProcedure
-    .input(z.object({ marketId: z.string().min(1) }))
-    .output(z.object({ ok: z.boolean() }))
-    .mutation(async () => {
-      throw tradeOnPolymarketError();
-    }),
 });
-

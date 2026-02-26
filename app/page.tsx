@@ -16,20 +16,12 @@ import { Search, Filter, X } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
-import { positionsSchema, tradesSchema } from "@/src/schemas/portfolio";
 import { priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
 import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { runDiagnostics } from "@/lib/debug/walletDiagnostics";
-
-// Expose diagnostics in development for easy console access
-if (typeof window !== "undefined") {
-  (window as unknown as { runWalletDiagnostics?: typeof runDiagnostics }).runWalletDiagnostics = runDiagnostics;
-}
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -95,8 +87,6 @@ type MarketApiRow = {
   creatorName?: string | null;
   creatorAvatarUrl?: string | null;
 };
-type MyMarketApiRow = MarketApiRow & { hasBets: boolean };
-
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
@@ -195,6 +185,9 @@ const getMarketIdFromLocation = () => {
 export default function HomePage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [semanticSearchScores, setSemanticSearchScores] = useState<Record<string, number>>({});
+  const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
+  const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authInitialMode, setAuthInitialMode] = useState<AuthMode>("SIGN_IN");
@@ -225,126 +218,6 @@ export default function HomePage() {
   });
   const [user, setUser] = useState<User | null>(null);
   const silentRefreshInFlightRef = useRef<Promise<boolean> | null>(null);
-  // Wallet state (Solana Wallet Adapter)
-  const { publicKey, connected: isWalletConnected } = useWallet();
-  const connectedWalletAddress = publicKey ? publicKey.toBase58() : null;
-  type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
-  const normalizeSolanaCluster = (value: string): SolanaCluster => {
-    const v = value.trim().toLowerCase();
-    if (v === "devnet" || v === "testnet" || v === "mainnet-beta") return v;
-    return "devnet";
-  };
-  const solanaCluster: SolanaCluster = normalizeSolanaCluster(process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet");
-
-  // Keep DB wallet link in sync with actual connected wallet/chain.
-  const walletSyncInFlight = useRef(false);
-  const lastWalletSyncKey = useRef<string>("");
-  const hadWalletConnectionRef = useRef(false);
-
-  useEffect(() => {
-    if (!user) return;
-
-    // Solana pubkeys are base58 (case-sensitive) - do NOT lowercase them
-    const walletPubkey = connectedWalletAddress ?? null;
-    const dbPubkey = user.solanaWalletAddress ? String(user.solanaWalletAddress) : null;
-    const dbCluster = user.solanaCluster ? String(user.solanaCluster).toLowerCase() : null;
-
-    const syncKey = `${user.id}:${walletPubkey ?? "none"}:${solanaCluster}:${isWalletConnected ? "1" : "0"}`;
-    if (walletSyncInFlight.current) return;
-    if (lastWalletSyncKey.current === syncKey) return;
-
-    if (isWalletConnected && walletPubkey) {
-      hadWalletConnectionRef.current = true;
-    }
-
-    // If wallet is disconnected, unlink only if it was connected in this session.
-    if (!isWalletConnected || !walletPubkey) {
-      if (!dbPubkey) {
-        lastWalletSyncKey.current = syncKey;
-        return;
-      }
-      if (!hadWalletConnectionRef.current) {
-        lastWalletSyncKey.current = syncKey;
-        return;
-      }
-      walletSyncInFlight.current = true;
-      void (async () => {
-        try {
-          await trpcClient.user.unlinkWallet.mutate();
-          setUser((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  solanaWalletAddress: null,
-                  solanaCluster: null,
-                  solanaWalletConnectedAt: null,
-                }
-              : prev
-          );
-        } catch (err) {
-          console.warn("unlinkWallet failed (ignored)", err);
-        } finally {
-          lastWalletSyncKey.current = syncKey;
-          walletSyncInFlight.current = false;
-        }
-      })();
-      return;
-    }
-
-    // If wallet is connected, link or update chain.
-    if (walletPubkey && isWalletConnected) {
-      const needsLink = !dbPubkey || dbPubkey !== walletPubkey;
-      const needsChainUpdate = dbCluster !== solanaCluster;
-
-      if (!needsLink && !needsChainUpdate) {
-        lastWalletSyncKey.current = syncKey;
-        return;
-      }
-
-      walletSyncInFlight.current = true;
-      void (async () => {
-        try {
-          if (needsLink) {
-            console.log("[wallet-sync] Linking wallet:", walletPubkey, "cluster:", solanaCluster);
-            const linked = await trpcClient.user.linkWallet.mutate({
-              solanaWalletAddress: walletPubkey,
-              solanaCluster,
-            });
-            console.log("[wallet-sync] Wallet linked successfully:", linked);
-            setUser((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    solanaWalletAddress: linked.solanaWalletAddress ?? walletPubkey,
-                    solanaCluster: linked.solanaCluster ?? solanaCluster,
-                    solanaWalletConnectedAt: linked.solanaWalletConnectedAt ?? null,
-                  }
-                : prev
-            );
-          } else if (needsChainUpdate) {
-            console.log("[wallet-sync] Updating cluster to:", solanaCluster);
-            await trpcClient.user.updateWalletChain.mutate({ solanaCluster });
-            setUser((prev) => (prev ? { ...prev, solanaCluster } : prev));
-            console.log("[wallet-sync] Cluster updated successfully");
-          }
-        } catch (err) {
-          const errMsg = getErrorMessage(err);
-          console.error("[wallet-sync] linkWallet failed:", errMsg, err);
-          // Surface specific errors to help debugging
-          if (errMsg.includes("WALLET_ALREADY_LINKED")) {
-            console.error("[wallet-sync] This wallet is already linked to a different user account. Clear it in DB or use a different wallet.");
-          } else if (errMsg.includes("UNAUTHORIZED")) {
-            console.error("[wallet-sync] User not authenticated - login required before linking wallet");
-          } else if (errMsg.includes("CONFLICT")) {
-            console.error("[wallet-sync] Conflict - wallet may be linked to another user");
-          }
-        } finally {
-          lastWalletSyncKey.current = syncKey;
-          walletSyncInFlight.current = false;
-        }
-      })();
-    }
-  }, [user, connectedWalletAddress, solanaCluster, isWalletConnected]);
   const [pendingReferralCode, setPendingReferralCode] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -953,72 +826,18 @@ export default function HomePage() {
     setMyBetsLoading(true);
     setMyBetsError(null);
     try {
-      const [positionsRaw, tradesRaw, bookmarksRaw, walletBalanceRaw, myMarketsRaw] = await Promise.all([
-        trpcClient.market.myPositions.query(),
-        trpcClient.market.myTrades.query(),
+      const [bookmarksRaw] = await Promise.all([
         trpcClient.market.myBookmarks.query(),
-        trpcClient.market.myWalletBalance.query().catch(() => null),
-        trpcClient.market.myMarkets.query().catch(() => []),
       ]);
 
-      const positionsParsed = positionsSchema.parse(positionsRaw);
-      const tradesParsed = tradesSchema.parse(tradesRaw);
       const bookmarksParsed = marketBookmarksSchema.parse(bookmarksRaw);
 
-      const positions: Position[] = positionsParsed.map((p) => ({
-        marketId: requireValue(p.marketId, "POSITION_MARKET_ID_MISSING"),
-        outcome: p.outcome ?? null,
-        outcomeId: p.outcomeId ?? null,
-        outcomeTitle: p.outcomeTitle ?? null,
-        shares: requireValue(p.shares, "POSITION_SHARES_MISSING"),
-        avgEntryPrice: p.avgEntryPrice ?? null,
-        marketTitleRu: requireValue(p.marketTitleRu, "POSITION_TITLE_RU_MISSING"),
-        marketTitleEn: requireValue(p.marketTitleEn, "POSITION_TITLE_EN_MISSING"),
-        marketState: requireValue(p.marketState, "POSITION_STATE_MISSING"),
-        marketOutcome: p.marketOutcome ?? null,
-        marketResolvedOutcomeId: p.marketResolvedOutcomeId ?? null,
-        closesAt: p.closesAt ?? null,
-        expiresAt: p.expiresAt ?? null,
-      }));
-
-      const trades: Trade[] = tradesParsed.map((t) => ({
-        id: requireValue(t.id, "TRADE_ID_MISSING"),
-        marketId: requireValue(t.marketId, "TRADE_MARKET_ID_MISSING"),
-        action: requireValue(t.action, "TRADE_ACTION_MISSING"),
-        outcome: t.outcome ?? null,
-        outcomeId: t.outcomeId ?? null,
-        outcomeTitle: t.outcomeTitle ?? null,
-        collateralGross: requireValue(t.collateralGross, "TRADE_GROSS_MISSING"),
-        fee: requireValue(t.fee, "TRADE_FEE_MISSING"),
-        collateralNet: requireValue(t.collateralNet, "TRADE_NET_MISSING"),
-        sharesDelta: requireValue(t.sharesDelta, "TRADE_SHARES_MISSING"),
-        priceBefore: requireValue(t.priceBefore, "TRADE_PRICE_BEFORE_MISSING"),
-        priceAfter: requireValue(t.priceAfter, "TRADE_PRICE_AFTER_MISSING"),
-        createdAt: requireValue(t.createdAt, "TRADE_CREATED_AT_MISSING"),
-        marketTitleRu: requireValue(t.marketTitleRu, "TRADE_TITLE_RU_MISSING"),
-        marketTitleEn: requireValue(t.marketTitleEn, "TRADE_TITLE_EN_MISSING"),
-        marketState: requireValue(t.marketState, "TRADE_STATE_MISSING"),
-        marketOutcome: t.marketOutcome ?? null,
-        marketResolvedOutcomeId: t.marketResolvedOutcomeId ?? null,
-        avgEntryPrice: t.avgEntryPrice ?? null,
-        avgExitPrice: t.avgExitPrice ?? null,
-        realizedPnl: t.realizedPnl ?? null,
-      }));
-
-      setMyPositions(positions);
-      setMyTrades(trades);
+      // Wrapper mode: portfolio/trades are executed on Polymarket, not stored locally.
+      setMyPositions([]);
+      setMyTrades([]);
       setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
-      const myMarkets = (myMarketsRaw ?? []).map((m) => {
-        const row = m as MyMarketApiRow;
-        return {
-          ...mapMarketApiToMarket(row, lang),
-          hasBets: Boolean(row.hasBets),
-        };
-      });
-      setMyCreatedMarkets(myMarkets);
-      if (walletBalanceRaw && typeof walletBalanceRaw.balanceMajor === "number") {
-        setWalletBalanceMajor(walletBalanceRaw.balanceMajor);
-      }
+      setMyCreatedMarkets([]);
+      setWalletBalanceMajor(null);
       try {
         const stats = await trpcClient.user.publicUserStats.query({ userId: user.id });
         if (stats && typeof stats.pnlMajor === "number") {
@@ -1271,18 +1090,97 @@ export default function HomePage() {
 
   // We load profile bets on navigation and after mutations; no periodic polling needed.
 
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSemanticSearchScores({});
+      setSemanticSearchIds([]);
+      setSemanticSearchLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        setSemanticSearchLoading(true);
+        const res = await fetch("/api/recs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query: q, limit: 50 }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`RECS_HTTP_${res.status}`);
+        const rows = (await res.json()) as Array<{ market?: { id?: string }; score?: number }>;
+        const next: Record<string, number> = {};
+        const ids: string[] = [];
+        for (const row of rows ?? []) {
+          const id = String(row.market?.id ?? "");
+          const score = Number(row.score ?? 0);
+          if (id) {
+            next[id] = Number.isFinite(score) ? score : 0;
+            ids.push(id);
+          }
+        }
+        setSemanticSearchScores(next);
+        setSemanticSearchIds(ids);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          console.warn("semantic search failed", err);
+          setSemanticSearchScores({});
+          setSemanticSearchIds([]);
+        }
+      } finally {
+        if (!controller.signal.aborted) setSemanticSearchLoading(false);
+      }
+    }, 120);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
+    const existing = new Set(markets.map((m) => m.id));
+    const missing = semanticSearchIds.filter((id) => !existing.has(id)).slice(0, 12);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const rows = await Promise.all(
+        missing.map((marketId) =>
+          trpcClient.market.getMarket.query({ marketId }).catch(() => null)
+        )
+      );
+      if (cancelled) return;
+      const additions = rows
+        .filter((v): v is MarketApiRow => Boolean(v))
+        .map((m) => mapMarketApiToMarket(m, lang));
+      if (additions.length === 0) return;
+      setMarkets((prev) => {
+        const byId = new Map(prev.map((m) => [m.id, m]));
+        for (const row of additions) byId.set(row.id, row);
+        return Array.from(byId.values());
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [semanticSearchIds, searchQuery, markets, lang]);
+
   const filteredMarkets = useMemo(
     () =>
       markets.filter((market) => {
         const matchesCategory =
           activeCategoryId === "all" || (market.categoryId ?? "") === activeCategoryId;
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
-        const matchesSearch = targetTitle
+        const semanticMatch = Boolean(semanticSearchScores[market.id]);
+        const matchesSearch = semanticMatch || targetTitle
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
         return matchesCategory && matchesSearch;
       }),
-    [activeCategoryId, searchQuery, markets, lang]
+    [activeCategoryId, searchQuery, markets, lang, semanticSearchScores]
   );
 
   const catalogMarkets = useMemo(() => {
@@ -1336,6 +1234,15 @@ export default function HomePage() {
 
     const sortGroup = (arr: Market[]) => {
       const sorted = [...arr];
+      if (searchQuery.trim().length >= 2 && Object.keys(semanticSearchScores).length > 0) {
+        sorted.sort((a, b) => {
+          const aScore = semanticSearchScores[a.id] ?? 0;
+          const bScore = semanticSearchScores[b.id] ?? 0;
+          if (Math.abs(aScore - bScore) > 0.0001) return bScore - aScore;
+          return ts(b.createdAt) - ts(a.createdAt);
+        });
+        return sorted;
+      }
       switch (catalogSort) {
         case "ENDING_SOON":
           sorted.sort((a, b) => endTs(a) - endTs(b));
@@ -1372,7 +1279,7 @@ export default function HomePage() {
         ? [...ended].sort((a, b) => endTs(b) - endTs(a))
         : sortGroup(ended);
     return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
-  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter]);
+  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter, searchQuery, semanticSearchScores]);
 
   // Feed: markets where the user currently has bets (positions).
   const myBetMarketIds = useMemo(() => {
@@ -2183,6 +2090,11 @@ export default function HomePage() {
 
                     {/* Sort / filter */}
                     <div className="px-4 pt-3" data-swipe-ignore="true">
+                      {semanticSearchLoading && searchQuery.trim().length >= 2 ? (
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                          {lang === "RU" ? "AI-поиск ранжирует рынки..." : "AI ranking markets..."}
+                        </div>
+                      ) : null}
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
                           {lang === "RU" ? "Фильтры" : "Filters"}
