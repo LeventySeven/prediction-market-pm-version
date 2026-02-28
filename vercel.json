@@ -7,10 +7,6 @@
     }
   ],
   "git": {
-    "productionBranch": "main",
-    "deploymentEnabled": {
-      "*": false,
-      "main": true
-    }
+    "productionBranch": "main"
   }
 }
