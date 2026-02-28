@@ -233,6 +233,46 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   };
 };
 
+const MARKET_MIRROR_STALE_AFTER_MS = Math.max(
+  60_000,
+  Number(process.env.POLYMARKET_MARKET_STALE_AFTER_MS ?? 180_000)
+);
+const MARKET_MIRROR_FRESHNESS_CACHE_MS = 15_000;
+let mirrorFreshnessSnapshot: { checkedAt: number; isFresh: boolean } | null = null;
+
+const isMirrorFresh = async (supabaseService: unknown): Promise<boolean> => {
+  if (!supabaseService) return false;
+  const now = Date.now();
+  if (
+    mirrorFreshnessSnapshot &&
+    now - mirrorFreshnessSnapshot.checkedAt < MARKET_MIRROR_FRESHNESS_CACHE_MS
+  ) {
+    return mirrorFreshnessSnapshot.isFresh;
+  }
+
+  try {
+    const { data, error } = await (supabaseService as any)
+      .from("polymarket_market_cache")
+      .select("last_synced_at")
+      .order("last_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.last_synced_at) {
+      mirrorFreshnessSnapshot = { checkedAt: now, isFresh: false };
+      return false;
+    }
+
+    const lastSyncedAt = Date.parse(String(data.last_synced_at));
+    const isFresh = Number.isFinite(lastSyncedAt) && now - lastSyncedAt <= MARKET_MIRROR_STALE_AFTER_MS;
+    mirrorFreshnessSnapshot = { checkedAt: now, isFresh };
+    return isFresh;
+  } catch {
+    mirrorFreshnessSnapshot = { checkedAt: now, isFresh: false };
+    return false;
+  }
+};
+
 const getMarketFromMirrorOrLive = async (
   supabaseService: unknown,
   marketId: string
@@ -259,25 +299,40 @@ const listMarketsFromMirrorOrLive = async (
   supabaseService: unknown,
   params: { onlyOpen: boolean; limit: number }
 ): Promise<PolymarketMarket[]> => {
+  let mirrored: PolymarketMarket[] = [];
+  let hadMirrorRows = false;
+
   try {
-    const mirrored = await listMirroredPolymarketMarkets(supabaseService, {
+    mirrored = await listMirroredPolymarketMarkets(supabaseService, {
       onlyOpen: params.onlyOpen,
       limit: params.limit,
     });
-    if (mirrored.length > 0) return mirrored;
+    hadMirrorRows = mirrored.length > 0;
+    if (hadMirrorRows) {
+      const fresh = await isMirrorFresh(supabaseService);
+      if (fresh) return mirrored;
+    }
   } catch (err) {
     console.warn("Mirror listMarkets failed, falling back to Polymarket API", err);
   }
 
-  const live = await listPolymarketMarkets(params.limit);
-  if (live.length > 0) {
-    try {
-      await upsertMirroredPolymarketMarkets(supabaseService, live);
-    } catch (err) {
-      console.warn("Mirror upsert after live listMarkets failed", err);
+  try {
+    const live = await listPolymarketMarkets(params.limit);
+    if (live.length > 0) {
+      try {
+        await upsertMirroredPolymarketMarkets(supabaseService, live);
+      } catch (err) {
+        console.warn("Mirror upsert after live listMarkets failed", err);
+      }
     }
+    return params.onlyOpen ? live.filter((m) => m.state === "open") : live;
+  } catch (err) {
+    if (hadMirrorRows) {
+      console.warn("Live listMarkets failed, serving stale mirrored markets", err);
+      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
+    }
+    throw err;
   }
-  return params.onlyOpen ? live.filter((m) => m.state === "open") : live;
 };
 
 const getClobBaseUrl = () =>
