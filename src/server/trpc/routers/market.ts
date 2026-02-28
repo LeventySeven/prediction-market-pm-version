@@ -235,7 +235,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
 
 const MARKET_MIRROR_STALE_AFTER_MS = Math.max(
   60_000,
-  Number(process.env.POLYMARKET_MARKET_STALE_AFTER_MS ?? 180_000)
+  Number(process.env.POLYMARKET_MARKET_STALE_AFTER_MS ?? 60_000)
 );
 const MARKET_MIRROR_FRESHNESS_CACHE_MS = 15_000;
 let mirrorFreshnessSnapshot: { checkedAt: number; isFresh: boolean } | null = null;

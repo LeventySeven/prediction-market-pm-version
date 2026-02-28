@@ -47,6 +47,32 @@ const asNumber = (value: unknown): number | null => {
   return null;
 };
 
+const looksLikeHexId = (value: string): boolean => /^0x[0-9a-f]+$/i.test(value);
+const looksLikeEventSlug = (value: string): boolean =>
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(value) && !looksLikeHexId(value);
+
+const buildPolymarketEventUrl = (slug: string): string =>
+  `https://polymarket.com/event/${encodeURIComponent(slug)}`;
+
+const normalizeMarketSourceUrl = (
+  rawUrl: string | null,
+  slug: string | null,
+  eventSlug: string | null
+): string | null => {
+  const clean = rawUrl?.trim() ?? "";
+  if (clean) {
+    if (/^https?:\/\//i.test(clean)) return clean;
+    if (/^\/\//.test(clean)) return `https:${clean}`;
+    if (clean.startsWith("/")) return `https://polymarket.com${clean}`;
+    if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/|$)/i.test(clean)) return `https://${clean}`;
+    if (/^event\//i.test(clean)) return `https://polymarket.com/${clean}`;
+  }
+
+  if (eventSlug && looksLikeEventSlug(eventSlug)) return buildPolymarketEventUrl(eventSlug);
+  if (slug && looksLikeEventSlug(slug)) return buildPolymarketEventUrl(slug);
+  return null;
+};
+
 const toIso = (value: unknown): string => {
   const direct = asString(value);
   if (!direct) return new Date().toISOString();
@@ -160,16 +186,23 @@ const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
   if (!conditionId) return null;
 
   const id = conditionId;
-  const slug = asString(raw.slug) ?? conditionId;
+  const eventSlug =
+    asString(raw.eventSlug) ??
+    asString(raw.event_slug) ??
+    asString(raw.parentSlug) ??
+    asString(raw.parent_slug) ??
+    null;
+  const slug = asString(raw.slug) ?? eventSlug ?? conditionId;
   const title =
     asString(raw.question) ??
     asString(raw.title) ??
     asString(raw.name) ??
     "Untitled market";
-  const sourceUrl =
-    asString(raw.url) ??
-    asString(raw.source) ??
-    (slug ? `https://polymarket.com/event/${encodeURIComponent(slug)}` : null);
+  const sourceUrl = normalizeMarketSourceUrl(
+    asString(raw.url) ?? asString(raw.source),
+    slug,
+    eventSlug
+  );
   const outcomes = parseOutcomes(raw, id);
   const winningTitle = asString(raw.winningOutcome) ?? null;
   const clobTokenIds = parseClobTokenIds(raw);
@@ -299,11 +332,100 @@ const dedupeRawMarkets = (rows: RawMarket[]): RawMarket[] => {
   return deduped;
 };
 
+const flattenMarketsFromEvents = (events: RawMarket[]): RawMarket[] => {
+  const flattened: RawMarket[] = [];
+  for (const event of events) {
+    const eventSlug = asString(event.slug) ?? asString(event.eventSlug) ?? null;
+    const eventCategory = asString(event.category) ?? asString(event.group) ?? null;
+    const eventImage = asString(event.image) ?? asString(event.icon) ?? null;
+    const eventDescription = asString(event.description) ?? null;
+    const eventCreatedAt =
+      asString(event.createdAt) ??
+      asString(event.created_at) ??
+      asString(event.startDate) ??
+      asString(event.start_date) ??
+      null;
+    const eventEndDate =
+      asString(event.endDate) ??
+      asString(event.end_date) ??
+      asString(event.endTime) ??
+      null;
+    const eventUrl = normalizeMarketSourceUrl(
+      asString(event.url) ?? asString(event.source),
+      eventSlug,
+      eventSlug
+    );
+
+    const markets = Array.isArray(event.markets) ? event.markets : [];
+    for (const row of markets) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const market = row as RawMarket;
+      flattened.push({
+        ...market,
+        eventSlug: asString(market.eventSlug) ?? asString(market.event_slug) ?? eventSlug,
+        slug: asString(market.slug) ?? eventSlug ?? asString(market.conditionId) ?? asString(market.id),
+        url:
+          asString(market.url) ??
+          asString(market.source) ??
+          eventUrl ??
+          (eventSlug ? `/event/${eventSlug}` : null),
+        category: asString(market.category) ?? eventCategory,
+        image: asString(market.image) ?? asString(market.icon) ?? eventImage,
+        description: asString(market.description) ?? eventDescription,
+        createdAt: asString(market.createdAt) ?? asString(market.created_at) ?? eventCreatedAt,
+        endDate: asString(market.endDate) ?? asString(market.end_date) ?? eventEndDate,
+        active: typeof market.active === "boolean" ? market.active : event.active,
+        closed: typeof market.closed === "boolean" ? market.closed : event.closed,
+        archived: typeof market.archived === "boolean" ? market.archived : event.archived,
+      });
+    }
+  }
+  return flattened;
+};
+
+async function fetchOpenMarketsViaEvents(pageSize: number, maxPages: number): Promise<RawMarket[]> {
+  const base = getBaseUrl();
+  const allEvents: RawMarket[] = [];
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const offset = page * pageSize;
+    const params = new URLSearchParams();
+    params.set("limit", String(pageSize));
+    params.set("offset", String(offset));
+    params.set("archived", "false");
+    params.set("active", "true");
+    params.set("closed", "false");
+    params.set("order", "id");
+    params.set("ascending", "false");
+
+    const response = await fetch(`${base}/events?${params.toString()}`, {
+      next: { revalidate: 20 },
+    });
+    if (!response.ok) break;
+    const payload = (await response.json()) as unknown;
+    const pageRows = Array.isArray(payload) ? (payload as RawMarket[]) : [];
+    if (pageRows.length === 0) break;
+    allEvents.push(...pageRows);
+    if (pageRows.length < pageSize) break;
+  }
+
+  return dedupeRawMarkets(flattenMarketsFromEvents(allEvents));
+}
+
 async function fetchMarketsPaged(options?: FetchMarketsPagedOptions): Promise<RawMarket[]> {
   const base = getBaseUrl();
   const scope = options?.scope ?? "open";
   const pageSize = clampInt(options?.pageSize ?? 200, 10, 500);
   const maxPages = clampInt(options?.maxPages ?? 1, 1, 200);
+  if (scope === "open") {
+    try {
+      const fromEvents = await fetchOpenMarketsViaEvents(Math.min(200, pageSize), maxPages);
+      if (fromEvents.length > 0) return fromEvents;
+    } catch {
+      // Fallback to /markets below.
+    }
+  }
+
   const allRows: RawMarket[] = [];
 
   for (let page = 0; page < maxPages; page += 1) {
@@ -344,20 +466,26 @@ async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
   return rows.slice(0, safeLimit);
 }
 
-export async function listPolymarketMarkets(limit = 200): Promise<PolymarketMarket[]> {
+export async function listPolymarketMarkets(
+  limit = 200,
+  options?: { hydrateMidpoints?: boolean }
+): Promise<PolymarketMarket[]> {
   const rows = await fetchMarkets(limit);
   const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
-  return hydrateWithMidpoints(mapped);
+  const shouldHydrate = options?.hydrateMidpoints ?? true;
+  return shouldHydrate ? hydrateWithMidpoints(mapped) : mapped;
 }
 
 export async function listPolymarketMarketsSnapshot(options?: {
   scope?: MarketSnapshotScope;
   pageSize?: number;
   maxPages?: number;
+  hydrateMidpoints?: boolean;
 }): Promise<PolymarketMarket[]> {
   const rows = await fetchMarketsPaged(options);
   const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
-  return hydrateWithMidpoints(mapped);
+  const shouldHydrate = options?.hydrateMidpoints ?? true;
+  return shouldHydrate ? hydrateWithMidpoints(mapped) : mapped;
 }
 
 export async function searchPolymarketMarkets(query: string, limit = 80): Promise<PolymarketMarket[]> {

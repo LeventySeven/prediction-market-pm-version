@@ -118,7 +118,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     noPrice: Number(m.priceNo),
     chance,
     description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
-    source: m.source ?? null,
+    source: normalizeExternalMarketUrl(m.source) ?? (m.source ?? null),
     history: [],
     comments: [],
     liquidityB: m.liquidityB ?? undefined,
@@ -154,6 +154,22 @@ const slugifyTitle = (raw: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
+
+const normalizeExternalMarketUrl = (raw: string | null | undefined): string | null => {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^\/\//.test(value)) return `https:${value}`;
+  if (value.startsWith("/")) return `https://polymarket.com${value}`;
+  if (/^event\//i.test(value)) return `https://polymarket.com/${value}`;
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/|$)/i.test(value)) return `https://${value}`;
+  return null;
+};
+
+const getExternalMarketUrl = (market: Market | null | undefined): string => {
+  const normalized = normalizeExternalMarketUrl(market?.source);
+  return normalized ?? "https://polymarket.com";
+};
 
 const buildMarketPath = (marketId: string, title?: string | null) => {
   const query = title ? `?title=${encodeURIComponent(slugifyTitle(title))}` : "";
@@ -895,6 +911,26 @@ export default function HomePage() {
       void loadMarketCategories();
     }
   }, [loadMarkets, loadMarketCategories, marketCategories.length, loadingMarketCategories]);
+
+  useEffect(() => {
+    if (selectedMarketId || currentView !== "CATALOG") return;
+    let cancelled = false;
+    const tick = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (!cancelled) {
+        await loadMarkets();
+      }
+    };
+
+    const interval = setInterval(() => {
+      void tick();
+    }, 45_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [loadMarkets, selectedMarketId, currentView]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -1879,7 +1915,7 @@ export default function HomePage() {
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
         : markets.find((m) => m.id === marketId) ?? null;
-    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+    const target = getExternalMarketUrl(market);
     if (typeof window !== "undefined") {
       window.open(target, "_blank", "noopener,noreferrer");
     }
@@ -1895,7 +1931,7 @@ export default function HomePage() {
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
         : markets.find((m) => m.id === marketId) ?? null;
-    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+    const target = getExternalMarketUrl(market);
     if (typeof window !== "undefined") {
       window.open(target, "_blank", "noopener,noreferrer");
     }
@@ -2080,7 +2116,7 @@ export default function HomePage() {
               tradeBlockedMessage={tradeBlockedMessage}
               onOpenExternalTrade={(marketId) => {
                 const market = markets.find((m) => m.id === marketId) ?? null;
-                const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+                const target = getExternalMarketUrl(market);
                 if (typeof window !== "undefined") {
                   window.open(target, "_blank", "noopener,noreferrer");
                 }

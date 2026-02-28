@@ -20,7 +20,7 @@ Vercel Hobby allows cron jobs to run at most once per day. Any more frequent cro
 - Trading-critical checks (price, orderability, geocheck) must always be read live at action time.
 - Never rely on daily cron for execution-critical data.
 - Daily cron should only do non-critical warmup/backfill housekeeping.
-- Mirror freshness threshold is controlled by `POLYMARKET_MARKET_STALE_AFTER_MS` (default `180000`).
+- Mirror freshness threshold is controlled by `POLYMARKET_MARKET_STALE_AFTER_MS` (default `60000`).
 
 ## Future optimization path (when scaling)
 1. Move scheduled sync from Vercel Hobby cron to a worker/scheduler that supports higher frequency.
