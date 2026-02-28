@@ -103,6 +103,8 @@ interface MarketPageProps {
   creatorHasBets?: boolean;
   onEditMarket?: () => void;
   onDeleteMarket?: () => void;
+  tradeBlockedMessage?: string | null;
+  onOpenExternalTrade?: (marketId: string) => void;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -138,6 +140,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   creatorHasBets = false,
   onEditMarket,
   onDeleteMarket,
+  tradeBlockedMessage = null,
+  onOpenExternalTrade,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
@@ -981,7 +985,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   <Button
                     fullWidth
                     onClick={handlePlaceBetClick}
-                    disabled={placing}
+                    disabled={placing || Boolean(tradeBlockedMessage)}
                   >
                     {!user
                       ? lang === 'RU'
@@ -995,6 +999,20 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         ? 'BUY OPTION'
                         : `BUY ${tradeType}`}
                   </Button>
+                  {tradeBlockedMessage && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-red-400">{tradeBlockedMessage}</p>
+                      {onOpenExternalTrade && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenExternalTrade(market.id)}
+                          className="text-xs font-medium text-zinc-400 underline underline-offset-2 hover:text-white"
+                        >
+                          {lang === 'RU' ? 'Открыть рынок на Polymarket' : 'Open market on Polymarket'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {showFee && (
                     <p className="text-center text-[10px] uppercase text-zinc-600 tracking-wider">
                       {feePercent}% {lang === 'RU' ? 'комиссия' : 'fee'}

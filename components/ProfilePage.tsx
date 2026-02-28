@@ -1,11 +1,9 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock, Wallet } from 'lucide-react';
+import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
-import { useWallet } from '@solana/wallet-adapter-react';
-import ConnectSolanaWalletButton from './ConnectSolanaWalletButton';
 
 type ProfilePageProps = {
   user: User | null;
@@ -129,107 +127,6 @@ const sampleAvatarHue = async (src: string): Promise<number | null> => {
     // If the image is cross-origin without CORS, canvas read will fail (tainted).
     return null;
   }
-};
-
-const SolanaWalletSection: React.FC<{ lang: 'RU' | 'EN'; dbPubkey: string | null }> = ({ lang, dbPubkey }) => {
-  const { publicKey, connected } = useWallet();
-  const pubkey = publicKey ? publicKey.toBase58() : null;
-  const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || 'devnet').toLowerCase();
-  const displayPubkey = pubkey ?? dbPubkey;
-  const isConnected = connected || Boolean(dbPubkey);
-
-  // Determine sync status
-  const isAdapterConnected = connected && pubkey;
-  const isDbLinked = Boolean(dbPubkey);
-  const isSynced = isAdapterConnected && isDbLinked && pubkey === dbPubkey;
-  const hasMismatch = isAdapterConnected && isDbLinked && pubkey !== dbPubkey;
-
-  const truncate = (v: string) => `${v.slice(0, 6)}...${v.slice(-4)}`;
-
-  // Status badge
-  const getStatusBadge = () => {
-    if (isSynced) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/30">
-          {lang === 'RU' ? 'Синхронизирован' : 'Synced'}
-        </span>
-      );
-    }
-    if (hasMismatch) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
-          {lang === 'RU' ? 'Рассинхрон' : 'Mismatch'}
-        </span>
-      );
-    }
-    if (isAdapterConnected && !isDbLinked) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
-          {lang === 'RU' ? 'Сохранение...' : 'Linking...'}
-        </span>
-      );
-    }
-    if (!isAdapterConnected && isDbLinked) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-zinc-500/20 text-zinc-400 border border-zinc-500/30">
-          {lang === 'RU' ? 'В БД' : 'In DB'}
-        </span>
-      );
-    }
-    return null;
-  };
-
-  return (
-    <div className="mt-4 border border-zinc-900 bg-black rounded-2xl p-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="h-10 w-10 rounded-full border border-zinc-900 bg-zinc-950/40 flex items-center justify-center">
-            <Wallet size={18} className="text-zinc-400" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                {lang === 'RU' ? 'Solana Wallet' : 'Solana Wallet'}
-              </div>
-              {getStatusBadge()}
-            </div>
-            {isConnected && displayPubkey ? (
-              <div className="space-y-1">
-                <div className="text-sm font-mono text-zinc-300 truncate">{truncate(displayPubkey)}</div>
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500">{cluster}</div>
-              </div>
-            ) : (
-              <div className="text-sm text-zinc-500">{lang === 'RU' ? 'Не подключен' : 'Not connected'}</div>
-            )}
-          </div>
-        </div>
-
-        <div className="shrink-0 relative">
-          <ConnectSolanaWalletButton
-            className="h-9 px-4 rounded-full bg-[rgba(245,68,166,1)] text-black hover:bg-[rgba(245,68,166,0.90)] font-semibold text-sm disabled:opacity-60"
-            connectedLabel={lang === 'RU' ? 'Сменить кошелёк' : 'Change wallet'}
-            connectLabel={lang === 'RU' ? 'Подключить' : 'Connect'}
-            selectLabel={lang === 'RU' ? 'Выбрать кошелёк' : 'Select Wallet'}
-            connectingLabel={lang === 'RU' ? 'Подключение ...' : 'Connecting ...'}
-          />
-        </div>
-      </div>
-
-      {hasMismatch && (
-        <div className="mt-3 p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-400">
-          {lang === 'RU'
-            ? 'Подключенный кошелёк отличается от сохранённого. Переподключите кошелёк для синхронизации.'
-            : 'Connected wallet differs from saved. Reconnect wallet to sync.'}
-        </div>
-      )}
-
-      <div className="mt-3 text-xs text-zinc-500">
-        {lang === 'RU'
-          ? 'USDC-депозиты/вывод и ончейн-рынки будут подключены после деплоя программы на Solana.'
-          : 'USDC deposits/withdrawals and on-chain markets will be enabled after the Solana program is deployed.'}
-      </div>
-    </div>
-  );
 };
 
 const buildSparklinePath = (values: number[]) => {
@@ -648,9 +545,6 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
         )}
       </div>
-
-      {/* Solana Wallet Connection */}
-      <SolanaWalletSection lang={lang} dbPubkey={user?.solanaWalletAddress ?? null} />
 
       {/* PnL graph (lightweight sparkline) */}
       <div className="mt-4 border border-zinc-900 bg-black rounded-2xl overflow-hidden">
@@ -1233,5 +1127,3 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
 };
 
 export default ProfilePage;
-
-

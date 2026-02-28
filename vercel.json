@@ -1,10 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app/api/recs/route.ts": {
-      "runtime": "edge"
+  "crons": [
+    {
+      "path": "/api/cron/polymarket-sync",
+      "schedule": "* * * * *"
     }
-  },
+  ],
   "git": {
     "productionBranch": "main",
     "deploymentEnabled": {
@@ -13,4 +14,3 @@
     }
   }
 }
-

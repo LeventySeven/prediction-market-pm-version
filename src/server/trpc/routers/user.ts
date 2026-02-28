@@ -1,13 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { randomBytes } from "node:crypto";
-import { PublicKey } from "@solana/web3.js";
 import { publicProcedure, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
-
-const VCOIN_DECIMALS = 6;
-const DEFAULT_ASSET = "VCOIN";
-const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 const userShape = z.object({
   id: z.string(),
@@ -22,29 +17,12 @@ const userShape = z.object({
   balance: z.number(),
   createdAt: z.string(),
   isAdmin: z.boolean(),
-  solanaWalletAddress: z.string().nullable(),
-  solanaCluster: z.string().nullable(),
-  solanaWalletConnectedAt: z.string().nullable(),
 });
-
-const normalizeSolanaPubkey = (value: string): string => {
-  try {
-    return new PublicKey(value).toBase58();
-  } catch {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_SOLANA_WALLET_ADDRESS" });
-  }
-};
-
-const normalizeSolanaCluster = (value: string): "devnet" | "testnet" | "mainnet-beta" => {
-  const v = value.trim().toLowerCase();
-  if (v === "devnet" || v === "testnet" || v === "mainnet-beta") return v;
-  throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_SOLANA_CLUSTER" });
-};
 
 const normalizeDisplayName = (value: string) => value.trim().replace(/\s+/g, " ");
 const buildReferralCode = () => randomBytes(6).toString("hex").toUpperCase();
 
-const mapUser = (row: any, balanceMinor = 0) => ({
+const mapUser = (row: any) => ({
   id: String(row.id),
   email: String(row.email ?? ""),
   username: String(row.username ?? ""),
@@ -57,103 +35,12 @@ const mapUser = (row: any, balanceMinor = 0) => ({
       ? null
       : Number(row.referral_commission_rate),
   referralEnabled: row.referral_enabled === null || row.referral_enabled === undefined ? null : Boolean(row.referral_enabled),
-  balance: toMajorUnits(Number(balanceMinor ?? 0)),
+  balance: 0,
   createdAt: new Date(String(row.created_at ?? new Date().toISOString())).toISOString(),
   isAdmin: Boolean(row.is_admin),
-  solanaWalletAddress: row.solana_wallet_address ? String(row.solana_wallet_address) : null,
-  solanaCluster: row.solana_cluster ? String(row.solana_cluster) : null,
-  solanaWalletConnectedAt: row.solana_wallet_connected_at
-    ? new Date(String(row.solana_wallet_connected_at)).toISOString()
-    : null,
 });
 
 export const userRouter = router({
-  registerUser: publicProcedure
-    .input(
-      z.object({
-        email: z.string().email(),
-        username: z.string().min(3).max(32),
-        displayName: z.string().optional(),
-      })
-    )
-    .output(userShape)
-    .mutation(async ({ ctx, input }) => {
-      const { supabaseService } = ctx;
-      const email = input.email.trim().toLowerCase();
-      const username = input.username.trim();
-      const displayName = input.displayName?.trim() || username;
-
-      const existing = await (supabaseService as any)
-        .from("users")
-        .select("*")
-        .eq("email", email)
-        .maybeSingle();
-      if (existing.error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: existing.error.message });
-      if (existing.data) {
-        const wallet = await (supabaseService as any)
-          .from("wallet_balances")
-          .select("balance_minor")
-          .eq("user_id", existing.data.id)
-          .eq("asset_code", DEFAULT_ASSET)
-          .maybeSingle();
-        return mapUser(existing.data, wallet.data?.balance_minor ?? 0);
-      }
-
-      const created = await (supabaseService as any)
-        .from("users")
-        .insert({
-          email,
-          username,
-          display_name: displayName,
-          avatar_url: buildInitialsAvatarDataUrl(displayName || username, { bg: "#222222", fg: "#ffffff" }),
-        })
-        .select("*")
-        .single();
-      if (created.error || !created.data) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: created.error?.message ?? "Failed to register user" });
-      }
-      await (supabaseService as any).from("wallet_balances").upsert(
-        {
-          user_id: created.data.id,
-          asset_code: DEFAULT_ASSET,
-          balance_minor: 0,
-        },
-        { onConflict: "user_id,asset_code", ignoreDuplicates: true }
-      );
-      return mapUser(created.data, 0);
-    }),
-
-  getMe: publicProcedure.output(userShape).query(async ({ ctx }) => {
-    const { supabaseService, authUser } = ctx;
-    if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
-    const user = await (supabaseService as any).from("users").select("*").eq("id", authUser.id).maybeSingle();
-    if (user.error || !user.data) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
-    const wallet = await (supabaseService as any)
-      .from("wallet_balances")
-      .select("balance_minor")
-      .eq("user_id", authUser.id)
-      .eq("asset_code", DEFAULT_ASSET)
-      .maybeSingle();
-    return mapUser(user.data, wallet.data?.balance_minor ?? 0);
-  }),
-
-  myWalletTransactions: publicProcedure
-    .output(
-      z.array(
-        z.object({
-          id: z.string(),
-          assetCode: z.string(),
-          amountMinor: z.number(),
-          amountMajor: z.number(),
-          kind: z.string(),
-          marketId: z.string().nullable(),
-          tradeId: z.string().nullable(),
-          createdAt: z.string(),
-        })
-      )
-    )
-    .query(async () => []),
-
   publicUser: publicProcedure
     .input(z.object({ userId: z.string() }))
     .output(
@@ -196,11 +83,6 @@ export const userRouter = router({
       pnlMajor: 0,
       betsCount: 0,
     })),
-
-  publicUserPnlSeries: publicProcedure
-    .input(z.object({ userId: z.string(), days: z.number().int().positive().max(365).optional() }))
-    .output(z.array(z.object({ day: z.string(), pnlMajor: z.number() })))
-    .query(async () => []),
 
   publicUserVotes: publicProcedure
     .input(z.object({ userId: z.string(), limit: z.number().int().positive().max(500).optional() }))
@@ -260,11 +142,6 @@ export const userRouter = router({
       }));
     }),
 
-  publicUserTransactions: publicProcedure
-    .input(z.object({ userId: z.string(), limit: z.number().int().positive().max(500).optional() }))
-    .output(z.array(z.object({ id: z.string() })))
-    .query(async () => []),
-
   updateDisplayName: publicProcedure
     .input(z.object({ displayName: z.string().min(2).max(32) }))
     .output(userShape)
@@ -279,13 +156,7 @@ export const userRouter = router({
         .select("*")
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update display name" });
-      const wallet = await (supabaseService as any)
-        .from("wallet_balances")
-        .select("balance_minor")
-        .eq("user_id", authUser.id)
-        .eq("asset_code", DEFAULT_ASSET)
-        .maybeSingle();
-      return mapUser(updated.data, wallet.data?.balance_minor ?? 0);
+      return mapUser(updated.data);
     }),
 
   updateAvatarUrl: publicProcedure
@@ -301,13 +172,7 @@ export const userRouter = router({
         .select("*")
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update avatar" });
-      const wallet = await (supabaseService as any)
-        .from("wallet_balances")
-        .select("balance_minor")
-        .eq("user_id", authUser.id)
-        .eq("asset_code", DEFAULT_ASSET)
-        .maybeSingle();
-      return mapUser(updated.data, wallet.data?.balance_minor ?? 0);
+      return mapUser(updated.data);
     }),
 
   createReferralLink: publicProcedure
@@ -394,148 +259,17 @@ export const userRouter = router({
         .limit(limit);
       if (users.error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: users.error.message });
       const rows = users.data ?? [];
-      const ids = rows.map((u: any) => String(u.id));
-      const balances = ids.length
-        ? await (supabaseService as any).from("wallet_balances").select("user_id, balance_minor").in("user_id", ids).eq("asset_code", DEFAULT_ASSET)
-        : { data: [] as any[] };
-      const byUser = new Map<string, number>();
-      for (const b of balances.data ?? []) byUser.set(String((b as any).user_id), Number((b as any).balance_minor ?? 0));
       return rows.map((u: any, idx: number) => ({
         id: String(u.id),
         rank: idx + 1,
         name: String(u.display_name ?? u.username ?? "User"),
         username: u.username ? String(u.username) : undefined,
         avatar: String(u.avatar_url ?? u.telegram_photo_url ?? buildInitialsAvatarDataUrl(String(u.display_name ?? u.username ?? "U"), { bg: "#222222", fg: "#ffffff" })),
-        balance: toMajorUnits(byUser.get(String(u.id)) ?? 0),
+        balance: 0,
         pnl: 0,
         referrals: 0,
         betCount: 0,
       }));
     }),
 
-  linkWallet: publicProcedure
-    .input(
-      z.object({
-        solanaWalletAddress: z.string().min(32).max(64),
-        solanaCluster: z.string().optional(),
-      })
-    )
-    .output(
-      z.object({
-        solanaWalletAddress: z.string().nullable(),
-        solanaCluster: z.string().nullable(),
-        solanaWalletConnectedAt: z.string().nullable(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
-      const normalized = normalizeSolanaPubkey(input.solanaWalletAddress);
-      const cluster = normalizeSolanaCluster(input.solanaCluster || "devnet");
-      const nowIso = new Date().toISOString();
-      const collision = await (supabaseService as any)
-        .from("users")
-        .select("id")
-        .eq("solana_wallet_address", normalized)
-        .neq("id", authUser.id)
-        .maybeSingle();
-      if (collision.data) throw new TRPCError({ code: "CONFLICT", message: "WALLET_ALREADY_LINKED" });
-      const updated = await (supabaseService as any)
-        .from("users")
-        .update({
-          solana_wallet_address: normalized,
-          solana_cluster: cluster,
-          solana_wallet_connected_at: nowIso,
-        })
-        .eq("id", authUser.id)
-        .select("solana_wallet_address, solana_cluster, solana_wallet_connected_at")
-        .single();
-      if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to link wallet" });
-      return {
-        solanaWalletAddress: String(updated.data.solana_wallet_address),
-        solanaCluster: String(updated.data.solana_cluster),
-        solanaWalletConnectedAt: new Date(String(updated.data.solana_wallet_connected_at)).toISOString(),
-      };
-    }),
-
-  unlinkWallet: publicProcedure
-    .output(
-      z.object({
-        solanaWalletAddress: z.string().nullable(),
-        solanaCluster: z.string().nullable(),
-        solanaWalletConnectedAt: z.string().nullable(),
-      })
-    )
-    .mutation(async ({ ctx }) => {
-      const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
-      const updated = await (supabaseService as any)
-        .from("users")
-        .update({
-          solana_wallet_address: null,
-          solana_cluster: null,
-          solana_wallet_connected_at: null,
-        })
-        .eq("id", authUser.id)
-        .select("solana_wallet_address, solana_cluster, solana_wallet_connected_at")
-        .single();
-      if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to unlink wallet" });
-      return {
-        solanaWalletAddress: null,
-        solanaCluster: null,
-        solanaWalletConnectedAt: null,
-      };
-    }),
-
-  getWalletStatus: publicProcedure
-    .output(
-      z.object({
-        solanaWalletAddress: z.string().nullable(),
-        solanaCluster: z.string().nullable(),
-        solanaWalletConnectedAt: z.string().nullable(),
-      })
-    )
-    .query(async ({ ctx }) => {
-      const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
-      const row = await (supabaseService as any)
-        .from("users")
-        .select("solana_wallet_address, solana_cluster, solana_wallet_connected_at")
-        .eq("id", authUser.id)
-        .maybeSingle();
-      if (row.error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: row.error.message });
-      return {
-        solanaWalletAddress: row.data?.solana_wallet_address ? String(row.data.solana_wallet_address) : null,
-        solanaCluster: row.data?.solana_cluster ? String(row.data.solana_cluster) : null,
-        solanaWalletConnectedAt: row.data?.solana_wallet_connected_at ? new Date(String(row.data.solana_wallet_connected_at)).toISOString() : null,
-      };
-    }),
-
-  updateWalletChain: publicProcedure
-    .input(z.object({ solanaCluster: z.string() }))
-    .output(
-      z.object({
-        solanaWalletAddress: z.string().nullable(),
-        solanaCluster: z.string().nullable(),
-        solanaWalletConnectedAt: z.string().nullable(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
-      const cluster = normalizeSolanaCluster(input.solanaCluster);
-      const updated = await (supabaseService as any)
-        .from("users")
-        .update({ solana_cluster: cluster })
-        .eq("id", authUser.id)
-        .select("solana_wallet_address, solana_cluster, solana_wallet_connected_at")
-        .single();
-      if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update chain" });
-      return {
-        solanaWalletAddress: updated.data.solana_wallet_address ? String(updated.data.solana_wallet_address) : null,
-        solanaCluster: updated.data.solana_cluster ? String(updated.data.solana_cluster) : null,
-        solanaWalletConnectedAt: updated.data.solana_wallet_connected_at ? new Date(String(updated.data.solana_wallet_connected_at)).toISOString() : null,
-      };
-    }),
 });
-

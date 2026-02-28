@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
-import AuthModal, { type AuthMode } from "@/components/AuthModal";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
@@ -22,6 +21,8 @@ import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
+import { buildSignedBuyOrder, type EphemeralApiCreds } from "@/src/lib/polymarket/tradingClient";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -63,6 +64,7 @@ type MarketApiRow = {
   outcomes?: Array<{
     id: string;
     marketId: string;
+    tokenId?: string | null;
     slug: string;
     title: string;
     iconUrl: string | null;
@@ -126,6 +128,24 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
 };
 
 const MARKET_ID_REGEX = /^[A-Za-z0-9:_-]{6,}$/;
+const HAS_PRIVY_PROVIDER = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+const POLYMARKET_CLOB_URL = (process.env.NEXT_PUBLIC_POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
+const POLYMARKET_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || "137");
+
+const usePrivySession = HAS_PRIVY_PROVIDER
+  ? () => usePrivy()
+  : () => ({
+      ready: true,
+      authenticated: false,
+      login: () => undefined,
+      logout: async () => undefined,
+    });
+
+const usePrivyWalletList = HAS_PRIVY_PROVIDER
+  ? () => useWallets()
+  : () => ({
+      wallets: [] as Array<{ address?: string; getEthereumProvider?: () => Promise<unknown>; walletClientType?: string }>,
+    });
 
 const slugifyTitle = (raw: string) =>
   raw
@@ -189,8 +209,6 @@ export default function HomePage() {
   const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
   const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [showAuth, setShowAuth] = useState(false);
-  const [authInitialMode, setAuthInitialMode] = useState<AuthMode>("SIGN_IN");
   const [reloginRequired, setReloginRequired] = useState(false);
   type CatalogSort = "ENDING_SOON" | "CREATED_DESC" | "CREATED_ASC" | "VOLUME_DESC" | "VOLUME_ASC";
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
@@ -217,66 +235,33 @@ export default function HomePage() {
     }
   });
   const [user, setUser] = useState<User | null>(null);
-  const silentRefreshInFlightRef = useRef<Promise<boolean> | null>(null);
-  const [pendingReferralCode, setPendingReferralCode] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const fromUrl = params.get("ref") || params.get("invite") || params.get("r");
-      const stored = localStorage.getItem("pending_referral_code");
-      const next = (fromUrl || stored || "").trim();
-      if (next) {
-        try {
-          localStorage.setItem("pending_referral_code", next);
-        } catch {
-          // ignore
-        }
-        return next;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  });
+  const { ready: privyReady, authenticated: privyAuthenticated, login: privyLogin, logout: privyLogout } = usePrivySession();
+  const { wallets: privyWallets } = usePrivyWalletList();
+  const clobApiCredsRef = useRef<EphemeralApiCreds | null>(null);
+  const [tradeAccessState, setTradeAccessState] = useState<{
+    status: "ALLOWED" | "BLOCKED_REGION" | "UNKNOWN_TEMP_ERROR";
+    allowed: boolean;
+    reasonCode: string | null;
+    message: string | null;
+    checkedAt: string;
+  } | null>(null);
+  const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
-  const telegramAutoLoginAttemptedRef = useRef(false);
-
-  const getTelegramInitDataFromUrl = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
-      const fromHash = new URLSearchParams(hash).get("tgWebAppData");
-      const fromSearch = new URLSearchParams(window.location.search).get("tgWebAppData");
-      const raw = (fromHash || fromSearch || "").trim();
-      if (!raw) return null;
-      try {
-        return decodeURIComponent(raw);
-      } catch {
-        return raw;
-      }
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const getTelegramInitData = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    const initData = window.Telegram?.WebApp?.initData;
-    if (typeof initData === "string" && initData.trim().length > 0) return initData;
-    return getTelegramInitDataFromUrl();
-  }, [getTelegramInitDataFromUrl]);
 
   const getMarketIdFromUrl = () => getMarketIdFromLocation();
 
   // Deep link: open a market by URL (?marketId=...).
   useEffect(() => {
     const marketIdFromUrl = getMarketIdFromUrl();
+    const telegramUnsafe = (window as unknown as {
+      Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
+    }).Telegram?.WebApp?.initDataUnsafe;
     const startParamRaw =
-      typeof window !== "undefined" ? (window.Telegram?.WebApp?.initDataUnsafe as { start_param?: string } | undefined)?.start_param : undefined;
+      typeof window !== "undefined" ? telegramUnsafe?.start_param : undefined;
     const startParam = String(startParamRaw ?? "").trim();
     const marketIdFromStartParam = (() => {
       if (!startParam) return null;
@@ -477,8 +462,6 @@ export default function HomePage() {
     return undefined;
   }, []);
 
-  // pendingReferralCode is captured once on mount (initializer) and cleared after signup completes.
-
   const handleCloseOnboarding = () => {
     setShowOnboarding(false);
     localStorage.setItem("hasSeenOnboarding", "true");
@@ -496,10 +479,11 @@ export default function HomePage() {
     });
   };
 
-  const openAuth = useCallback((mode: AuthMode) => {
-    setAuthInitialMode(mode);
-    setShowAuth(true);
-  }, []);
+  const openAuth = useCallback((_mode?: "SIGN_IN" | "SIGN_UP") => {
+    if (privyReady) {
+      void privyLogin();
+    }
+  }, [privyLogin, privyReady]);
 
   const applyPublicUser = useCallback((me: {
     id: string;
@@ -514,9 +498,8 @@ export default function HomePage() {
     referralCode?: string | null;
     referralCommissionRate?: number | null;
     referralEnabled?: boolean | null;
-    solanaWalletAddress?: string | null;
-    solanaCluster?: string | null;
-    solanaWalletConnectedAt?: string | null;
+    privyUserId?: string | null;
+    walletAddress?: string | null;
   }) => {
     setUser({
       id: String(me.id),
@@ -532,83 +515,14 @@ export default function HomePage() {
       referralCode: me.referralCode ?? null,
       referralCommissionRate: me.referralCommissionRate ?? null,
       referralEnabled: me.referralEnabled ?? null,
-      solanaWalletAddress: me.solanaWalletAddress ?? null,
-      solanaCluster: me.solanaCluster ?? null,
-      solanaWalletConnectedAt: me.solanaWalletConnectedAt ?? null,
+      privyUserId: me.privyUserId ?? null,
+      walletAddress: me.walletAddress ?? null,
     });
   }, []);
 
   const clearRelogin = useCallback(() => {
     setReloginRequired(false);
   }, []);
-
-  const handleTelegramLogin = useCallback(async (initData: string) => {
-    const res = await trpcClient.auth.telegramLogin.mutate({ initData });
-    clearRelogin();
-    applyPublicUser(res.user);
-  }, [applyPublicUser, clearRelogin]);
-
-  const handleSignUp = async (payload: {
-    email: string;
-    username: string;
-    password: string;
-    displayName?: string;
-  }) => {
-    const me = await trpcClient.auth.signUp.mutate({
-      email: payload.email,
-      username: payload.username,
-      password: payload.password,
-      displayName: payload.displayName,
-      referralCode: pendingReferralCode ?? undefined,
-    });
-    clearRelogin();
-    applyPublicUser(me.user);
-
-    // If user came from a deep link, keep them on that market after signup.
-    try {
-      const pendingMarketId = localStorage.getItem("pending_market_id");
-      if (pendingMarketId) {
-        setSelectedMarketId(pendingMarketId);
-        navigateToMarketUrl(pendingMarketId);
-        setCurrentView("CATALOG");
-        localStorage.removeItem("pending_market_id");
-      }
-    } catch {
-      // ignore
-    }
-
-    setPendingReferralCode(null);
-    try {
-      localStorage.removeItem("pending_referral_code");
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleLoginSubmit = async (payload: {
-    emailOrUsername: string;
-    password: string;
-  }) => {
-    const me = await trpcClient.auth.login.mutate({
-      emailOrUsername: payload.emailOrUsername,
-      password: payload.password,
-    });
-    clearRelogin();
-    applyPublicUser(me.user);
-
-    // If user came from a deep link, keep them on that market after login.
-    try {
-      const pendingMarketId = localStorage.getItem("pending_market_id");
-      if (pendingMarketId) {
-        setSelectedMarketId(pendingMarketId);
-        navigateToMarketUrl(pendingMarketId);
-        setCurrentView("CATALOG");
-        localStorage.removeItem("pending_market_id");
-      }
-    } catch {
-      // ignore
-    }
-  };
 
   const refreshUser = useCallback(async () => {
     try {
@@ -624,47 +538,41 @@ export default function HomePage() {
     return null;
   }, [applyPublicUser, clearRelogin]);
 
-  const attemptSilentRefresh = useCallback(async () => {
-    if (silentRefreshInFlightRef.current) {
-      return silentRefreshInFlightRef.current;
+  useEffect(() => {
+    if (!HAS_PRIVY_PROVIDER) return;
+    const handlePrivyBridge = () => {
+      void refreshUser();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("privy-session-bridged", handlePrivyBridge as EventListener);
     }
-
-    const task = (async () => {
-      try {
-        const refreshed = await trpcClient.auth.refreshSession.mutate();
-        if (refreshed?.user) {
-          applyPublicUser(refreshed.user);
-        }
-        clearRelogin();
-        return true;
-      } catch (err) {
-        console.warn("Silent session refresh failed", err);
-        const initData = getTelegramInitData();
-        if (initData) {
-          try {
-            await handleTelegramLogin(initData);
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            const me = await refreshUser();
-            if (me) {
-              clearRelogin();
-              return true;
-            }
-          } catch (telegramErr) {
-            console.warn("Telegram re-auth failed", telegramErr);
-          }
-        }
-        setReloginRequired(true);
-        setUser(null);
-        openAuth("SIGN_IN");
-        return false;
-      } finally {
-        silentRefreshInFlightRef.current = null;
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("privy-session-bridged", handlePrivyBridge as EventListener);
       }
-    })();
+    };
+  }, [refreshUser]);
 
-    silentRefreshInFlightRef.current = task;
-    return task;
-  }, [applyPublicUser, clearRelogin, handleTelegramLogin, openAuth, refreshUser, getTelegramInitData]);
+  useEffect(() => {
+    if (!HAS_PRIVY_PROVIDER) return;
+    if (!privyReady) return;
+    if (privyAuthenticated) {
+      void refreshUser();
+      return;
+    }
+    setUser(null);
+  }, [privyReady, privyAuthenticated, refreshUser]);
+
+  const attemptSilentRefresh = useCallback(async () => {
+    if (privyReady && privyAuthenticated) {
+      const me = await refreshUser();
+      if (me) return true;
+    }
+    setReloginRequired(true);
+    setUser(null);
+    openAuth("SIGN_IN");
+    return false;
+  }, [openAuth, privyAuthenticated, privyReady, refreshUser]);
 
   const triggerRelogin = useCallback(() => {
     void attemptSilentRefresh();
@@ -748,7 +656,8 @@ export default function HomePage() {
 
   const handleLogout = useCallback(async () => {
     try {
-      await trpcClient.auth.logout.mutate();
+      await trpcClient.auth.privyLogout.mutate();
+      await privyLogout();
     } catch (err) {
       console.error("logout failed", err);
     } finally {
@@ -760,7 +669,7 @@ export default function HomePage() {
       setSelectedMarketId(null);
       navigateToCatalogUrl();
     }
-  }, [navigateToCatalogUrl]);
+  }, [navigateToCatalogUrl, privyLogout]);
 
   const deriveLegacyBets = useCallback(
     (positions: Position[]): Bet[] =>
@@ -875,37 +784,15 @@ export default function HomePage() {
   useEffect(() => {
     const loadUser = async () => {
       setLoadingUser(true);
-      let me = await refreshUser();
-
-      // If auth_token is missing/expired but refresh cookie is still valid,
-      // silently restore the session before asking user to re-authenticate.
-      if (!me) {
-        const refreshed = await attemptSilentRefresh();
-        if (refreshed) {
-          me = await refreshUser();
-        }
-      }
-
-      // Telegram Mini App: one-click login if no session exists.
-      if (!me && !telegramAutoLoginAttemptedRef.current) {
-        telegramAutoLoginAttemptedRef.current = true;
-        const initData = getTelegramInitData();
-        if (initData) {
-          try {
-            await handleTelegramLogin(initData);
-            // After Telegram login, wait briefly for cookies to be set by the browser, then verify
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            await refreshUser();
-          } catch (err) {
-            console.error("Telegram auto-login failed", err);
-          }
-        }
+      const me = await refreshUser();
+      if (!me && privyReady && privyAuthenticated) {
+        await attemptSilentRefresh();
       }
       setLoadingUser(false);
     };
 
     void loadUser();
-  }, [refreshUser, handleTelegramLogin, attemptSilentRefresh]);
+  }, [attemptSilentRefresh, privyAuthenticated, privyReady, refreshUser]);
 
   const loadMarkets = useCallback(async () => {
     setLoadingMarkets(true);
@@ -1329,6 +1216,25 @@ export default function HomePage() {
     [selectedMarketId, markets]
   );
 
+  const tradeBlockedMessage = useMemo(() => {
+    if (!HAS_PRIVY_PROVIDER || !selectedMarketId) return null;
+    if (tradeAccessLoading && !tradeAccessState) {
+      return lang === "RU" ? "Проверяем региональный доступ..." : "Checking regional access...";
+    }
+    if (!tradeAccessState) return null;
+    if (tradeAccessState.allowed) return null;
+    if (tradeAccessState.status === "BLOCKED_REGION") {
+      return tradeAccessState.message ??
+        (lang === "RU"
+          ? "Торговля недоступна в вашей юрисдикции."
+          : "Trading is unavailable in your jurisdiction.");
+    }
+    return tradeAccessState.message ??
+      (lang === "RU"
+        ? "Временно не удалось проверить доступ к торговле."
+        : "Temporarily unable to verify trading access.");
+  }, [lang, selectedMarketId, tradeAccessLoading, tradeAccessState]);
+
   const goToView = useCallback(
     (view: ViewType) => {
       // UX: when switching tabs (bottom nav or swipe), always start at the top.
@@ -1524,6 +1430,53 @@ export default function HomePage() {
     };
   }, [selectedMarketId]);
 
+  useEffect(() => {
+    if (!HAS_PRIVY_PROVIDER || !selectedMarketId) {
+      setTradeAccessState(null);
+      setTradeAccessLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchAccess = async () => {
+      setTradeAccessLoading(true);
+      try {
+        const access = await trpcClient.market.checkTradeAccess.query();
+        if (!cancelled) {
+          setTradeAccessState({
+            status: access.status ?? "UNKNOWN_TEMP_ERROR",
+            allowed: Boolean(access.allowed),
+            reasonCode: access.reasonCode ?? null,
+            message: access.message ?? null,
+            checkedAt: access.checkedAt ?? new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTradeAccessState({
+            status: "UNKNOWN_TEMP_ERROR",
+            allowed: false,
+            reasonCode: "ACCESS_STATUS_FETCH_FAILED",
+            message: getErrorMessage(err),
+            checkedAt: new Date().toISOString(),
+          });
+        }
+      } finally {
+        if (!cancelled) setTradeAccessLoading(false);
+      }
+    };
+
+    void fetchAccess();
+    const timer = setInterval(() => {
+      void fetchAccess();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [selectedMarketId]);
+
   /**
    * Handle placing a bet (buying shares)
    */
@@ -1531,6 +1484,7 @@ export default function HomePage() {
     amount,
     marketId,
     side,
+    outcomeId,
     marketTitle,
   }: {
     amount: number;
@@ -1544,10 +1498,105 @@ export default function HomePage() {
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
         : markets.find((m) => m.id === marketId) ?? null;
-    const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
 
-    if (typeof window !== "undefined") {
-      window.open(target, "_blank", "noopener,noreferrer");
+    if (!HAS_PRIVY_PROVIDER) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? "Privy не настроен. Установите NEXT_PUBLIC_PRIVY_APP_ID."
+            : "Privy is not configured. Set NEXT_PUBLIC_PRIVY_APP_ID.",
+        isLoading: false,
+      });
+      return;
+    }
+
+    if (!privyReady || !privyAuthenticated || !user) {
+      openAuth("SIGN_IN");
+      return;
+    }
+
+    const tradeAccess = await trpcClient.market.checkTradeAccess.query().catch(() => null);
+    if (!tradeAccess?.allowed) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          tradeAccess?.message ??
+          (lang === "RU"
+            ? "Торговля недоступна в вашей юрисдикции."
+            : "Trading is unavailable in your jurisdiction."),
+        isLoading: false,
+      });
+      return;
+    }
+
+    const wallet =
+      privyWallets.find((w) => (w as { walletClientType?: string }).walletClientType === "privy") ??
+      privyWallets[0] ??
+      null;
+
+    if (!market || !wallet) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? "Не удалось подготовить сделку. Проверьте кошелёк и обновите страницу."
+            : "Unable to prepare trade. Check your wallet and refresh the page.",
+        isLoading: false,
+      });
+      return;
+    }
+
+    const normalizeOutcome = (title?: string | null) => String(title ?? "").trim().toLowerCase();
+    const outcomes = market.outcomes ?? [];
+    const yesOutcome =
+      outcomes.find((o) => normalizeOutcome(o.title) === "yes") ??
+      outcomes.find((o) => o.sortOrder === 0) ??
+      outcomes[0] ??
+      null;
+    const noOutcome =
+      outcomes.find((o) => normalizeOutcome(o.title) === "no") ??
+      outcomes.find((o) => o.sortOrder === 1) ??
+      outcomes[1] ??
+      null;
+    const selectedOutcome =
+      (outcomeId ? outcomes.find((o) => o.id === outcomeId) : null) ??
+      (safeSide === "NO" ? noOutcome : yesOutcome);
+
+    const tokenId = selectedOutcome?.tokenId ?? null;
+    const price =
+      typeof selectedOutcome?.price === "number" && Number.isFinite(selectedOutcome.price)
+        ? selectedOutcome.price
+        : safeSide === "NO"
+          ? market.noPrice
+          : market.yesPrice;
+
+    if (!tokenId || !Number.isFinite(price) || price <= 0) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? "Для выбранного исхода нет доступного tokenId в CLOB."
+            : "No tradable CLOB tokenId available for the selected outcome.",
+        isLoading: false,
+      });
+      return;
     }
 
     setBetConfirm({
@@ -1556,12 +1605,72 @@ export default function HomePage() {
       side: safeSide,
       amount,
       newBalance: user?.balance,
-      errorMessage:
-        lang === "RU"
-          ? "Торги выполняются на стороне Polymarket. Мы открыли рынок в новой вкладке."
-          : "Trading is handled by Polymarket. We opened this market in a new tab.",
-      isLoading: false,
+      errorMessage: null,
+      isLoading: true,
     });
+
+    try {
+      const built = await buildSignedBuyOrder({
+        wallet: wallet as unknown as { getEthereumProvider?: () => Promise<unknown>; address?: string },
+        tokenId,
+        amountUsd: amount,
+        limitPrice: price,
+        chainId: Number.isFinite(POLYMARKET_CHAIN_ID) ? POLYMARKET_CHAIN_ID : 137,
+        clobUrl: POLYMARKET_CLOB_URL,
+        apiCreds: clobApiCredsRef.current,
+        orderType: "FOK",
+      });
+      clobApiCredsRef.current = built.apiCreds;
+
+      const relay = await trpcClient.market.relaySignedOrder.mutate({
+        signedOrder: built.signedOrder,
+        orderType: built.orderType,
+        apiCreds: built.apiCreds,
+      });
+
+      if (!relay.success) {
+        throw new Error(relay.error ?? "ORDER_RELAY_FAILED");
+      }
+
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage: null,
+        isLoading: false,
+      });
+    } catch (err) {
+      const message = getErrorMessage(err);
+      const mapped = (() => {
+        const upper = message.toUpperCase();
+        if (upper.includes("ORDER_RELAY_TIMEOUT")) {
+          return lang === "RU" ? "Таймаут при отправке ордера в CLOB." : "Timed out while relaying order to CLOB.";
+        }
+        if (upper.includes("BLOCKED") || upper.includes("ACCESS")) {
+          return lang === "RU"
+            ? "Торговля недоступна в вашей юрисдикции."
+            : "Trading is unavailable in your jurisdiction.";
+        }
+        if (upper.includes("INSUFFICIENT")) {
+          return lang === "RU"
+            ? "Недостаточно средств или не выполнен allowance."
+            : "Insufficient balance or allowance.";
+        }
+        return message || (lang === "RU" ? "Не удалось разместить ставку." : "Failed to place bet.");
+      })();
+
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage: mapped,
+        isLoading: false,
+      });
+    }
   };
 
   const handleOpenMarketBet = useCallback(
@@ -1968,6 +2077,14 @@ export default function HomePage() {
               marketContextError={marketContextErrorById[selectedMarket.id] ?? null}
               onFetchMarketContext={handleFetchMarketContext}
               creatorHasBets={creatorHasBets}
+              tradeBlockedMessage={tradeBlockedMessage}
+              onOpenExternalTrade={(marketId) => {
+                const market = markets.find((m) => m.id === marketId) ?? null;
+                const target = market?.source && /^https?:\/\//i.test(market.source) ? market.source : "https://polymarket.com";
+                if (typeof window !== "undefined") {
+                  window.open(target, "_blank", "noopener,noreferrer");
+                }
+              }}
             />
           </main>
           <BottomMenu
@@ -2464,22 +2581,6 @@ export default function HomePage() {
         onClose={handleCloseOnboarding}
         lang={lang}
         onToggleLang={handleToggleLang}
-      />
-      <AuthModal
-        key={`${showAuth ? "open" : "closed"}:${authInitialMode}`}
-        isOpen={showAuth}
-        onClose={() => {
-          setShowAuth(false);
-          // If user dismissed auth without logging in, clear deferred actions.
-          if (!user) {
-            setPostAuthAction(null);
-          }
-        }}
-        onSignUp={handleSignUp}
-        onLogin={handleLoginSubmit}
-        onTelegramLogin={handleTelegramLogin}
-        lang={lang}
-        initialMode={authInitialMode}
       />
       <BetConfirmModal
         isOpen={betConfirm.open}

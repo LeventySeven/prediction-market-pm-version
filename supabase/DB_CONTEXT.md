@@ -4,6 +4,7 @@ Generated at: `2026-02-23T21:30:13.825Z`
 Supabase URL: `https://zebqsdwawldoehvupmtm.supabase.co`
 
 Refresh: `bun run supabase:schema`
+Status: may be stale if schema refresh has not been run after latest migrations.
 
 ## Resources
 Total: **32**
@@ -343,15 +344,4 @@ Total: **32**
 - `created_at`: `string(timestamp with time zone)`
 
 ## SQL functions in repo
-(These are the SQL files you deploy/apply in Supabase; names extracted from the repo, not from introspection.)
-
-- `db/functions/place_bet_tx.sql`
-  - `claim_winnings_onchain_tx`
-  - `lmsr_cost_safe`
-  - `lmsr_price_yes_safe`
-  - `place_bet_onchain_service_tx`
-  - `place_bet_onchain_tx`
-  - `place_bet_tx`
-  - `sell_position_onchain_service_tx`
-  - `sell_position_onchain_tx`
-  - `sell_position_tx`
+No hand-maintained SQL function files are currently tracked under `db/functions/`.

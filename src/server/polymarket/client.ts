@@ -273,17 +273,89 @@ const hydrateWithMidpoints = async (markets: PolymarketMarket[]): Promise<Polyma
   });
 };
 
-async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
+type MarketSnapshotScope = "open" | "all";
+
+type FetchMarketsPagedOptions = {
+  scope?: MarketSnapshotScope;
+  pageSize?: number;
+  maxPages?: number;
+};
+
+const clampInt = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Math.floor(value)));
+
+const dedupeRawMarkets = (rows: RawMarket[]): RawMarket[] => {
+  const seen = new Set<string>();
+  const deduped: RawMarket[] = [];
+  for (const row of rows) {
+    const id =
+      asString(row.conditionId) ??
+      asString(row.condition_id) ??
+      asString(row.market) ??
+      asString(row.id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(row);
+  }
+  return deduped;
+};
+
+async function fetchMarketsPaged(options?: FetchMarketsPagedOptions): Promise<RawMarket[]> {
   const base = getBaseUrl();
-  const url = `${base}/markets?limit=${limit}&active=true&closed=false&archived=false&order=volume&ascending=false`;
-  const response = await fetch(url, { next: { revalidate: 30 } });
-  if (!response.ok) return [];
-  const payload = (await response.json()) as unknown;
-  return Array.isArray(payload) ? (payload as RawMarket[]) : [];
+  const scope = options?.scope ?? "open";
+  const pageSize = clampInt(options?.pageSize ?? 200, 10, 500);
+  const maxPages = clampInt(options?.maxPages ?? 1, 1, 200);
+  const allRows: RawMarket[] = [];
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const offset = page * pageSize;
+    const params = new URLSearchParams();
+    params.set("limit", String(pageSize));
+    params.set("offset", String(offset));
+    params.set("archived", "false");
+    params.set("order", "volume");
+    params.set("ascending", "false");
+    if (scope === "open") {
+      params.set("active", "true");
+      params.set("closed", "false");
+    }
+
+    const url = `${base}/markets?${params.toString()}`;
+    const response = await fetch(url, { next: { revalidate: scope === "open" ? 30 : 120 } });
+    if (!response.ok) break;
+    const payload = (await response.json()) as unknown;
+    const pageRows = Array.isArray(payload) ? (payload as RawMarket[]) : [];
+    if (pageRows.length === 0) break;
+    allRows.push(...pageRows);
+    if (pageRows.length < pageSize) break;
+  }
+
+  return dedupeRawMarkets(allRows);
+}
+
+async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
+  const safeLimit = clampInt(limit, 1, 5000);
+  const pageSize = Math.min(200, safeLimit);
+  const maxPages = Math.max(1, Math.ceil(safeLimit / pageSize));
+  const rows = await fetchMarketsPaged({
+    scope: "open",
+    pageSize,
+    maxPages,
+  });
+  return rows.slice(0, safeLimit);
 }
 
 export async function listPolymarketMarkets(limit = 200): Promise<PolymarketMarket[]> {
   const rows = await fetchMarkets(limit);
+  const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
+  return hydrateWithMidpoints(mapped);
+}
+
+export async function listPolymarketMarketsSnapshot(options?: {
+  scope?: MarketSnapshotScope;
+  pageSize?: number;
+  maxPages?: number;
+}): Promise<PolymarketMarket[]> {
+  const rows = await fetchMarketsPaged(options);
   const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
   return hydrateWithMidpoints(mapped);
 }
@@ -299,7 +371,7 @@ export async function searchPolymarketMarkets(query: string, limit = 80): Promis
   params.set("search_tags", "false");
   params.set("cache", "true");
   params.set("optimized", "true");
-  params.set("keep_closed_markets", "0");
+  params.set("keep_closed_markets", "1");
   const url = `${base}/public-search?${params.toString()}`;
   try {
     const res = await fetch(url, { next: { revalidate: 15 } });
@@ -465,4 +537,3 @@ export async function getPolymarketPublicTrades(
     return [];
   }
 }
-

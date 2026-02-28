@@ -1,7 +1,8 @@
-import { pipeline } from "@xenova/transformers";
+import { getSupabaseServiceClient } from "@/src/server/supabase/client";
+import { searchMirroredPolymarketMarkets } from "@/src/server/polymarket/mirror";
 import { searchPolymarketMarkets } from "@/src/server/polymarket/client";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type RecMarket = {
   id: string;
@@ -21,52 +22,15 @@ type RecResponseRow = {
   score: number;
 };
 
-type Embedder = Awaited<ReturnType<typeof pipeline>>;
-
-const TASK = "feature-extraction";
-const MODEL = "Xenova/all-MiniLM-L6-v2";
-const MAX_MARKETS = 100;
 const DEFAULT_LIMIT = 10;
-const MAX_EMBED_CANDIDATES = 80;
+const MAX_LIMIT = 50;
+const MAX_KEYWORD_CANDIDATES = 240;
+const MAX_LIVE_CANDIDATES = 140;
+const MAX_INPUT_MARKETS = 150;
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __recsEmbedderPromise: Promise<Embedder> | undefined;
-  // eslint-disable-next-line no-var
-  var __recsEmbeddingCache: Map<string, { fingerprint: string; vector: number[]; ts: number }> | undefined;
-}
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
-const getEmbedder = () => {
-  if (!globalThis.__recsEmbedderPromise) {
-    globalThis.__recsEmbedderPromise = pipeline(TASK, MODEL);
-  }
-  return globalThis.__recsEmbedderPromise;
-};
-
-const asVector = (value: unknown): number[] => {
-  if (value && typeof value === "object" && "data" in value) {
-    const data = (value as { data?: unknown }).data;
-    if (Array.isArray(data)) return data.map((n) => Number(n));
-    if (data && typeof (data as { length?: unknown }).length === "number") {
-      return Array.from(data as ArrayLike<number>).map((n) => Number(n));
-    }
-  }
-  return [];
-};
-
-const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
-
-const dot = (a: number[], b: number[]) => {
-  const size = Math.min(a.length, b.length);
-  let acc = 0;
-  for (let i = 0; i < size; i += 1) acc += a[i]! * b[i]!;
-  return acc;
-};
-
-const makeFingerprint = (market: RecMarket) =>
-  `${market.question}|${market.tags.join("|")}`.toLowerCase().trim();
-
-const lexicalScore = (query: string, market: RecMarket) => {
+const lexicalScore = (query: string, market: RecMarket): number => {
   const q = query.toLowerCase().trim();
   if (!q) return 0;
   const text = `${market.question} ${market.tags.join(" ")}`.toLowerCase();
@@ -90,7 +54,10 @@ const normalizeMarkets = (markets: unknown): RecMarket[] => {
       const question = typeof row.question === "string" ? row.question.trim() : "";
       if (!id || !question) return null;
       const tags = Array.isArray(row.tags)
-        ? row.tags.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean)
+        ? row.tags
+            .filter((t): t is string => typeof t === "string")
+            .map((t) => t.trim())
+            .filter(Boolean)
         : [];
       const volumeRaw = Number(row.volume ?? 0);
       return {
@@ -98,20 +65,33 @@ const normalizeMarkets = (markets: unknown): RecMarket[] => {
         question,
         tags,
         volume: Number.isFinite(volumeRaw) ? Math.max(0, volumeRaw) : 0,
-      };
+      } satisfies RecMarket;
     })
-    .filter((v): v is RecMarket => Boolean(v));
+    .filter((v): v is RecMarket => Boolean(v))
+    .slice(0, MAX_INPUT_MARKETS);
 };
 
-const fromPolymarketDirectory = async (query: string, limit: number): Promise<RecMarket[]> => {
+const fromMirrorKeyword = async (query: string, limit: number): Promise<RecMarket[]> => {
+  try {
+    const supabase = getSupabaseServiceClient();
+    const rows = await searchMirroredPolymarketMarkets(supabase, query, limit);
+    return rows.map((m) => ({
+      id: m.id,
+      question: m.title,
+      tags: [m.category ?? "", ...m.outcomes.map((o) => o.title)].filter(Boolean),
+      volume: m.volume,
+    }));
+  } catch {
+    return [];
+  }
+};
+
+const fromPolymarketLive = async (query: string, limit: number): Promise<RecMarket[]> => {
   const rows = await searchPolymarketMarkets(query, limit);
   return rows.map((m) => ({
     id: m.id,
     question: m.title,
-    tags: [
-      m.category ?? "",
-      ...m.outcomes.map((o) => o.title),
-    ].filter(Boolean),
+    tags: [m.category ?? "", ...m.outcomes.map((o) => o.title)].filter(Boolean),
     volume: m.volume,
   }));
 };
@@ -125,77 +105,40 @@ export async function POST(req: Request) {
   }
 
   const query = String(body.query ?? "").trim();
-  const limit = Math.max(1, Math.min(20, Number(body.limit ?? DEFAULT_LIMIT)));
-  const inputMarkets = normalizeMarkets(body.markets).slice(0, MAX_MARKETS);
-  if (!query) return Response.json([]);
-  const directoryMarkets = await fromPolymarketDirectory(query, MAX_MARKETS);
+  const limit = Math.max(1, Math.min(MAX_LIMIT, Number(body.limit ?? DEFAULT_LIMIT)));
+  const inputMarkets = normalizeMarkets(body.markets);
+
+  if (query.length < 2) return Response.json([]);
+
+  const [keywordCandidates, liveCandidates] = await Promise.all([
+    fromMirrorKeyword(query, MAX_KEYWORD_CANDIDATES),
+    fromPolymarketLive(query, MAX_LIVE_CANDIDATES),
+  ]);
+
   const mergedById = new Map<string, RecMarket>();
-  for (const m of directoryMarkets) mergedById.set(m.id, m);
+  for (const m of keywordCandidates) mergedById.set(m.id, m);
+  for (const m of liveCandidates) mergedById.set(m.id, m);
   for (const m of inputMarkets) {
     if (!mergedById.has(m.id)) mergedById.set(m.id, m);
   }
-  const markets = Array.from(mergedById.values()).slice(0, MAX_MARKETS);
-  if (markets.length === 0) return Response.json([]);
 
-  const prefiltered = [...markets]
-    .map((market) => {
-      const lex = lexicalScore(query, market);
-      const volBoost = Math.log10((market.volume ?? 0) + 1) * 0.01;
-      return { market, lex, base: lex + volBoost };
-    })
-    .sort((a, b) => b.base - a.base)
-    .slice(0, MAX_EMBED_CANDIDATES);
-
-  const embedder = await getEmbedder();
-  const queryOut = await (embedder as any)(query, { pooling: "mean", normalize: true });
-  const queryVec = asVector(queryOut);
-  if (queryVec.length === 0) return Response.json([]);
-
-  const cache = globalThis.__recsEmbeddingCache ?? new Map<string, { fingerprint: string; vector: number[]; ts: number }>();
-  globalThis.__recsEmbeddingCache = cache;
-  const now = Date.now();
-  for (const [key, entry] of cache.entries()) {
-    if (now - entry.ts > 1000 * 60 * 30) cache.delete(key);
-  }
-
-  const missing: RecMarket[] = [];
-  for (const { market } of prefiltered) {
-    const fingerprint = makeFingerprint(market);
-    const cached = cache.get(market.id);
-    if (!cached || cached.fingerprint !== fingerprint || cached.vector.length === 0) {
-      missing.push(market);
-    } else {
-      cached.ts = now;
-    }
-  }
-
-  if (missing.length > 0) {
-    const texts = missing.map((m) => `${m.question} ${m.tags.join(" ")}`.trim());
-    const out = await (embedder as any)(texts, { pooling: "mean", normalize: true });
-    const vectors = Array.isArray(out) ? out.map(asVector) : [asVector(out)];
-    for (let i = 0; i < missing.length; i += 1) {
-      const market = missing[i]!;
-      const vector = vectors[i] ?? [];
-      cache.set(market.id, {
-        fingerprint: makeFingerprint(market),
-        vector,
-        ts: now,
-      });
-    }
-  }
-
-  const results: RecResponseRow[] = prefiltered.map(({ market, lex }) => {
-    const candidateVec = cache.get(market.id)?.vector ?? [];
-    const semantic = candidateVec.length > 0 ? dot(queryVec, candidateVec) : 0;
-    const volumeBoost = Math.log10((market.volume ?? 0) + 1) * 0.01;
-    const lexicalBoost = lex * 0.15;
-    return {
-      market,
-      score: clamp01(semantic + lexicalBoost + volumeBoost),
-    };
+  const liveRank = new Map<string, number>();
+  liveCandidates.forEach((m, idx) => {
+    liveRank.set(m.id, idx);
   });
 
-  results.sort((a, b) => b.score - a.score);
-  return Response.json(results.slice(0, limit));
-}
+  const rows: RecResponseRow[] = Array.from(mergedById.values()).map((market) => {
+    const lex = lexicalScore(query, market);
+    const volumeBoost = Math.log10((market.volume ?? 0) + 1) * 0.02;
+    const rank = liveRank.get(market.id);
+    const liveBoost =
+      typeof rank === "number" && liveCandidates.length > 0
+        ? 0.25 * (1 - rank / liveCandidates.length)
+        : 0;
+    const score = clamp01(lex * 0.75 + volumeBoost + liveBoost);
+    return { market, score };
+  });
 
+  rows.sort((a, b) => b.score - a.score);
+  return Response.json(rows.slice(0, limit));
+}

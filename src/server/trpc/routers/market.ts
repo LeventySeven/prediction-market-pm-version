@@ -1,13 +1,20 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { createHmac } from "node:crypto";
 import { publicProcedure, router } from "../trpc";
 import { generateMarketContext } from "../../ai/marketContextAgent";
 import {
+  type PolymarketMarket,
   getPolymarketMarketById,
   getPolymarketPriceHistory,
   getPolymarketPublicTrades,
   listPolymarketMarkets,
 } from "../../polymarket/client";
+import {
+  getMirroredPolymarketMarketById,
+  listMirroredPolymarketMarkets,
+  upsertMirroredPolymarketMarkets,
+} from "../../polymarket/mirror";
 
 const marketCategoryOutput = z.object({
   id: z.string(),
@@ -18,6 +25,7 @@ const marketCategoryOutput = z.object({
 const marketOutcomeOutput = z.object({
   id: z.string(),
   marketId: z.string(),
+  tokenId: z.string().nullable().optional(),
   slug: z.string(),
   title: z.string(),
   iconUrl: z.string().nullable(),
@@ -123,6 +131,31 @@ const marketContextOutput = z.object({
   generated: z.boolean(),
 });
 
+const tradeAccessOutput = z.object({
+  status: z.enum(["ALLOWED", "BLOCKED_REGION", "UNKNOWN_TEMP_ERROR"]),
+  allowed: z.boolean(),
+  reasonCode: z.string().nullable(),
+  message: z.string().nullable(),
+  checkedAt: z.string(),
+});
+
+const relaySignedOrderInput = z.object({
+  signedOrder: z.record(z.string(), z.unknown()),
+  orderType: z.enum(["FOK", "GTC"]),
+  apiCreds: z.object({
+    key: z.string().min(1).max(512),
+    secret: z.string().min(1).max(1024),
+    passphrase: z.string().min(1).max(1024),
+  }),
+});
+
+const relaySignedOrderOutput = z.object({
+  success: z.boolean(),
+  status: z.number(),
+  payload: z.unknown().optional(),
+  error: z.string().optional(),
+});
+
 const DEFAULT_CATEGORIES = [
   { id: "all", labelRu: "Все", labelEn: "All" },
   { id: "politics", labelRu: "Политика", labelEn: "Politics" },
@@ -144,6 +177,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   const outcomes = market.outcomes.map((o) => ({
     id: o.id,
     marketId: market.id,
+    tokenId: o.tokenId ?? null,
     slug: o.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
     title: o.title,
     iconUrl: null,
@@ -199,6 +233,289 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   };
 };
 
+const getMarketFromMirrorOrLive = async (
+  supabaseService: unknown,
+  marketId: string
+): Promise<PolymarketMarket | null> => {
+  try {
+    const mirrored = await getMirroredPolymarketMarketById(supabaseService, marketId);
+    if (mirrored) return mirrored;
+  } catch (err) {
+    console.warn("Mirror getMarket failed, falling back to Polymarket API", err);
+  }
+
+  const live = await getPolymarketMarketById(marketId);
+  if (live) {
+    try {
+      await upsertMirroredPolymarketMarkets(supabaseService, [live]);
+    } catch (err) {
+      console.warn("Mirror upsert after live getMarket failed", err);
+    }
+  }
+  return live;
+};
+
+const listMarketsFromMirrorOrLive = async (
+  supabaseService: unknown,
+  params: { onlyOpen: boolean; limit: number }
+): Promise<PolymarketMarket[]> => {
+  try {
+    const mirrored = await listMirroredPolymarketMarkets(supabaseService, {
+      onlyOpen: params.onlyOpen,
+      limit: params.limit,
+    });
+    if (mirrored.length > 0) return mirrored;
+  } catch (err) {
+    console.warn("Mirror listMarkets failed, falling back to Polymarket API", err);
+  }
+
+  const live = await listPolymarketMarkets(params.limit);
+  if (live.length > 0) {
+    try {
+      await upsertMirroredPolymarketMarkets(supabaseService, live);
+    } catch (err) {
+      console.warn("Mirror upsert after live listMarkets failed", err);
+    }
+  }
+  return params.onlyOpen ? live.filter((m) => m.state === "open") : live;
+};
+
+const getClobBaseUrl = () =>
+  (
+    process.env.NEXT_PUBLIC_POLYMARKET_CLOB_URL ||
+    process.env.POLYMARKET_CLOB_API_BASE_URL ||
+    "https://clob.polymarket.com"
+  ).replace(/\/+$/, "");
+
+const toErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "UNKNOWN_ERROR";
+  }
+};
+
+type TradeAccessStatus = {
+  status: "ALLOWED" | "BLOCKED_REGION" | "UNKNOWN_TEMP_ERROR";
+  allowed: boolean;
+  reasonCode: string | null;
+  message: string | null;
+  checkedAt: string;
+};
+
+const accessStatusCache = new Map<string, { expiresAt: number; value: TradeAccessStatus }>();
+const relayRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+const normalizeAccessStatus = (payload: unknown): TradeAccessStatus => {
+  const nowIso = new Date().toISOString();
+  const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const values: unknown[] = Object.values(rec);
+  const containsAllowedKeyword = values.some(
+    (v) => typeof v === "string" && /(allow|approved|pass|ok|eligible)/i.test(v)
+  );
+  const containsBlockedKeyword = values.some(
+    (v) => typeof v === "string" && /(block|forbid|deny|restricted|unavailable|geo)/i.test(v)
+  );
+
+  const explicitBoolean =
+    typeof rec.allowed === "boolean"
+      ? rec.allowed
+      : typeof rec.canTrade === "boolean"
+        ? rec.canTrade
+        : typeof rec.tradingAllowed === "boolean"
+          ? rec.tradingAllowed
+          : null;
+
+  const rawStatus = typeof rec.status === "string" ? rec.status : typeof rec.result === "string" ? rec.result : "";
+  const reasonCode =
+    typeof rec.reasonCode === "string"
+      ? rec.reasonCode
+      : typeof rec.reason === "string"
+        ? rec.reason
+        : typeof rec.error === "string"
+          ? rec.error
+          : null;
+  const message = typeof rec.message === "string" ? rec.message : null;
+
+  if (
+    explicitBoolean === true ||
+    /allow|approved|pass|ok|eligible/i.test(rawStatus) ||
+    (containsAllowedKeyword && !containsBlockedKeyword)
+  ) {
+    return { status: "ALLOWED", allowed: true, reasonCode, message, checkedAt: nowIso };
+  }
+
+  if (
+    explicitBoolean === false ||
+    /block|forbid|deny|restrict|geo/i.test(rawStatus) ||
+    containsBlockedKeyword
+  ) {
+    return { status: "BLOCKED_REGION", allowed: false, reasonCode, message, checkedAt: nowIso };
+  }
+
+  return {
+    status: "UNKNOWN_TEMP_ERROR",
+    allowed: false,
+    reasonCode: reasonCode ?? "ACCESS_STATUS_UNKNOWN",
+    message: message ?? "Could not verify regional access at this time.",
+    checkedAt: nowIso,
+  };
+};
+
+const getClientIpFromRequest = (req: Request): string | null => {
+  const headerCandidates = [
+    req.headers.get("x-forwarded-for"),
+    req.headers.get("x-real-ip"),
+    req.headers.get("cf-connecting-ip"),
+    req.headers.get("true-client-ip"),
+    req.headers.get("fly-client-ip"),
+  ];
+  for (const candidate of headerCandidates) {
+    if (!candidate) continue;
+    const first = candidate.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return null;
+};
+
+const getTradeAccessStatus = async (cacheKey: string, clientIp?: string | null): Promise<TradeAccessStatus> => {
+  const ttlMs = Math.max(1000, Number(process.env.POLYMARKET_ACCESS_STATUS_TTL_MS ?? 60000));
+  const now = Date.now();
+  const cached = accessStatusCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const headers: Record<string, string> = {
+    accept: "application/json",
+  };
+  if (clientIp) {
+    headers["x-forwarded-for"] = clientIp;
+    headers["x-real-ip"] = clientIp;
+    headers["cf-connecting-ip"] = clientIp;
+  }
+
+  try {
+    // Official geocheck endpoint: https://polymarket.com/api/geoblock
+    const geoResponse = await fetch("https://polymarket.com/api/geoblock", {
+      cache: "no-store",
+      headers,
+    });
+    if (geoResponse.ok) {
+      const geoPayload = await geoResponse.json().catch(() => null);
+      const geoRec =
+        geoPayload && typeof geoPayload === "object"
+          ? (geoPayload as Record<string, unknown>)
+          : {};
+      const blocked =
+        typeof geoRec.blocked === "boolean"
+          ? geoRec.blocked
+          : typeof geoRec.isBlocked === "boolean"
+            ? geoRec.isBlocked
+            : null;
+      if (blocked === true) {
+        const blockedValue: TradeAccessStatus = {
+          status: "BLOCKED_REGION",
+          allowed: false,
+          reasonCode:
+            typeof geoRec.reason === "string"
+              ? geoRec.reason
+              : typeof geoRec.country === "string"
+                ? `COUNTRY_${geoRec.country}`
+                : "GEO_BLOCKED",
+          message:
+            typeof geoRec.message === "string"
+              ? geoRec.message
+              : "Trading is unavailable in your jurisdiction.",
+          checkedAt: new Date().toISOString(),
+        };
+        accessStatusCache.set(cacheKey, { value: blockedValue, expiresAt: now + ttlMs });
+        return blockedValue;
+      }
+      if (blocked === false) {
+        const allowedValue: TradeAccessStatus = {
+          status: "ALLOWED",
+          allowed: true,
+          reasonCode: null,
+          message: null,
+          checkedAt: new Date().toISOString(),
+        };
+        accessStatusCache.set(cacheKey, { value: allowedValue, expiresAt: now + ttlMs });
+        return allowedValue;
+      }
+    }
+
+    // Backward-compatible fallback for CLOB access check
+    const clobResponse = await fetch(`${getClobBaseUrl()}/auth/access-status`, {
+      cache: "no-store",
+      headers,
+    });
+    if (!clobResponse.ok) {
+      const fallback: TradeAccessStatus = {
+        status: "UNKNOWN_TEMP_ERROR",
+        allowed: false,
+        reasonCode: `HTTP_${clobResponse.status}`,
+        message: "Could not verify regional access at this time.",
+        checkedAt: new Date().toISOString(),
+      };
+      accessStatusCache.set(cacheKey, { value: fallback, expiresAt: now + 3000 });
+      return fallback;
+    }
+    const payload = await clobResponse.json();
+    const normalized = normalizeAccessStatus(payload);
+    accessStatusCache.set(cacheKey, { value: normalized, expiresAt: now + ttlMs });
+    return normalized;
+  } catch {
+    const fallback: TradeAccessStatus = {
+      status: "UNKNOWN_TEMP_ERROR",
+      allowed: false,
+      reasonCode: "ACCESS_STATUS_FETCH_FAILED",
+      message: "Could not verify regional access at this time.",
+      checkedAt: new Date().toISOString(),
+    };
+    accessStatusCache.set(cacheKey, { value: fallback, expiresAt: now + 3000 });
+    return fallback;
+  }
+};
+
+const applyRelayRateLimit = (userId: string) => {
+  const windowMs = 60_000;
+  const maxPerWindow = 25;
+  const now = Date.now();
+  const entry = relayRateLimitMap.get(userId);
+  if (!entry || entry.resetAt <= now) {
+    relayRateLimitMap.set(userId, { count: 1, resetAt: now + windowMs });
+    return;
+  }
+  if (entry.count >= maxPerWindow) {
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "ORDER_RELAY_RATE_LIMITED" });
+  }
+  entry.count += 1;
+};
+
+const toBase64 = (input: string) => {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return `${normalized}${pad}`;
+};
+
+const buildL2Signature = (
+  secret: string,
+  timestamp: number,
+  method: string,
+  requestPath: string,
+  body?: string
+) => {
+  let message = `${timestamp}${method}${requestPath}`;
+  if (body) message += body;
+  const key = Buffer.from(toBase64(secret), "base64");
+  return createHmac("sha256", key)
+    .update(message)
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+};
+
 export const marketRouter = router({
   listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async () => {
     return DEFAULT_CATEGORIES.map((c) => ({ id: c.id, labelRu: c.labelRu, labelEn: c.labelEn }));
@@ -207,9 +524,12 @@ export const marketRouter = router({
   listMarkets: publicProcedure
     .input(z.object({ onlyOpen: z.boolean().optional() }).optional())
     .output(z.array(marketOutput))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const onlyOpen = input?.onlyOpen ?? false;
-      const rows = await listPolymarketMarkets(250);
+      const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
+        onlyOpen,
+        limit: onlyOpen ? 600 : 1200,
+      });
       const mapped = rows.map(mapPolymarketMarket);
       return onlyOpen ? mapped.filter((m) => m.state === "open") : mapped;
     }),
@@ -217,12 +537,121 @@ export const marketRouter = router({
   getMarket: publicProcedure
     .input(z.object({ marketId: z.string().min(1) }))
     .output(marketOutput)
-    .query(async ({ input }) => {
-      const row = await getPolymarketMarketById(input.marketId);
+    .query(async ({ ctx, input }) => {
+      const row = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
       return mapPolymarketMarket(row);
+    }),
+
+  checkTradeAccess: publicProcedure.output(tradeAccessOutput).query(async ({ ctx }) => {
+    ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
+    const ip = getClientIpFromRequest(ctx.req);
+    const cacheKey = `access:${ip ?? "unknown"}`;
+    return getTradeAccessStatus(cacheKey, ip);
+  }),
+
+  relaySignedOrder: publicProcedure
+    .input(relaySignedOrderInput)
+    .output(relaySignedOrderOutput)
+    .mutation(async ({ ctx, input }) => {
+      const { authUser } = ctx;
+      if (!authUser) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      }
+      ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
+
+      applyRelayRateLimit(authUser.id);
+      const ip = getClientIpFromRequest(ctx.req);
+      const cacheKey = `relay:${authUser.id}:${ip ?? "unknown"}`;
+      const access = await getTradeAccessStatus(cacheKey, ip);
+      if (!access.allowed) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: access.reasonCode ?? "TRADE_ACCESS_BLOCKED",
+        });
+      }
+
+      const makerAddress = (input.signedOrder as Record<string, unknown>).maker;
+      if (typeof makerAddress !== "string" || makerAddress.trim().length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SIGNED_ORDER_MAKER_MISSING" });
+      }
+
+      const orderPayload = {
+        order: input.signedOrder,
+        owner: input.apiCreds.key,
+        orderType: input.orderType,
+      };
+      const orderBody = JSON.stringify(orderPayload);
+      if (orderBody.length > 16 * 1024) {
+        throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "SIGNED_ORDER_TOO_LARGE" });
+      }
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const requestPath = "/order";
+      const signature = buildL2Signature(
+        input.apiCreds.secret,
+        timestamp,
+        "POST",
+        requestPath,
+        orderBody
+      );
+
+      const timeoutMs = Math.max(2000, Number(process.env.POLYMARKET_RELAY_TIMEOUT_MS ?? 10000));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(`${getClobBaseUrl()}/order`, {
+          method: "POST",
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json",
+            "POLY_ADDRESS": makerAddress,
+            "POLY_SIGNATURE": signature,
+            "POLY_TIMESTAMP": String(timestamp),
+            "POLY_API_KEY": input.apiCreds.key,
+            "POLY_PASSPHRASE": input.apiCreds.passphrase,
+            ...(ip
+              ? {
+                  "x-forwarded-for": ip,
+                  "x-real-ip": ip,
+                  "cf-connecting-ip": ip,
+                }
+              : {}),
+          },
+          body: orderBody,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          const payloadError =
+            payload && typeof payload === "object" && typeof (payload as Record<string, unknown>).error === "string"
+              ? String((payload as Record<string, unknown>).error)
+              : `ORDER_RELAY_HTTP_${response.status}`;
+          return {
+            success: false,
+            status: response.status,
+            error: payloadError,
+            payload: payload ?? undefined,
+          };
+        }
+        return {
+          success: true,
+          status: response.status,
+          payload: payload ?? undefined,
+        };
+      } catch (err) {
+        const msg = toErrorMessage(err);
+        return {
+          success: false,
+          status: 0,
+          error: msg.includes("aborted") ? "ORDER_RELAY_TIMEOUT" : msg,
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
     }),
 
   generateMarketContext: publicProcedure
@@ -230,7 +659,7 @@ export const marketRouter = router({
     .output(marketContextOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
-      const market = await getPolymarketMarketById(input.marketId);
+      const market = await getMarketFromMirrorOrLive(supabaseService, input.marketId);
       if (!market) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
@@ -324,8 +753,8 @@ export const marketRouter = router({
   getPriceCandles: publicProcedure
     .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(1000).optional() }))
     .output(z.array(priceCandleOutput))
-    .query(async ({ input }) => {
-      const market = await getPolymarketMarketById(input.marketId);
+    .query(async ({ ctx, input }) => {
+      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
       if (!market) return [];
       const limit = input.limit ?? 200;
       const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
@@ -397,8 +826,8 @@ export const marketRouter = router({
   getPublicTrades: publicProcedure
     .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(200).optional() }))
     .output(z.array(publicTradeOutput))
-    .query(async ({ input }) => {
-      const market = await getPolymarketMarketById(input.marketId);
+    .query(async ({ ctx, input }) => {
+      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
       if (!market) return [];
       const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
       const outcomesByTitle = new Map(
@@ -590,7 +1019,9 @@ export const marketRouter = router({
 
       const rows = (data ?? []) as any[];
       const ids = Array.from(new Set(rows.map((r) => String(r.market_id))));
-      const markets = await Promise.all(ids.map(async (id) => [id, await getPolymarketMarketById(id)] as const));
+      const markets = await Promise.all(
+        ids.map(async (id) => [id, await getMarketFromMirrorOrLive(supabaseService, id)] as const)
+      );
       const marketsById = new Map(markets);
 
       const likeCountsRes = await (supabaseService as any)

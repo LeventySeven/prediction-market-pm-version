@@ -37,6 +37,7 @@ export type MarketType = "binary" | "multi_choice";
 export interface MarketOutcome {
   id: string;
   marketId: string;
+  tokenId?: string | null;
   slug: string;
   title: string;
   iconUrl: string | null;
@@ -157,9 +158,8 @@ export interface User {
   id: string;
   email?: string;
   username?: string;
-  solanaWalletAddress?: string | null; // Connected Solana wallet public key (base58)
-  solanaCluster?: string | null; // Solana cluster (devnet, testnet, mainnet-beta)
-  solanaWalletConnectedAt?: string | null; // When Solana wallet was connected
+  privyUserId?: string | null;
+  walletAddress?: string | null;
   balance: number; // In major units (e.g., 1.5 VCOIN)
   isAdmin?: boolean;
   pnl?: number; // Total Profit/Loss
@@ -225,52 +225,4 @@ export interface PriceCandle {
   close: number;
   volume: number;
   tradesCount: number;
-}
-
-// ============================================================================
-// Solana On-Chain Types
-// ============================================================================
-
-export type OnChainTxStatus = "pending" | "confirmed" | "failed";
-export type OnChainTxType = "deposit" | "bet" | "sell" | "claim" | "withdraw" | "approve";
-export type DepositStatus = "pending" | "confirmed" | "failed" | "credited";
-
-/**
- * On-chain transaction record
- */
-export interface OnChainTransaction {
-  id: string;
-  userId: string;
-  txSig: string;
-  solanaCluster: string;
-  status: OnChainTxStatus;
-  txType: OnChainTxType;
-  amountMinor: number | null;
-  amountMajor: number | null;
-  assetCode: string | null;
-  marketId: string | null;
-  tradeId: string | null;
-  blockNumber: number | null;
-  blockTimestamp: string | null;
-  errorMessage: string | null;
-  createdAt: string;
-  confirmedAt: string | null;
-}
-
-/**
- * Deposit record
- */
-export interface Deposit {
-  id: string;
-  userId: string;
-  txSig: string;
-  solanaCluster: string;
-  amountMinor: number;
-  amountMajor: number;
-  assetCode: string;
-  status: DepositStatus;
-  fromPubkey: string;
-  blockNumber: number | null;
-  creditedAt: string | null;
-  createdAt: string;
 }

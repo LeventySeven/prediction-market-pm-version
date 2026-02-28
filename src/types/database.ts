@@ -28,9 +28,9 @@ export type Database = {
           referral_commission_rate: number | null;
           referral_enabled: boolean | null;
           is_admin: boolean;
-          solana_wallet_address: string | null;
-          solana_cluster: string | null;
-          solana_wallet_connected_at: string | null;
+          privy_user_id: string | null;
+          privy_wallet_address: string | null;
+          auth_provider: string;
           created_at: string;
         };
         Insert: {
@@ -49,9 +49,9 @@ export type Database = {
           referral_commission_rate?: number | null;
           referral_enabled?: boolean | null;
           is_admin?: boolean;
-          solana_wallet_address?: string | null;
-          solana_cluster?: string | null;
-          solana_wallet_connected_at?: string | null;
+          privy_user_id?: string | null;
+          privy_wallet_address?: string | null;
+          auth_provider?: string;
           created_at?: string;
         };
         Update: {
@@ -70,9 +70,9 @@ export type Database = {
           referral_commission_rate?: number | null;
           referral_enabled?: boolean | null;
           is_admin?: boolean;
-          solana_wallet_address?: string | null;
-          solana_cluster?: string | null;
-          solana_wallet_connected_at?: string | null;
+          privy_user_id?: string | null;
+          privy_wallet_address?: string | null;
+          auth_provider?: string;
           created_at?: string;
         };
         Relationships: [];
@@ -271,4 +271,3 @@ export type Database = {
     CompositeTypes: Record<string, never>;
   };
 };
-
