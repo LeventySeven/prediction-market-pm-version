@@ -22,7 +22,9 @@ import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
-import { buildSignedBuyOrder, type EphemeralApiCreds } from "@/src/lib/polymarket/tradingClient";
+import { buildSignedBuyOrder, type EphemeralApiCreds, type PrivyWalletLike } from "@/src/lib/polymarket/tradingClient";
+import { getBrowserSupabaseClient } from "@/src/utils/supabase/browser";
+import type { Database } from "@/src/types/database";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -88,11 +90,29 @@ type MarketApiRow = {
   chance?: number | null;
   creatorName?: string | null;
   creatorAvatarUrl?: string | null;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  mid?: number | null;
+  lastTradePrice?: number | null;
+  lastTradeSize?: number | null;
+  rolling24hVolume?: number | null;
+  openInterest?: number | null;
+  liveUpdatedAt?: string | null;
+};
+
+type MarketLiveRow = Database["public"]["Tables"]["polymarket_market_live"]["Row"];
+type CandleRow = Database["public"]["Tables"]["polymarket_candles_1m"]["Row"];
+type TelegramWindow = Window & {
+  Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
 };
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
   const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
+  const displayVolume =
+    typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
+      ? m.rolling24hVolume
+      : m.volume;
   return {
     id: String(m.id),
     title,
@@ -111,7 +131,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     categoryLabelRu: m.categoryLabelRu ?? null,
     categoryLabelEn: m.categoryLabelEn ?? null,
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
-    volume: `$${Number(m.volume).toFixed(2)}`,
+    volume: `$${Number(displayVolume).toFixed(2)}`,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
     yesPrice: Number(m.priceYes),
@@ -124,7 +144,33 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     liquidityB: m.liquidityB ?? undefined,
     feeBps: m.feeBps ?? undefined,
     settlementAsset: m.settlementAsset ?? undefined,
+    bestBid: m.bestBid ?? null,
+    bestAsk: m.bestAsk ?? null,
+    mid: m.mid ?? null,
+    lastTradePrice: m.lastTradePrice ?? null,
+    lastTradeSize: m.lastTradeSize ?? null,
+    rolling24hVolume: m.rolling24hVolume ?? null,
+    openInterest: m.openInterest ?? null,
+    liveUpdatedAt: m.liveUpdatedAt ?? null,
   };
+};
+
+const asNumber = (value: number | string | null | undefined): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
+const formatUsdVolume = (value: number): string => `$${Number(value).toFixed(2)}`;
+
+const createSessionId = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `sess_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
 };
 
 const MARKET_ID_REGEX = /^[A-Za-z0-9:_-]{6,}$/;
@@ -144,7 +190,7 @@ const usePrivySession = HAS_PRIVY_PROVIDER
 const usePrivyWalletList = HAS_PRIVY_PROVIDER
   ? () => useWallets()
   : () => ({
-      wallets: [] as Array<{ address?: string; getEthereumProvider?: () => Promise<unknown>; walletClientType?: string }>,
+      wallets: [] as PrivyWalletLike[],
     });
 
 const slugifyTitle = (raw: string) =>
@@ -262,6 +308,7 @@ export default function HomePage() {
     checkedAt: string;
   } | null>(null);
   const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
+  const sessionIdRef = useRef<string>(createSessionId());
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -273,9 +320,7 @@ export default function HomePage() {
   // Deep link: open a market by URL (?marketId=...).
   useEffect(() => {
     const marketIdFromUrl = getMarketIdFromUrl();
-    const telegramUnsafe = (window as unknown as {
-      Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
-    }).Telegram?.WebApp?.initDataUnsafe;
+    const telegramUnsafe = (window as TelegramWindow).Telegram?.WebApp?.initDataUnsafe;
     const startParamRaw =
       typeof window !== "undefined" ? telegramUnsafe?.start_param : undefined;
     const startParam = String(startParamRaw ?? "").trim();
@@ -914,23 +959,96 @@ export default function HomePage() {
 
   useEffect(() => {
     if (selectedMarketId || currentView !== "CATALOG") return;
-    let cancelled = false;
-    const tick = async () => {
-      if (typeof document !== "undefined" && document.hidden) return;
-      if (!cancelled) {
-        await loadMarkets();
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        void loadMarkets();
       }
     };
-
-    const interval = setInterval(() => {
-      void tick();
-    }, 45_000);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
 
     return () => {
-      cancelled = true;
-      clearInterval(interval);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, [loadMarkets, selectedMarketId, currentView]);
+
+  useEffect(() => {
+    const supabase = getBrowserSupabaseClient();
+    if (!supabase) return;
+
+    const applyLiveRow = (row: MarketLiveRow) => {
+      const marketId = row.market_id.trim();
+      if (!marketId) return;
+      const mid = asNumber(row.mid);
+      const rolling24hVolume = asNumber(row.rolling_24h_volume);
+      const bestBid = asNumber(row.best_bid);
+      const bestAsk = asNumber(row.best_ask);
+      const lastTradePrice = asNumber(row.last_trade_price);
+      const lastTradeSize = asNumber(row.last_trade_size);
+      const openInterest = asNumber(row.open_interest);
+      const sourceTs = typeof row.source_ts === "string" ? row.source_ts : null;
+
+      setMarkets((prev) =>
+        prev.map((market) => {
+          if (market.id !== marketId) return market;
+          const isBinary = (market.marketType ?? "binary") === "binary";
+          const canApplyMid = isBinary && typeof mid === "number" && mid >= 0 && mid <= 1;
+          const yesPrice = canApplyMid ? mid : market.yesPrice;
+          const noPrice = canApplyMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
+          const chance = canApplyMid ? Math.round(yesPrice * 100) : market.chance;
+          const volume =
+            typeof rolling24hVolume === "number" && Number.isFinite(rolling24hVolume)
+              ? formatUsdVolume(Math.max(0, rolling24hVolume))
+              : market.volume;
+
+          return {
+            ...market,
+            yesPrice,
+            noPrice,
+            chance,
+            volume,
+            bestBid,
+            bestAsk,
+            mid,
+            lastTradePrice,
+            lastTradeSize,
+            rolling24hVolume,
+            openInterest,
+            liveUpdatedAt: sourceTs,
+          };
+        })
+      );
+    };
+
+    const channel = supabase
+      .channel("markets-live")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "polymarket_market_live" },
+        (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            applyLiveRow(payload.new as MarketLiveRow);
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "polymarket_market_live" },
+        (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            applyLiveRow(payload.new as MarketLiveRow);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, []);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -1026,14 +1144,28 @@ export default function HomePage() {
     const timer = setTimeout(async () => {
       try {
         setSemanticSearchLoading(true);
-        const res = await fetch("/api/recs", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ query: q, limit: 50 }),
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`RECS_HTTP_${res.status}`);
-        const rows = (await res.json()) as Array<{ market?: { id?: string }; score?: number }>;
+        let rows: Array<{ market?: { id?: string }; score?: number }> = [];
+        try {
+          const semantic = await trpcClient.market.searchSemantic.query({
+            query: q,
+            limit: 50,
+            onlyOpen: false,
+          });
+          rows = (semantic.items ?? []).map((item) => ({
+            market: { id: item.market.id },
+            score: item.score,
+          }));
+        } catch (semanticErr) {
+          console.warn("market.searchSemantic failed, falling back to /api/recs", semanticErr);
+          const res = await fetch("/api/recs", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query: q, limit: 50 }),
+            signal: controller.signal,
+          });
+          if (!res.ok) throw new Error(`RECS_HTTP_${res.status}`);
+          rows = (await res.json()) as Array<{ market?: { id?: string }; score?: number }>;
+        }
         const next: Record<string, number> = {};
         const ids: string[] = [];
         for (const row of rows ?? []) {
@@ -1350,6 +1482,78 @@ export default function HomePage() {
     }
 
     let cancelled = false;
+    void trpcClient.events.track
+      .mutate({
+        sessionId: sessionIdRef.current,
+        marketId: selectedMarketId,
+        eventType: "view",
+      })
+      .catch(() => {
+        // best effort analytics event
+      });
+
+    const upsertCandle = (row: CandleRow) => {
+      if (row.market_id !== selectedMarketId) return;
+      const bucketMs = Date.parse(row.bucket_start);
+      if (!Number.isFinite(bucketMs)) return;
+      const bucket = new Date(bucketMs).toISOString();
+
+      const candle: PriceCandle = {
+        bucket,
+        outcomeId: null,
+        outcomeTitle: null,
+        outcomeColor: null,
+        open: asNumber(row.open) ?? 0,
+        high: asNumber(row.high) ?? 0,
+        low: asNumber(row.low) ?? 0,
+        close: asNumber(row.close) ?? 0,
+        volume: asNumber(row.volume) ?? 0,
+        tradesCount: Math.max(0, Math.floor(asNumber(row.trades_count) ?? 0)),
+      };
+
+      setMarketCandles((prev) => {
+        const byBucket = new Map(prev.map((item) => [item.bucket, item]));
+        byBucket.set(bucket, candle);
+        return Array.from(byBucket.values()).sort(
+          (a, b) => Date.parse(a.bucket) - Date.parse(b.bucket)
+        );
+      });
+    };
+
+    const supabase = getBrowserSupabaseClient();
+    const candleChannel = supabase
+      ? supabase
+          .channel(`market-candles-${selectedMarketId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "INSERT",
+              schema: "public",
+              table: "polymarket_candles_1m",
+              filter: `market_id=eq.${selectedMarketId}`,
+            },
+            (payload) => {
+              if (payload.new && typeof payload.new === "object") {
+                upsertCandle(payload.new as CandleRow);
+              }
+            }
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "UPDATE",
+              schema: "public",
+              table: "polymarket_candles_1m",
+              filter: `market_id=eq.${selectedMarketId}`,
+            },
+            (payload) => {
+              if (payload.new && typeof payload.new === "object") {
+                upsertCandle(payload.new as CandleRow);
+              }
+            }
+          )
+          .subscribe()
+      : null;
 
     const fetchInsights = async () => {
       setMarketInsightsLoading(true);
@@ -1458,11 +1662,14 @@ export default function HomePage() {
     void fetchInsights();
     const interval = setInterval(() => {
       void fetchInsights();
-    }, 15000);
+    }, 120_000);
 
     return () => {
       cancelled = true;
       clearInterval(interval);
+      if (supabase && candleChannel) {
+        void supabase.removeChannel(candleChannel);
+      }
     };
   }, [selectedMarketId]);
 
@@ -1574,6 +1781,17 @@ export default function HomePage() {
       return;
     }
 
+    void trpcClient.events.track
+      .mutate({
+        sessionId: sessionIdRef.current,
+        marketId,
+        eventType: "trade_intent",
+        value: amount,
+      })
+      .catch(() => {
+        // best effort analytics event
+      });
+
     const wallet =
       privyWallets.find((w) => (w as { walletClientType?: string }).walletClientType === "privy") ??
       privyWallets[0] ??
@@ -1647,7 +1865,7 @@ export default function HomePage() {
 
     try {
       const built = await buildSignedBuyOrder({
-        wallet: wallet as unknown as { getEthereumProvider?: () => Promise<unknown>; address?: string },
+        wallet: wallet as PrivyWalletLike,
         tokenId,
         amountUsd: amount,
         limitPrice: price,
@@ -1801,6 +2019,16 @@ export default function HomePage() {
 
       try {
         await trpcClient.market.setBookmark.mutate({ marketId, bookmarked });
+        void trpcClient.events.track
+          .mutate({
+            sessionId: sessionIdRef.current,
+            marketId,
+            eventType: "bookmark",
+            value: bookmarked ? 1 : 0,
+          })
+          .catch(() => {
+            // best effort analytics event
+          });
       } catch (err) {
         console.error("setBookmark failed", err);
         if (previous) setMyBookmarks(previous);

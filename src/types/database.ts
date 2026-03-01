@@ -264,6 +264,284 @@ export type Database = {
         };
         Relationships: [];
       };
+      polymarket_market_cache: {
+        Row: {
+          market_id: string;
+          condition_id: string;
+          slug: string;
+          title: string;
+          description: string | null;
+          image_url: string | null;
+          source_url: string | null;
+          state: "open" | "closed" | "resolved" | "cancelled";
+          market_created_at: string;
+          closes_at: string;
+          expires_at: string;
+          category: string | null;
+          volume: number;
+          clob_token_ids: Json;
+          outcomes: Json;
+          resolved_outcome_title: string | null;
+          search_text: string;
+          source_updated_at: string;
+          last_synced_at: string;
+        };
+        Insert: {
+          market_id: string;
+          condition_id: string;
+          slug: string;
+          title: string;
+          description?: string | null;
+          image_url?: string | null;
+          source_url?: string | null;
+          state: "open" | "closed" | "resolved" | "cancelled";
+          market_created_at: string;
+          closes_at: string;
+          expires_at: string;
+          category?: string | null;
+          volume?: number;
+          clob_token_ids?: Json;
+          outcomes?: Json;
+          resolved_outcome_title?: string | null;
+          search_text?: string;
+          source_updated_at?: string;
+          last_synced_at?: string;
+        };
+        Update: {
+          market_id?: string;
+          condition_id?: string;
+          slug?: string;
+          title?: string;
+          description?: string | null;
+          image_url?: string | null;
+          source_url?: string | null;
+          state?: "open" | "closed" | "resolved" | "cancelled";
+          market_created_at?: string;
+          closes_at?: string;
+          expires_at?: string;
+          category?: string | null;
+          volume?: number;
+          clob_token_ids?: Json;
+          outcomes?: Json;
+          resolved_outcome_title?: string | null;
+          search_text?: string;
+          source_updated_at?: string;
+          last_synced_at?: string;
+        };
+        Relationships: [];
+      };
+      polymarket_sync_state: {
+        Row: {
+          scope: string;
+          last_started_at: string | null;
+          last_success_at: string | null;
+          last_error: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          scope: string;
+          last_started_at?: string | null;
+          last_success_at?: string | null;
+          last_error?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          scope?: string;
+          last_started_at?: string | null;
+          last_success_at?: string | null;
+          last_error?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      polymarket_market_live: {
+        Row: {
+          market_id: string;
+          best_bid: number;
+          best_ask: number;
+          mid: number;
+          last_trade_price: number;
+          last_trade_size: number;
+          rolling_24h_volume: number;
+          open_interest: number | null;
+          source_seq: number | null;
+          source_ts: string;
+          updated_at: string;
+          ingested_at: string;
+        };
+        Insert: {
+          market_id: string;
+          best_bid?: number;
+          best_ask?: number;
+          mid?: number;
+          last_trade_price?: number;
+          last_trade_size?: number;
+          rolling_24h_volume?: number;
+          open_interest?: number | null;
+          source_seq?: number | null;
+          source_ts: string;
+          updated_at?: string;
+          ingested_at?: string;
+        };
+        Update: {
+          market_id?: string;
+          best_bid?: number;
+          best_ask?: number;
+          mid?: number;
+          last_trade_price?: number;
+          last_trade_size?: number;
+          rolling_24h_volume?: number;
+          open_interest?: number | null;
+          source_seq?: number | null;
+          source_ts?: string;
+          updated_at?: string;
+          ingested_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "polymarket_market_live_market_id_fkey";
+            columns: ["market_id"];
+            isOneToOne: true;
+            referencedRelation: "polymarket_market_cache";
+            referencedColumns: ["market_id"];
+          },
+        ];
+      };
+      polymarket_candles_1m: {
+        Row: {
+          market_id: string;
+          bucket_start: string;
+          open: number;
+          high: number;
+          low: number;
+          close: number;
+          volume: number;
+          trades_count: number;
+          source_ts_max: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          market_id: string;
+          bucket_start: string;
+          open: number;
+          high: number;
+          low: number;
+          close: number;
+          volume?: number;
+          trades_count?: number;
+          source_ts_max?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          market_id?: string;
+          bucket_start?: string;
+          open?: number;
+          high?: number;
+          low?: number;
+          close?: number;
+          volume?: number;
+          trades_count?: number;
+          source_ts_max?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "polymarket_candles_1m_market_id_fkey";
+            columns: ["market_id"];
+            isOneToOne: false;
+            referencedRelation: "polymarket_market_cache";
+            referencedColumns: ["market_id"];
+          },
+        ];
+      };
+      user_events: {
+        Row: {
+          id: number;
+          user_id: string | null;
+          session_id: string;
+          market_id: string;
+          event_type:
+            | "view"
+            | "dwell"
+            | "click"
+            | "bookmark"
+            | "comment"
+            | "trade_intent";
+          event_value: number | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          user_id?: string | null;
+          session_id: string;
+          market_id: string;
+          event_type:
+            | "view"
+            | "dwell"
+            | "click"
+            | "bookmark"
+            | "comment"
+            | "trade_intent";
+          event_value?: number | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          user_id?: string | null;
+          session_id?: string;
+          market_id?: string;
+          event_type?:
+            | "view"
+            | "dwell"
+            | "click"
+            | "bookmark"
+            | "comment"
+            | "trade_intent";
+          event_value?: number | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "user_events_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      market_embeddings: {
+        Row: {
+          market_id: string;
+          model: string;
+          embedding: number[] | string;
+          updated_at: string;
+        };
+        Insert: {
+          market_id: string;
+          model: string;
+          embedding: number[] | string;
+          updated_at?: string;
+        };
+        Update: {
+          market_id?: string;
+          model?: string;
+          embedding?: number[] | string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "market_embeddings_market_id_fkey";
+            columns: ["market_id"];
+            isOneToOne: true;
+            referencedRelation: "polymarket_market_cache";
+            referencedColumns: ["market_id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

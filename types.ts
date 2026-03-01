@@ -81,6 +81,14 @@ export interface Market {
   liquidityB?: number;
   feeBps?: number;
   settlementAsset?: string;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  mid?: number | null;
+  lastTradePrice?: number | null;
+  lastTradeSize?: number | null;
+  rolling24hVolume?: number | null;
+  openInterest?: number | null;
+  liveUpdatedAt?: string | null;
 }
 
 /**

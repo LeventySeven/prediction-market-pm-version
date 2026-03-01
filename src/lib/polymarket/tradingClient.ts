@@ -1,5 +1,5 @@
-import { BrowserProvider } from "ethers";
-import { ClobClient, Side } from "@polymarket/clob-client";
+import { BrowserProvider, type Eip1193Provider } from "ethers";
+import { ClobClient, Side, type ApiKeyCreds, type SignedOrder } from "@polymarket/clob-client";
 
 export type EphemeralApiCreds = {
   key: string;
@@ -9,7 +9,7 @@ export type EphemeralApiCreds = {
 
 export type PrivyWalletLike = {
   address?: string;
-  getEthereumProvider?: () => Promise<unknown>;
+  getEthereumProvider?: () => Promise<Eip1193Provider>;
 };
 
 export type BuildSignedBuyOrderInput = {
@@ -24,7 +24,7 @@ export type BuildSignedBuyOrderInput = {
 };
 
 export type BuildSignedBuyOrderResult = {
-  signedOrder: Record<string, unknown>;
+  signedOrder: SignedOrder;
   apiCreds: EphemeralApiCreds;
   orderType: "FOK" | "GTC";
   priceUsed: number;
@@ -33,12 +33,11 @@ export type BuildSignedBuyOrderResult = {
 
 const isFinitePositive = (value: number) => Number.isFinite(value) && value > 0;
 
-const normalizeApiCreds = (value: unknown): EphemeralApiCreds | null => {
-  if (!value || typeof value !== "object") return null;
-  const rec = value as Record<string, unknown>;
-  const key = typeof rec.key === "string" ? rec.key.trim() : "";
-  const secret = typeof rec.secret === "string" ? rec.secret.trim() : "";
-  const passphrase = typeof rec.passphrase === "string" ? rec.passphrase.trim() : "";
+const normalizeApiCreds = (value: Partial<ApiKeyCreds> | null | undefined): EphemeralApiCreds | null => {
+  if (!value) return null;
+  const key = typeof value.key === "string" ? value.key.trim() : "";
+  const secret = typeof value.secret === "string" ? value.secret.trim() : "";
+  const passphrase = typeof value.passphrase === "string" ? value.passphrase.trim() : "";
   if (!key || !secret || !passphrase) return null;
   return { key, secret, passphrase };
 };
@@ -65,27 +64,29 @@ export async function buildSignedBuyOrder(input: BuildSignedBuyOrderInput): Prom
   if (!isFinitePositive(shares)) throw new Error("SHARES_INVALID");
 
   const evmProvider = await requireEvmProvider(input.wallet);
-  const ethersProvider = new BrowserProvider(evmProvider as any);
+  const ethersProvider = new BrowserProvider(evmProvider);
   const signer = await ethersProvider.getSigner();
   const signatureType = 1;
+  const signerCompat = signer as never as ConstructorParameters<typeof ClobClient>[2];
+  const host = input.clobUrl.replace(/\/+$/, "");
+  const chainId = input.chainId as ConstructorParameters<typeof ClobClient>[1];
+  const initialCreds = normalizeApiCreds(input.apiCreds);
 
-  const client: any = new ClobClient(
-    input.clobUrl.replace(/\/+$/, ""),
-    input.chainId,
-    signer as any,
-    undefined,
+  const baseClient = new ClobClient(
+    host,
+    chainId,
+    signerCompat,
+    initialCreds ?? undefined,
     signatureType
   );
 
-  let apiCreds = normalizeApiCreds(input.apiCreds);
+  let apiCreds = initialCreds;
   if (!apiCreds) {
-    const created = await client.createOrDeriveApiKey();
+    const created = await baseClient.createOrDeriveApiKey();
     apiCreds = normalizeApiCreds(created);
   }
   if (!apiCreds) throw new Error("API_CREDS_DERIVATION_FAILED");
-  if (typeof client.setApiCreds === "function") {
-    client.setApiCreds(apiCreds);
-  }
+  const client = new ClobClient(host, chainId, signerCompat, apiCreds, signatureType);
 
   const order = await client.createOrder({
     tokenID: tokenId,
@@ -98,7 +99,7 @@ export async function buildSignedBuyOrder(input: BuildSignedBuyOrderInput): Prom
   }
 
   return {
-    signedOrder: order as Record<string, unknown>,
+    signedOrder: order,
     apiCreds,
     orderType: input.orderType ?? "FOK",
     priceUsed: safePrice,
