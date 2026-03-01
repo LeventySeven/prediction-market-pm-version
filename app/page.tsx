@@ -879,6 +879,10 @@ export default function HomePage() {
       setMarketsLoadingMessage(null);
     }
   }, [lang]);
+  const loadMarketsRef = useRef(loadMarkets);
+  useEffect(() => {
+    loadMarketsRef.current = loadMarkets;
+  }, [loadMarkets]);
 
   const loadMarketCategories = useCallback(async () => {
     setLoadingMarketCategories(true);
@@ -979,21 +983,38 @@ export default function HomePage() {
     const supabase = getBrowserSupabaseClient();
     if (!supabase) return;
 
-    const applyLiveRow = (row: MarketLiveRow) => {
-      const marketId = row.market_id.trim();
-      if (!marketId) return;
-      const mid = asNumber(row.mid);
-      const rolling24hVolume = asNumber(row.rolling_24h_volume);
-      const bestBid = asNumber(row.best_bid);
-      const bestAsk = asNumber(row.best_ask);
-      const lastTradePrice = asNumber(row.last_trade_price);
-      const lastTradeSize = asNumber(row.last_trade_size);
-      const openInterest = asNumber(row.open_interest);
-      const sourceTs = typeof row.source_ts === "string" ? row.source_ts : null;
+    const pendingRows = new Map<string, MarketLiveRow>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let hasSubscribed = false;
 
-      setMarkets((prev) =>
-        prev.map((market) => {
-          if (market.id !== marketId) return market;
+    const flushLiveRows = () => {
+      flushTimer = null;
+      if (pendingRows.size === 0) return;
+      const batch = Array.from(pendingRows.values());
+      pendingRows.clear();
+
+      setMarkets((prev) => {
+        if (prev.length === 0 || batch.length === 0) return prev;
+        const byMarketId = new Map(
+          batch
+            .map((row) => [row.market_id.trim(), row] as const)
+            .filter(([marketId]) => marketId.length > 0)
+        );
+        if (byMarketId.size === 0) return prev;
+
+        return prev.map((market) => {
+          const row = byMarketId.get(market.id);
+          if (!row) return market;
+          const mid = asNumber(row.mid);
+          const rolling24hVolume = asNumber(row.rolling_24h_volume);
+          const bestBid = asNumber(row.best_bid);
+          const bestAsk = asNumber(row.best_ask);
+          const lastTradePrice = asNumber(row.last_trade_price);
+          const lastTradeSize = asNumber(row.last_trade_size);
+          const openInterest = asNumber(row.open_interest);
+          const sourceTs = typeof row.source_ts === "string" ? row.source_ts : null;
+
           const isBinary = (market.marketType ?? "binary") === "binary";
           const canApplyMid = isBinary && typeof mid === "number" && mid >= 0 && mid <= 1;
           const yesPrice = canApplyMid ? mid : market.yesPrice;
@@ -1019,8 +1040,38 @@ export default function HomePage() {
             openInterest,
             liveUpdatedAt: sourceTs,
           };
-        })
-      );
+        });
+      });
+    };
+
+    const queueLiveRow = (row: MarketLiveRow) => {
+      const marketId = row.market_id.trim();
+      if (!marketId) return;
+      pendingRows.set(marketId, row);
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushLiveRows, 300);
+      }
+    };
+
+    const scheduleFallbackLoad = () => {
+      if (fallbackTimer) return;
+      fallbackTimer = setTimeout(() => {
+        fallbackTimer = null;
+        void loadMarketsRef.current();
+      }, 400);
+    };
+
+    const handleChannelStatus = (status: string) => {
+      if (status === "SUBSCRIBED") {
+        if (hasSubscribed) {
+          scheduleFallbackLoad();
+        }
+        hasSubscribed = true;
+        return;
+      }
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        scheduleFallbackLoad();
+      }
     };
 
     const channel = supabase
@@ -1030,7 +1081,7 @@ export default function HomePage() {
         { event: "INSERT", schema: "public", table: "polymarket_market_live" },
         (payload) => {
           if (payload.new && typeof payload.new === "object") {
-            applyLiveRow(payload.new as MarketLiveRow);
+            queueLiveRow(payload.new as MarketLiveRow);
           }
         }
       )
@@ -1039,13 +1090,18 @@ export default function HomePage() {
         { event: "UPDATE", schema: "public", table: "polymarket_market_live" },
         (payload) => {
           if (payload.new && typeof payload.new === "object") {
-            applyLiveRow(payload.new as MarketLiveRow);
+            queueLiveRow(payload.new as MarketLiveRow);
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        handleChannelStatus(status);
+      });
 
     return () => {
+      if (flushTimer) clearTimeout(flushTimer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      pendingRows.clear();
       void supabase.removeChannel(channel);
     };
   }, []);
@@ -1492,32 +1548,50 @@ export default function HomePage() {
         // best effort analytics event
       });
 
-    const upsertCandle = (row: CandleRow) => {
-      if (row.market_id !== selectedMarketId) return;
-      const bucketMs = Date.parse(row.bucket_start);
-      if (!Number.isFinite(bucketMs)) return;
-      const bucket = new Date(bucketMs).toISOString();
+    const pendingCandleRows = new Map<string, CandleRow>();
+    let candleFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let hasCandleSubscription = false;
 
-      const candle: PriceCandle = {
-        bucket,
-        outcomeId: null,
-        outcomeTitle: null,
-        outcomeColor: null,
-        open: asNumber(row.open) ?? 0,
-        high: asNumber(row.high) ?? 0,
-        low: asNumber(row.low) ?? 0,
-        close: asNumber(row.close) ?? 0,
-        volume: asNumber(row.volume) ?? 0,
-        tradesCount: Math.max(0, Math.floor(asNumber(row.trades_count) ?? 0)),
-      };
+    const flushPendingCandleRows = () => {
+      candleFlushTimer = null;
+      if (cancelled || pendingCandleRows.size === 0) return;
+      const rows = Array.from(pendingCandleRows.values());
+      pendingCandleRows.clear();
 
       setMarketCandles((prev) => {
         const byBucket = new Map(prev.map((item) => [item.bucket, item]));
-        byBucket.set(bucket, candle);
+        for (const row of rows) {
+          if (row.market_id !== selectedMarketId) continue;
+          const bucketMs = Date.parse(row.bucket_start);
+          if (!Number.isFinite(bucketMs)) continue;
+          const bucket = new Date(bucketMs).toISOString();
+          byBucket.set(bucket, {
+            bucket,
+            outcomeId: null,
+            outcomeTitle: null,
+            outcomeColor: null,
+            open: asNumber(row.open) ?? 0,
+            high: asNumber(row.high) ?? 0,
+            low: asNumber(row.low) ?? 0,
+            close: asNumber(row.close) ?? 0,
+            volume: asNumber(row.volume) ?? 0,
+            tradesCount: Math.max(0, Math.floor(asNumber(row.trades_count) ?? 0)),
+          });
+        }
         return Array.from(byBucket.values()).sort(
           (a, b) => Date.parse(a.bucket) - Date.parse(b.bucket)
         );
       });
+    };
+
+    const queueCandleRow = (row: CandleRow) => {
+      if (row.market_id !== selectedMarketId) return;
+      const key = `${row.market_id}:${row.bucket_start}`;
+      pendingCandleRows.set(key, row);
+      if (!candleFlushTimer) {
+        candleFlushTimer = setTimeout(flushPendingCandleRows, 300);
+      }
     };
 
     const supabase = getBrowserSupabaseClient();
@@ -1534,7 +1608,7 @@ export default function HomePage() {
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
-                upsertCandle(payload.new as CandleRow);
+                queueCandleRow(payload.new as CandleRow);
               }
             }
           )
@@ -1548,14 +1622,35 @@ export default function HomePage() {
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
-                upsertCandle(payload.new as CandleRow);
+                queueCandleRow(payload.new as CandleRow);
               }
             }
           )
-          .subscribe()
+          .subscribe((status) => {
+            if (status === "SUBSCRIBED") {
+              if (hasCandleSubscription && !fallbackTimer) {
+                fallbackTimer = setTimeout(() => {
+                  fallbackTimer = null;
+                  if (!cancelled) {
+                    void fetchInsights();
+                  }
+                }, 400);
+              }
+              hasCandleSubscription = true;
+              return;
+            }
+            if ((status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") && !fallbackTimer) {
+              fallbackTimer = setTimeout(() => {
+                fallbackTimer = null;
+                if (!cancelled) {
+                  void fetchInsights();
+                }
+              }, 400);
+            }
+          })
       : null;
 
-    const fetchInsights = async () => {
+    async function fetchInsights() {
       setMarketInsightsLoading(true);
       setMarketInsightsError(null);
       setMarketCommentsError(null);
@@ -1657,16 +1752,15 @@ export default function HomePage() {
           setMarketInsightsLoading(false);
         }
       }
-    };
+    }
 
     void fetchInsights();
-    const interval = setInterval(() => {
-      void fetchInsights();
-    }, 120_000);
 
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (candleFlushTimer) clearTimeout(candleFlushTimer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      pendingCandleRows.clear();
       if (supabase && candleChannel) {
         void supabase.removeChannel(candleChannel);
       }

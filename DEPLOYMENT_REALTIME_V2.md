@@ -42,6 +42,11 @@ Minimum required for production:
 - `COLLECTOR_FLUSH_INTERVAL_MS`
 - `COLLECTOR_RECONCILE_INTERVAL_MS`
 - `COLLECTOR_HEARTBEAT_TIMEOUT_MS`
+- `COLLECTOR_HEALTH_PORT`
+
+Optional collector hardening:
+- `COLLECTOR_RECONNECT_JITTER_MS`
+- `COLLECTOR_DEAD_LETTER_LOG_EVERY_MS`
 
 Optional but recommended:
 - `OPENAI_API_KEY`
@@ -117,9 +122,18 @@ Required Railway env vars:
 - `COLLECTOR_FLUSH_INTERVAL_MS`
 - `COLLECTOR_RECONCILE_INTERVAL_MS`
 - `COLLECTOR_HEARTBEAT_TIMEOUT_MS`
+- `COLLECTOR_HEALTH_PORT`
+
+Optional Railway env vars:
+- `COLLECTOR_RECONNECT_JITTER_MS`
+- `COLLECTOR_DEAD_LETTER_LOG_EVERY_MS`
 
 Scale recommendation:
 - 1 instance (single-writer) for initial production
+
+Collector probe endpoints:
+- `/health` (liveness)
+- `/ready` (readiness, returns `503` when websocket/reconcile freshness is stale)
 
 ## 9. Production Smoke Test
 

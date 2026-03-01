@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { createServer } from "node:http";
 import { listPolymarketMarketsSnapshot } from "../../src/server/polymarket/client";
 import { upsertMirroredPolymarketMarkets } from "../../src/server/polymarket/mirror";
 import type { Database, Json } from "../../src/types/database";
@@ -14,6 +15,9 @@ const RTDS_URL = (process.env.POLYMARKET_RTDS_WS_URL || "wss://ws-live-data.poly
 const FLUSH_INTERVAL_MS = Math.max(250, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 700));
 const RECONCILE_INTERVAL_MS = Math.max(30_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 120_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(10_000, Number(process.env.COLLECTOR_HEARTBEAT_TIMEOUT_MS ?? 45_000));
+const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
+const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
+const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
 
 const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -23,6 +27,10 @@ const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 });
 
 type JsonMap = Record<string, Json | undefined>;
+type LiveStateRow = Pick<
+  Database["public"]["Tables"]["polymarket_market_live"]["Row"],
+  "market_id" | "source_seq" | "source_ts"
+>;
 
 type PendingLive = {
   market_id: string;
@@ -54,8 +62,15 @@ type PendingCandle = {
 
 const pendingLive = new Map<string, PendingLive>();
 const pendingCandles = new Map<string, PendingCandle>();
+const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
 let flushing = false;
 let lastHeartbeatAt = Date.now();
+let lastWsMessageAt = 0;
+let lastFlushAt = 0;
+let lastReconcileAt = 0;
+let deadLetterSuppressed = 0;
+let lastDeadLetterLogAt = 0;
+const startedAt = Date.now();
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -73,6 +88,139 @@ const toNumber = (value: Json | undefined): number | null => {
 const minuteBucketIso = (tsMs: number): string => {
   const minute = Math.floor(tsMs / 60_000) * 60_000;
   return new Date(minute).toISOString();
+};
+
+const rememberLiveState = (row: { market_id: string; source_seq: number | null; source_ts: string }) => {
+  const marketId = row.market_id.trim();
+  if (!marketId) return;
+  const parsedTs = Date.parse(row.source_ts);
+  const sourceTsMs = Number.isFinite(parsedTs) ? parsedTs : Date.now();
+  const sourceSeq = row.source_seq !== null && Number.isFinite(row.source_seq) ? Math.floor(row.source_seq) : null;
+  const existing = latestLiveState.get(marketId);
+  if (!existing) {
+    latestLiveState.set(marketId, { sourceSeq, sourceTsMs });
+    return;
+  }
+  latestLiveState.set(marketId, {
+    sourceSeq:
+      sourceSeq === null
+        ? existing.sourceSeq
+        : existing.sourceSeq === null
+          ? sourceSeq
+          : Math.max(existing.sourceSeq, sourceSeq),
+    sourceTsMs: Math.max(existing.sourceTsMs, sourceTsMs),
+  });
+};
+
+const isStaleLiveUpdate = (update: PendingLive): boolean => {
+  const current = latestLiveState.get(update.market_id);
+  if (!current) return false;
+  if (
+    current.sourceSeq !== null &&
+    update.source_seq !== null &&
+    Number.isFinite(update.source_seq) &&
+    update.source_seq < current.sourceSeq
+  ) {
+    return true;
+  }
+  const nextTs = Date.parse(update.source_ts);
+  return Number.isFinite(nextTs) && nextTs < current.sourceTsMs;
+};
+
+const logDeadLetter = (reason: string, payload: unknown) => {
+  const now = Date.now();
+  if (now - lastDeadLetterLogAt < DEAD_LETTER_LOG_EVERY_MS) {
+    deadLetterSuppressed += 1;
+    return;
+  }
+  const suppressed = deadLetterSuppressed;
+  deadLetterSuppressed = 0;
+  lastDeadLetterLogAt = now;
+  let preview = "";
+  try {
+    preview = typeof payload === "string" ? payload : JSON.stringify(payload);
+  } catch {
+    preview = "[unserializable]";
+  }
+  const compactPreview = preview.slice(0, 240).replace(/\s+/g, " ");
+  const suffix = suppressed > 0 ? `; suppressed=${suppressed}` : "";
+  console.warn(`[collector] dead-letter ${reason}${suffix}: ${compactPreview}`);
+};
+
+const looksLikeLivePayload = (payload: JsonMap): boolean => {
+  const keys: Array<keyof JsonMap> = [
+    "price",
+    "mid",
+    "best_bid",
+    "best_ask",
+    "last_trade_price",
+    "volume",
+    "rolling_24h_volume",
+    "source_seq",
+    "seq",
+    "timestamp",
+    "ts",
+  ];
+  return keys.some((key) => payload[key] !== undefined);
+};
+
+const startHealthServer = () => {
+  if (HEALTH_PORT <= 0) return;
+  const server = createServer((req, res) => {
+    const path = String(req.url ?? "/");
+    if (path !== "/health" && path !== "/ready") {
+      res.statusCode = 404;
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.end("not found");
+      return;
+    }
+    const now = Date.now();
+    const recentSignalAt = Math.max(lastHeartbeatAt, lastWsMessageAt);
+    const websocketHealthy = recentSignalAt > 0 && now - recentSignalAt <= HEARTBEAT_TIMEOUT_MS * 2;
+    const reconcileHealthy =
+      lastReconcileAt > 0 && now - lastReconcileAt <= Math.max(RECONCILE_INTERVAL_MS * 3, 180_000);
+    const ready = websocketHealthy && reconcileHealthy;
+    const payload = {
+      ok: path === "/health" ? true : ready,
+      ready,
+      uptimeSec: Math.floor((now - startedAt) / 1000),
+      pendingLive: pendingLive.size,
+      pendingCandles: pendingCandles.size,
+      lastHeartbeatAt: lastHeartbeatAt > 0 ? new Date(lastHeartbeatAt).toISOString() : null,
+      lastWsMessageAt: lastWsMessageAt > 0 ? new Date(lastWsMessageAt).toISOString() : null,
+      lastFlushAt: lastFlushAt > 0 ? new Date(lastFlushAt).toISOString() : null,
+      lastReconcileAt: lastReconcileAt > 0 ? new Date(lastReconcileAt).toISOString() : null,
+      websocketHealthy,
+      reconcileHealthy,
+    };
+    res.statusCode = path === "/ready" && !ready ? 503 : 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(payload));
+  });
+  server.listen(HEALTH_PORT, () => {
+    console.log(`[collector] health probe listening on :${HEALTH_PORT}`);
+  });
+};
+
+const loadPersistedLiveState = async () => {
+  const { data, error } = await supabase
+    .from("polymarket_market_live")
+    .select("market_id, source_seq, source_ts")
+    .limit(5000);
+  if (error) {
+    console.warn("[collector] unable to preload persisted live state", error.message);
+    return;
+  }
+  for (const row of (data ?? []) as LiveStateRow[]) {
+    rememberLiveState({
+      market_id: row.market_id,
+      source_seq: row.source_seq ?? null,
+      source_ts: row.source_ts,
+    });
+  }
+  if (latestLiveState.size > 0) {
+    console.log(`[collector] preloaded ${latestLiveState.size} persisted live states`);
+  }
 };
 
 const parseMarketId = (payload: JsonMap): string | null => {
@@ -207,53 +355,82 @@ const flushPending = async () => {
       }
     }
   } finally {
+    lastFlushAt = Date.now();
     flushing = false;
   }
 };
 
 const bootstrapSnapshot = async () => {
-  const markets = await listPolymarketMarketsSnapshot({
-    scope: "open",
-    pageSize: 200,
-    maxPages: 10,
-    hydrateMidpoints: true,
-  });
+  try {
+    const markets = await listPolymarketMarketsSnapshot({
+      scope: "open",
+      pageSize: 200,
+      maxPages: 10,
+      hydrateMidpoints: true,
+    });
 
-  if (markets.length === 0) return;
+    if (markets.length === 0) return;
 
-  await upsertMirroredPolymarketMarkets(supabase, markets);
+    await upsertMirroredPolymarketMarkets(supabase, markets);
 
-  const nowIso = new Date().toISOString();
-  const liveRows: PendingLive[] = markets.map((market) => {
-    const yes = market.outcomes[0]?.price ?? 0.5;
-    const no = market.outcomes[1]?.price ?? Math.max(0, 1 - yes);
-    const bid = Math.max(0, Math.min(1, Math.min(yes, no)));
-    const ask = Math.max(0, Math.min(1, Math.max(yes, no)));
-    return {
-      market_id: market.id,
-      best_bid: bid,
-      best_ask: ask,
-      mid: clampPrice(yes),
-      last_trade_price: clampPrice(yes),
-      last_trade_size: 0,
-      rolling_24h_volume: Math.max(0, market.volume),
-      open_interest: null,
-      source_seq: null,
-      source_ts: nowIso,
+    const nowIso = new Date().toISOString();
+    const currentBucket = minuteBucketIso(Date.now());
+    const liveRows: PendingLive[] = markets.map((market) => {
+      const yes = market.outcomes[0]?.price ?? 0.5;
+      const no = market.outcomes[1]?.price ?? Math.max(0, 1 - yes);
+      const bid = Math.max(0, Math.min(1, Math.min(yes, no)));
+      const ask = Math.max(0, Math.min(1, Math.max(yes, no)));
+      return {
+        market_id: market.id,
+        best_bid: bid,
+        best_ask: ask,
+        mid: clampPrice(yes),
+        last_trade_price: clampPrice(yes),
+        last_trade_size: 0,
+        rolling_24h_volume: Math.max(0, market.volume),
+        open_interest: null,
+        source_seq: null,
+        source_ts: nowIso,
+        updated_at: nowIso,
+        ingested_at: nowIso,
+      };
+    });
+
+    const { error } = await supabase
+      .from("polymarket_market_live")
+      .upsert(liveRows, { onConflict: "market_id" });
+
+    if (error) {
+      console.error("[collector] snapshot live upsert failed", error.message);
+    }
+
+    const baselineCandles: PendingCandle[] = liveRows.map((row) => ({
+      market_id: row.market_id,
+      bucket_start: currentBucket,
+      open: row.mid,
+      high: row.mid,
+      low: row.mid,
+      close: row.mid,
+      volume: 0,
+      trades_count: 0,
+      source_ts_max: row.source_ts,
       updated_at: nowIso,
-      ingested_at: nowIso,
-    };
-  });
+    }));
+    const { error: candleError } = await supabase
+      .from("polymarket_candles_1m")
+      .upsert(baselineCandles, { onConflict: "market_id,bucket_start", ignoreDuplicates: true });
+    if (candleError) {
+      console.error("[collector] snapshot candle backfill failed", candleError.message);
+    }
 
-  const { error } = await supabase
-    .from("polymarket_market_live")
-    .upsert(liveRows, { onConflict: "market_id" });
+    for (const row of liveRows) {
+      rememberLiveState(row);
+    }
 
-  if (error) {
-    console.error("[collector] snapshot live upsert failed", error.message);
+    console.log(`[collector] snapshot synced ${markets.length} markets`);
+  } finally {
+    lastReconcileAt = Date.now();
   }
-
-  console.log(`[collector] snapshot synced ${markets.length} markets`);
 };
 
 const extractMessages = (payload: Json): JsonMap[] => {
@@ -315,6 +492,7 @@ const runWsLoop = async () => {
 
         socket.onmessage = (event) => {
           lastHeartbeatAt = Date.now();
+          lastWsMessageAt = lastHeartbeatAt;
           const raw = typeof event.data === "string" ? event.data : "";
           if (!raw) return;
 
@@ -323,29 +501,22 @@ const runWsLoop = async () => {
             const messages = extractMessages(parsed);
             for (const message of messages) {
               const update = parseIncomingUpdate(message);
-              if (!update) continue;
-
-              const current = pendingLive.get(update.market_id);
-              const currentTs = current ? Date.parse(current.source_ts) : 0;
-              const nextTs = Date.parse(update.source_ts);
-              if (current && Number.isFinite(currentTs) && Number.isFinite(nextTs) && nextTs < currentTs) {
+              if (!update) {
+                if (looksLikeLivePayload(message)) {
+                  logDeadLetter("missing_market_id", message);
+                }
+                continue;
+              }
+              if (isStaleLiveUpdate(update)) {
                 continue;
               }
 
-              if (
-                current &&
-                current.source_seq !== null &&
-                update.source_seq !== null &&
-                update.source_seq < current.source_seq
-              ) {
-                continue;
-              }
-
+              rememberLiveState(update);
               pendingLive.set(update.market_id, update);
               applyCandleFromLive(update);
             }
           } catch {
-            // ignore malformed frames
+            logDeadLetter("invalid_json", raw);
           }
         };
 
@@ -367,7 +538,9 @@ const runWsLoop = async () => {
 
       attempt = 0;
     } catch (error) {
-      const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+      const baseBackoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+      const jitterMs = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
+      const backoffMs = baseBackoffMs + jitterMs;
       console.error("[collector] ws loop error", error instanceof Error ? error.message : String(error));
       attempt += 1;
       await wait(backoffMs);
@@ -376,6 +549,8 @@ const runWsLoop = async () => {
 };
 
 const start = async () => {
+  startHealthServer();
+  await loadPersistedLiveState();
   await bootstrapSnapshot();
 
   setInterval(() => {
