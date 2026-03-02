@@ -50,6 +50,9 @@ export interface MarketOutcome {
 
 export interface Market {
   id: string;
+  provider?: "polymarket" | "limitless";
+  providerMarketId?: string;
+  canonicalMarketId?: string;
   title: string;
   titleRu: string | null;
   titleEn: string;
@@ -89,6 +92,12 @@ export interface Market {
   rolling24hVolume?: number | null;
   openInterest?: number | null;
   liveUpdatedAt?: string | null;
+  capabilities?: {
+    supportsTrading: boolean;
+    supportsCandles: boolean;
+    supportsPublicTrades: boolean;
+    chainId: number | null;
+  } | null;
 }
 
 /**

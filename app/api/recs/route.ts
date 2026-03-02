@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { getSupabaseServiceClient } from "@/src/server/supabase/client";
 import { listMirroredPolymarketMarkets, searchMirroredPolymarketMarkets } from "@/src/server/polymarket/mirror";
 import { listPolymarketMarkets, searchPolymarketMarkets } from "@/src/server/polymarket/client";
+import { getVenueAdapter, listEnabledProviders } from "@/src/server/venues/registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -147,6 +148,24 @@ const fromPolymarketLive = async (query: string, limit: number): Promise<RecMark
   }
 };
 
+const fromLimitlessLive = async (query: string, limit: number): Promise<RecMarket[]> => {
+  try {
+    const enabled = new Set(listEnabledProviders());
+    if (!enabled.has("limitless")) return [];
+    const adapter = getVenueAdapter("limitless");
+    if (!adapter.isEnabled()) return [];
+    const rows = await adapter.searchMarkets(query, limit);
+    return rows.map((m) => ({
+      id: `limitless:${m.providerMarketId}`,
+      question: m.title,
+      tags: [m.category ?? "", ...m.outcomes.map((o) => o.title), m.slug].filter(Boolean),
+      volume: m.volume,
+    }));
+  } catch {
+    return [];
+  }
+};
+
 const getLatestPolymarketPool = async (limit: number): Promise<RecMarket[]> => {
   const now = Date.now();
   if (latestPoolCache && latestPoolCache.expiresAt > now) return latestPoolCache.rows;
@@ -164,6 +183,24 @@ const getLatestPolymarketPool = async (limit: number): Promise<RecMarket[]> => {
       rows: mapped,
     };
     return mapped;
+  } catch {
+    return [];
+  }
+};
+
+const getLatestLimitlessPool = async (limit: number): Promise<RecMarket[]> => {
+  try {
+    const enabled = new Set(listEnabledProviders());
+    if (!enabled.has("limitless")) return [];
+    const adapter = getVenueAdapter("limitless");
+    if (!adapter.isEnabled()) return [];
+    const rows = await adapter.listMarketsSnapshot({ limit, onlyOpen: true });
+    return rows.map((m) => ({
+      id: `limitless:${m.providerMarketId}`,
+      question: m.title,
+      tags: [m.category ?? "", ...m.outcomes.map((o) => o.title), m.slug].filter(Boolean),
+      volume: m.volume,
+    }));
   } catch {
     return [];
   }
@@ -370,12 +407,17 @@ export async function POST(req: Request) {
     });
   }
 
-  const [keywordCandidates, liveCandidates, mirrorPool, latestPool] = await Promise.all([
+  const [keywordCandidates, liveCandidatesPolymarket, liveCandidatesLimitless, mirrorPool, latestPoolPolymarket, latestPoolLimitless] = await Promise.all([
     fromMirrorKeyword(query, MAX_KEYWORD_CANDIDATES),
     fromPolymarketLive(query, MAX_LIVE_SEARCH_CANDIDATES),
+    fromLimitlessLive(query, MAX_LIVE_SEARCH_CANDIDATES),
     fromMirrorPool(MAX_MIRROR_POOL_CANDIDATES),
     getLatestPolymarketPool(MAX_LATEST_CANDIDATES),
+    getLatestLimitlessPool(MAX_LATEST_CANDIDATES),
   ]);
+
+  const liveCandidates = [...liveCandidatesPolymarket, ...liveCandidatesLimitless];
+  const latestPool = [...latestPoolPolymarket, ...latestPoolLimitless];
 
   const mergedById = new Map<string, RecMarket>();
   for (const m of mirrorPool) mergedById.set(m.id, m);

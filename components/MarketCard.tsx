@@ -34,6 +34,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
     lang === "RU"
       ? market.categoryLabelRu ?? market.categoryLabelEn
       : market.categoryLabelEn ?? market.categoryLabelRu;
+  const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
 
   // Use closesAt for trading deadline, fall back to expiresAt
   const deadline = market.closesAt || market.expiresAt;
@@ -81,6 +82,9 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
             {localizedTitle}
           </h3>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
+            <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-900/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-200">
+              {providerLabel}
+            </span>
             {categoryLabel && (
               <>
                 <span className="shrink-0 rounded-full border border-zinc-900 bg-zinc-950/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-300">

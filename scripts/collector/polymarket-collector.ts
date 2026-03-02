@@ -90,6 +90,101 @@ const minuteBucketIso = (tsMs: number): string => {
   return new Date(minute).toISOString();
 };
 
+const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<string, string>> => {
+  const out = new Map<string, string>();
+  if (providerMarketIds.length === 0) return out;
+  const unique = Array.from(new Set(providerMarketIds.filter(Boolean)));
+  const chunkSize = 300;
+
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const { data, error } = await (supabase as any)
+      .from("market_catalog")
+      .select("id, provider_market_id")
+      .eq("provider", "polymarket")
+      .in("provider_market_id", chunk);
+    if (error) continue;
+    for (const row of data ?? []) {
+      const providerMarketId = String((row as Record<string, unknown>).provider_market_id ?? "").trim();
+      const id = String((row as Record<string, unknown>).id ?? "").trim();
+      if (providerMarketId && id) out.set(providerMarketId, id);
+    }
+  }
+
+  return out;
+};
+
+const mirrorIntoCanonicalRealtime = async (liveRows: PendingLive[], candleRows: PendingCandle[]) => {
+  const providerMarketIds = Array.from(
+    new Set([
+      ...liveRows.map((row) => row.market_id),
+      ...candleRows.map((row) => row.market_id),
+    ])
+  );
+
+  const catalogIds = await resolveCatalogIds(providerMarketIds);
+  if (catalogIds.size === 0) return;
+
+  const canonicalLiveRows = liveRows
+    .map((row) => {
+      const marketRefId = catalogIds.get(row.market_id);
+      if (!marketRefId) return null;
+      return {
+        market_id: marketRefId,
+        best_bid: row.best_bid,
+        best_ask: row.best_ask,
+        mid: row.mid,
+        last_trade_price: row.last_trade_price,
+        last_trade_size: row.last_trade_size,
+        rolling_24h_volume: row.rolling_24h_volume,
+        open_interest: row.open_interest,
+        source_seq: row.source_seq,
+        source_ts: row.source_ts,
+        updated_at: row.updated_at,
+        ingested_at: row.ingested_at,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
+
+  const canonicalCandleRows = candleRows
+    .map((row) => {
+      const marketRefId = catalogIds.get(row.market_id);
+      if (!marketRefId) return null;
+      return {
+        market_id: marketRefId,
+        outcome_key: "__market__",
+        bucket_start: row.bucket_start,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        volume: row.volume,
+        trades_count: row.trades_count,
+        source_ts_max: row.source_ts_max,
+        updated_at: row.updated_at,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
+
+  if (canonicalLiveRows.length > 0) {
+    const { error } = await (supabase as any)
+      .from("market_live")
+      .upsert(canonicalLiveRows, { onConflict: "market_id" });
+    if (error) {
+      console.error("[collector] canonical live upsert failed", error.message);
+    }
+  }
+
+  if (canonicalCandleRows.length > 0) {
+    const { error } = await (supabase as any)
+      .from("market_candles_1m")
+      .upsert(canonicalCandleRows, { onConflict: "market_id,outcome_key,bucket_start" });
+    if (error) {
+      console.error("[collector] canonical candle upsert failed", error.message);
+    }
+  }
+};
+
 const rememberLiveState = (row: { market_id: string; source_seq: number | null; source_ts: string }) => {
   const marketId = row.market_id.trim();
   if (!marketId) return;
@@ -332,27 +427,33 @@ const flushPending = async () => {
   if (pendingLive.size === 0 && pendingCandles.size === 0) return;
 
   flushing = true;
+  let liveRows: PendingLive[] = [];
+  let candleRows: PendingCandle[] = [];
   try {
     if (pendingLive.size > 0) {
-      const rows = Array.from(pendingLive.values());
+      liveRows = Array.from(pendingLive.values());
       pendingLive.clear();
       const { error } = await supabase
         .from("polymarket_market_live")
-        .upsert(rows, { onConflict: "market_id" });
+        .upsert(liveRows, { onConflict: "market_id" });
       if (error) {
         console.error("[collector] live upsert failed", error.message);
       }
     }
 
     if (pendingCandles.size > 0) {
-      const rows = Array.from(pendingCandles.values());
+      candleRows = Array.from(pendingCandles.values());
       pendingCandles.clear();
       const { error } = await supabase
         .from("polymarket_candles_1m")
-        .upsert(rows, { onConflict: "market_id,bucket_start" });
+        .upsert(candleRows, { onConflict: "market_id,bucket_start" });
       if (error) {
         console.error("[collector] candle upsert failed", error.message);
       }
+    }
+
+    if (liveRows.length > 0 || candleRows.length > 0) {
+      await mirrorIntoCanonicalRealtime(liveRows, candleRows);
     }
   } finally {
     lastFlushAt = Date.now();
@@ -422,6 +523,8 @@ const bootstrapSnapshot = async () => {
     if (candleError) {
       console.error("[collector] snapshot candle backfill failed", candleError.message);
     }
+
+    await mirrorIntoCanonicalRealtime(liveRows, baselineCandles);
 
     for (const row of liveRows) {
       rememberLiveState(row);

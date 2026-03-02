@@ -2,6 +2,7 @@ import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { listMirroredPolymarketMarkets } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
+import { listEnabledProviders } from "../../venues/registry";
 
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
 type MarketLiveFeedRow = Pick<
@@ -9,6 +10,12 @@ type MarketLiveFeedRow = Pick<
   "market_id" | "rolling_24h_volume" | "source_ts"
 >;
 type FeedEventRow = Pick<Database["public"]["Tables"]["user_events"]["Row"], "market_id" | "event_type">;
+
+type FeedMarketCandidate = {
+  marketId: string;
+  category: string;
+  fallbackVolume: number;
+};
 
 const feedItemOutput = z.object({
   marketId: z.string(),
@@ -63,35 +70,93 @@ export const feedRouter = router({
       const limit = Math.max(1, Math.min(30, Number(input?.limit ?? 16)));
       const offset = decodeCursor(input?.cursor);
 
-      const markets = await listMirroredPolymarketMarkets(ctx.supabaseService, {
+      const polymarketRows = await listMirroredPolymarketMarkets(ctx.supabaseService, {
         onlyOpen: true,
         limit: 700,
       });
-      if (markets.length === 0) {
-        return { apiVersion: "v1", items: [], nextCursor: null };
+
+      const candidates: FeedMarketCandidate[] = polymarketRows.map((market) => ({
+        marketId: market.id,
+        category: market.category ?? "general",
+        fallbackVolume: market.volume,
+      }));
+
+      const liveByMarket = new Map<string, { rolling24hVolume: number; sourceTs: number }>();
+
+      if (polymarketRows.length > 0) {
+        const marketIds = polymarketRows.map((m) => m.id);
+        const liveRes = await ctx.supabaseService
+          .from("polymarket_market_live")
+          .select("market_id, rolling_24h_volume, source_ts")
+          .in("market_id", marketIds);
+
+        for (const row of (liveRes.data ?? []) as MarketLiveFeedRow[]) {
+          const marketId = row.market_id.trim();
+          if (!marketId) continue;
+          const rolling = Number(row.rolling_24h_volume ?? 0);
+          const ts = Date.parse(row.source_ts ?? "");
+          liveByMarket.set(marketId, {
+            rolling24hVolume: Number.isFinite(rolling) ? Math.max(0, rolling) : 0,
+            sourceTs: Number.isFinite(ts) ? ts : 0,
+          });
+        }
       }
 
-      const marketIds = markets.map((m) => m.id);
+      const enabledProviders = new Set(listEnabledProviders());
+      if (enabledProviders.has("limitless")) {
+        const { data: catalogRows } = await (ctx.supabaseService as any)
+          .from("market_catalog")
+          .select("id, provider_market_id, category")
+          .eq("provider", "limitless")
+          .eq("state", "open")
+          .limit(500);
 
-      const liveRes = await ctx.supabaseService
-        .from("polymarket_market_live")
-        .select("market_id, rolling_24h_volume, source_ts")
-        .in("market_id", marketIds);
+        const rows = Array.isArray(catalogRows)
+          ? (catalogRows as Array<Record<string, unknown>>)
+          : [];
+        const catalogIds = rows
+          .map((row) => String(row.id ?? "").trim())
+          .filter(Boolean);
 
-      const liveByMarket = new Map<
-        string,
-        { rolling24hVolume: number; sourceTs: number }
-      >();
+        const liveByCatalogId = new Map<string, { rolling24hVolume: number; sourceTs: number }>();
+        if (catalogIds.length > 0) {
+          const { data: limitlessLiveRows } = await (ctx.supabaseService as any)
+            .from("market_live")
+            .select("market_id, rolling_24h_volume, source_ts")
+            .in("market_id", catalogIds);
 
-      for (const row of (liveRes.data ?? []) as MarketLiveFeedRow[]) {
-        const marketId = row.market_id.trim();
-        if (!marketId) continue;
-        const rolling = Number(row.rolling_24h_volume ?? 0);
-        const ts = Date.parse(row.source_ts ?? "");
-        liveByMarket.set(marketId, {
-          rolling24hVolume: Number.isFinite(rolling) ? Math.max(0, rolling) : 0,
-          sourceTs: Number.isFinite(ts) ? ts : 0,
-        });
+          for (const row of Array.isArray(limitlessLiveRows) ? limitlessLiveRows : []) {
+            const rec = row as Record<string, unknown>;
+            const catalogId = String(rec.market_id ?? "").trim();
+            if (!catalogId) continue;
+            const rolling = Number(rec.rolling_24h_volume ?? 0);
+            const ts = Date.parse(String(rec.source_ts ?? ""));
+            liveByCatalogId.set(catalogId, {
+              rolling24hVolume: Number.isFinite(rolling) ? Math.max(0, rolling) : 0,
+              sourceTs: Number.isFinite(ts) ? ts : 0,
+            });
+          }
+        }
+
+        for (const row of rows) {
+          const providerMarketId = String(row.provider_market_id ?? "").trim();
+          const catalogId = String(row.id ?? "").trim();
+          if (!providerMarketId || !catalogId) continue;
+          const marketId = `limitless:${providerMarketId}`;
+          const live = liveByCatalogId.get(catalogId);
+          candidates.push({
+            marketId,
+            category: String(row.category ?? "general"),
+            fallbackVolume: live?.rolling24hVolume ?? 0,
+          });
+          if (live) {
+            liveByMarket.set(marketId, live);
+          }
+        }
+      }
+
+      if (candidates.length === 0) {
+        return { apiVersion: "v1", items: [], nextCursor: null };
       }
 
       const affinityByMarket = new Map<string, number>();
@@ -118,13 +183,13 @@ export const feedRouter = router({
       }
 
       const now = Date.now();
-      const scored = markets
+      const scored = candidates
         .map((market) => {
-          const affinityRaw = affinityByMarket.get(market.id) ?? 0;
+          const affinityRaw = affinityByMarket.get(market.marketId) ?? 0;
           const affinityScore = maxAffinity > 0 ? clamp01(affinityRaw / maxAffinity) : 0;
 
-          const live = liveByMarket.get(market.id);
-          const popularityBase = live ? live.rolling24hVolume : market.volume;
+          const live = liveByMarket.get(market.marketId);
+          const popularityBase = live ? live.rolling24hVolume : market.fallbackVolume;
           const popularityScore = clamp01(Math.log10(Math.max(0, popularityBase) + 1) / 6);
 
           const ageHours = live?.sourceTs ? Math.max(0, (now - live.sourceTs) / 3_600_000) : 72;
@@ -140,7 +205,7 @@ export const feedRouter = router({
                 : "Fresh market updates";
 
           return {
-            marketId: market.id,
+            marketId: market.marketId,
             score,
             reason,
             category: market.category ?? "general",

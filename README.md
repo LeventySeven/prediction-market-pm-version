@@ -45,6 +45,12 @@ To refresh `DB_CONTEXT.md` from a full SQL schema dump via Supabase CLI (`supaba
 bun run supabase:context:cli
 ```
 
+For CI (fail if SQL dump is unavailable, do not fallback to OpenAPI):
+
+```bash
+bun run supabase:context:ci
+```
+
 Notes:
 - This command derives the project ref from `NEXT_PUBLIC_SUPABASE_URL`.
 - If `SUPABASE_DB_PASSWORD` is set, the script builds the DB URL automatically.
@@ -64,6 +70,12 @@ This repo now includes a market data collector worker:
 
 ```bash
 bun run collector:polymarket
+```
+
+And a Limitless collector worker (feature-flagged by `ENABLE_LIMITLESS=true`):
+
+```bash
+bun run collector:limitless
 ```
 
 It performs:

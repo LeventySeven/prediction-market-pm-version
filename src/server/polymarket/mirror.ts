@@ -1,4 +1,6 @@
 import type { PolymarketMarket, PolymarketOutcome } from "./client";
+import { upsertVenueMarketsToCatalog } from "../venues/catalogStore";
+import type { VenueMarket } from "../venues/types";
 
 type MirrorRow = {
   market_id: string;
@@ -110,6 +112,40 @@ const toMirrorRow = (market: PolymarketMarket, nowIso: string): MirrorRow => ({
   last_synced_at: nowIso,
 });
 
+const toVenueMarket = (market: PolymarketMarket): VenueMarket => ({
+  provider: "polymarket",
+  providerMarketId: market.id,
+  providerConditionId: market.conditionId,
+  slug: market.slug,
+  title: market.title,
+  description: market.description,
+  imageUrl: market.imageUrl,
+  sourceUrl: market.sourceUrl,
+  state: market.state,
+  closesAt: market.closesAt,
+  expiresAt: market.expiresAt,
+  createdAt: market.createdAt,
+  category: market.category,
+  volume: Number.isFinite(market.volume) ? market.volume : 0,
+  resolvedOutcomeTitle: market.resolvedOutcomeTitle,
+  outcomes: market.outcomes.map((outcome) => ({
+    id: outcome.id,
+    providerOutcomeId: outcome.id,
+    providerTokenId: outcome.tokenId,
+    title: outcome.title,
+    probability: outcome.probability,
+    price: outcome.price,
+    sortOrder: outcome.sortOrder,
+    isActive: true,
+  })),
+  capabilities: {
+    supportsTrading: true,
+    supportsCandles: true,
+    supportsPublicTrades: true,
+    chainId: Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137),
+  },
+});
+
 const fromMirrorRow = (row: Record<string, unknown>): PolymarketMarket | null => {
   const id = asString(row.market_id);
   const conditionId = asString(row.condition_id) ?? id;
@@ -164,6 +200,16 @@ export async function upsertMirroredPolymarketMarkets(
       .upsert(batch, { onConflict: "market_id" });
     if (error) throw new Error(error.message ?? "MIRROR_UPSERT_FAILED");
     written += batch.length;
+  }
+
+  try {
+    await upsertVenueMarketsToCatalog(
+      supabaseService,
+      markets.map((market) => toVenueMarket(market))
+    );
+  } catch (error) {
+    // Canonical table sync should not block legacy mirror updates.
+    console.warn("Canonical market catalog upsert failed", error);
   }
 
   return written;

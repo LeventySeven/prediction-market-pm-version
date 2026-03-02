@@ -2,6 +2,9 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import type { Json } from "../../../types/database";
+import { consumeDurableRateLimit } from "../../security/rateLimit";
+import { getTrustedClientIpFromRequest } from "../../http/ip";
+import { parseVenueMarketRef, type VenueProvider } from "../../venues/types";
 
 const jsonValueSchema: z.ZodType<Json> = z.lazy(() =>
   z.union([
@@ -17,6 +20,7 @@ const jsonValueSchema: z.ZodType<Json> = z.lazy(() =>
 const trackInput = z.object({
   sessionId: z.string().min(8).max(128),
   marketId: z.string().min(1).max(256),
+  provider: z.enum(["polymarket", "limitless"]).optional(),
   eventType: z.enum(["view", "dwell", "click", "bookmark", "comment", "trade_intent"]),
   value: z.number().finite().optional(),
   metadata: z.record(z.string(), jsonValueSchema).optional(),
@@ -27,21 +31,25 @@ const trackOutput = z.object({
   ok: z.boolean(),
 });
 
-const eventRateLimit = new Map<string, { count: number; resetAt: number }>();
-
-const applyRateLimit = (key: string) => {
-  const now = Date.now();
-  const windowMs = 60_000;
-  const maxPerWindow = 90;
-  const current = eventRateLimit.get(key);
-  if (!current || current.resetAt <= now) {
-    eventRateLimit.set(key, { count: 1, resetAt: now + windowMs });
-    return;
+const resolveMarketRefId = async (
+  supabaseService: unknown,
+  provider: VenueProvider,
+  providerMarketId: string
+): Promise<string | null> => {
+  try {
+    const { data, error } = await (supabaseService as any)
+      .from("market_catalog")
+      .select("id")
+      .eq("provider", provider)
+      .eq("provider_market_id", providerMarketId)
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const id = String((data as Record<string, unknown>).id ?? "").trim();
+    return id || null;
+  } catch {
+    return null;
   }
-  if (current.count >= maxPerWindow) {
-    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "EVENT_RATE_LIMITED" });
-  }
-  current.count += 1;
 };
 
 export const eventsRouter = router({
@@ -49,8 +57,16 @@ export const eventsRouter = router({
     .input(trackInput)
     .output(trackOutput)
     .mutation(async ({ ctx, input }) => {
-      const key = `${ctx.authUser?.id ?? "anon"}:${input.sessionId}`;
-      applyRateLimit(key);
+      const requestIp = getTrustedClientIpFromRequest(ctx.req) ?? "unknown";
+      const rateLimitKey = `events:${ctx.authUser?.id ?? "anon"}:${requestIp}:${input.sessionId}`;
+      const limit = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: rateLimitKey,
+        limit: 90,
+        windowSeconds: 60,
+      });
+      if (!limit.allowed) {
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "EVENT_RATE_LIMITED" });
+      }
 
       const serialized = JSON.stringify(input.metadata ?? {});
       const safeMetadata =
@@ -58,13 +74,26 @@ export const eventsRouter = router({
           ? input.metadata ?? {}
           : ({ truncated: true, reason: "metadata_too_large" } as Record<string, Json>);
 
-      const { error } = await ctx.supabaseService.from("user_events").insert({
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const marketRefId = await resolveMarketRefId(
+        ctx.supabaseService,
+        ref.provider,
+        ref.providerMarketId
+      );
+
+      const { error } = await (ctx.supabaseService as any).from("user_events").insert({
         user_id: ctx.authUser?.id ?? null,
         session_id: input.sessionId,
         market_id: input.marketId,
+        market_ref_id: marketRefId,
         event_type: input.eventType,
         event_value: input.value ?? null,
-        metadata: safeMetadata,
+        metadata: {
+          ...safeMetadata,
+          provider: ref.provider,
+          providerMarketId: ref.providerMarketId,
+          canonicalMarketId: ref.canonicalMarketId,
+        },
       });
 
       if (error) {

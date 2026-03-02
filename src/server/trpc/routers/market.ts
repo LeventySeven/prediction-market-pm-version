@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { publicProcedure, router } from "../trpc";
@@ -19,6 +19,20 @@ import {
   upsertMirroredPolymarketMarkets,
 } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
+import {
+  getVenueAdapter,
+  listEnabledProviders,
+} from "../../venues/registry";
+import {
+  parseVenueMarketRef,
+  type VenueApiCreds,
+  type VenueMarket,
+  type VenueProvider,
+  venueToCanonicalId,
+} from "../../venues/types";
+import { upsertVenueMarketsToCatalog } from "../../venues/catalogStore";
+import { getTrustedClientIpFromRequest } from "../../http/ip";
+import { consumeDurableRateLimit } from "../../security/rateLimit";
 
 const marketCategoryOutput = z.object({
   id: z.string(),
@@ -29,6 +43,8 @@ const marketCategoryOutput = z.object({
 const marketOutcomeOutput = z.object({
   id: z.string(),
   marketId: z.string(),
+  providerOutcomeId: z.string().nullable().optional(),
+  providerTokenId: z.string().nullable().optional(),
   tokenId: z.string().nullable().optional(),
   slug: z.string(),
   title: z.string(),
@@ -42,6 +58,9 @@ const marketOutcomeOutput = z.object({
 
 const marketOutput = z.object({
   id: z.string(),
+  provider: z.enum(["polymarket", "limitless"]).optional(),
+  providerMarketId: z.string().optional(),
+  canonicalMarketId: z.string().optional(),
   titleRu: z.string(),
   titleEn: z.string(),
   description: z.string().nullable().optional(),
@@ -76,6 +95,14 @@ const marketOutput = z.object({
   rolling24hVolume: z.number().nullable().optional(),
   openInterest: z.number().nullable().optional(),
   liveUpdatedAt: z.string().nullable().optional(),
+  capabilities: z
+    .object({
+      supportsTrading: z.boolean(),
+      supportsCandles: z.boolean(),
+      supportsPublicTrades: z.boolean(),
+      chainId: z.number().nullable(),
+    })
+    .optional(),
 });
 
 const marketBookmarkOutput = z.object({
@@ -185,8 +212,12 @@ const jsonValueSchema: z.ZodType<Database["public"]["Tables"]["user_events"]["Ro
 );
 
 const relaySignedOrderInput = z.object({
+  provider: z.enum(["polymarket", "limitless"]).default("polymarket"),
+  marketId: z.string().min(1).optional(),
   signedOrder: z.record(z.string(), jsonValueSchema),
   orderType: z.enum(["FOK", "GTC"]),
+  idempotencyKey: z.string().min(8).max(128),
+  clientOrderId: z.string().min(1).max(128).optional(),
   apiCreds: z.object({
     key: z.string().min(1).max(512),
     secret: z.string().min(1).max(1024),
@@ -222,6 +253,8 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   const outcomes = market.outcomes.map((o) => ({
     id: o.id,
     marketId: market.id,
+    providerOutcomeId: o.id,
+    providerTokenId: o.tokenId ?? null,
     tokenId: o.tokenId ?? null,
     slug: o.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
     title: o.title,
@@ -249,6 +282,9 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
 
   return {
     id: market.id,
+    provider: "polymarket" as const,
+    providerMarketId: market.id,
+    canonicalMarketId: venueToCanonicalId("polymarket", market.id),
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -283,6 +319,109 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     rolling24hVolume: null,
     openInterest: null,
     liveUpdatedAt: null,
+    capabilities: {
+      supportsTrading: true,
+      supportsCandles: true,
+      supportsPublicTrades: true,
+      chainId: Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137),
+    },
+  };
+};
+
+const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
+  if (market.provider === "polymarket") {
+    const pseudoPolymarket = {
+      id: market.providerMarketId,
+      conditionId: market.providerConditionId ?? market.providerMarketId,
+      slug: market.slug,
+      title: market.title,
+      description: market.description,
+      imageUrl: market.imageUrl,
+      sourceUrl: market.sourceUrl,
+      state: market.state,
+      closesAt: market.closesAt,
+      expiresAt: market.expiresAt,
+      createdAt: market.createdAt,
+      category: market.category,
+      volume: market.volume,
+      resolvedOutcomeTitle: market.resolvedOutcomeTitle,
+      outcomes: market.outcomes.map((outcome) => ({
+        id: outcome.id,
+        tokenId: outcome.providerTokenId,
+        title: outcome.title,
+        probability: outcome.probability,
+        price: outcome.price,
+        sortOrder: outcome.sortOrder,
+      })),
+    };
+    return mapPolymarketMarket(pseudoPolymarket as any);
+  }
+
+  const outputId = venueToCanonicalId(market.provider, market.providerMarketId);
+  const sortedOutcomes = [...market.outcomes].sort((a, b) => a.sortOrder - b.sortOrder);
+  const yes = sortedOutcomes[0];
+  const no = sortedOutcomes[1];
+  const categoryKey = (market.category || "all").toLowerCase();
+  const labels = categoryLabelMap.get(categoryKey) ?? t("Разное", "General");
+  const resolved = market.state === "resolved" ? market.resolvedOutcomeTitle : null;
+  const resolvedMatch = resolved
+    ? sortedOutcomes.find((outcome) => outcome.title.toLowerCase() === resolved.toLowerCase()) ?? null
+    : null;
+
+  return {
+    id: outputId,
+    provider: market.provider,
+    providerMarketId: market.providerMarketId,
+    canonicalMarketId: venueToCanonicalId(market.provider, market.providerMarketId),
+    titleRu: market.title,
+    titleEn: market.title,
+    description: market.description,
+    source: market.sourceUrl,
+    imageUrl: market.imageUrl ?? "",
+    state: market.state,
+    createdAt: market.createdAt,
+    closesAt: market.closesAt,
+    expiresAt: market.expiresAt,
+    marketType: sortedOutcomes.length > 2 ? ("multi_choice" as const) : ("binary" as const),
+    resolvedOutcomeId: resolvedMatch?.id ?? null,
+    outcomes: sortedOutcomes.map((outcome) => ({
+      id: outcome.id,
+      marketId: outputId,
+      providerOutcomeId: outcome.providerOutcomeId ?? outcome.id,
+      providerTokenId: outcome.providerTokenId,
+      tokenId: outcome.providerTokenId,
+      slug: outcome.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
+      title: outcome.title,
+      iconUrl: null,
+      chartColor: null,
+      sortOrder: outcome.sortOrder,
+      isActive: outcome.isActive,
+      probability: outcome.probability,
+      price: outcome.price,
+    })),
+    outcome: null,
+    createdBy: null,
+    categoryId: categoryKey,
+    categoryLabelRu: labels.ru,
+    categoryLabelEn: labels.en,
+    settlementAsset: "USD",
+    feeBps: null,
+    liquidityB: null,
+    priceYes: yes ? yes.price : 0.5,
+    priceNo: no ? no.price : 0.5,
+    volume: market.volume,
+    chance: yes ? yes.probability * 100 : 50,
+    creatorName: null,
+    creatorAvatarUrl: null,
+    bestBid: null,
+    bestAsk: null,
+    mid: null,
+    lastTradePrice: null,
+    lastTradeSize: null,
+    rolling24hVolume: null,
+    openInterest: null,
+    liveUpdatedAt: null,
+    capabilities: market.capabilities,
   };
 };
 
@@ -563,6 +702,47 @@ const listLocalCandles = async (
         Number.isFinite(row.high) &&
         Number.isFinite(row.low) &&
         Number.isFinite(row.close)
+      );
+};
+
+const listCanonicalCandles = async (
+  supabaseService: SupabaseServiceClient,
+  marketRefId: string,
+  limit: number,
+  outcomeKey = "__market__"
+): Promise<Array<z.infer<typeof priceCandleOutput>>> => {
+  if (!marketRefId) return [];
+
+  const { data, error } = await (supabaseService as any)
+    .from("market_candles_1m")
+    .select("bucket_start, open, high, low, close, volume, trades_count")
+    .eq("market_id", marketRefId)
+    .eq("outcome_key", outcomeKey)
+    .order("bucket_start", { ascending: false })
+    .limit(limit);
+
+  if (error || !Array.isArray(data) || data.length === 0) return [];
+
+  return [...data]
+    .reverse()
+    .map((row: Record<string, unknown>) => ({
+      bucket: new Date(String(row.bucket_start ?? new Date().toISOString())).toISOString(),
+      outcomeId: null,
+      outcomeTitle: null,
+      outcomeColor: null,
+      open: Number(row.open ?? 0),
+      high: Number(row.high ?? 0),
+      low: Number(row.low ?? 0),
+      close: Number(row.close ?? 0),
+      volume: Number(row.volume ?? 0),
+      tradesCount: Number(row.trades_count ?? 0),
+    }))
+    .filter(
+      (row) =>
+        Number.isFinite(row.open) &&
+        Number.isFinite(row.high) &&
+        Number.isFinite(row.low) &&
+        Number.isFinite(row.close)
     );
 };
 
@@ -595,6 +775,20 @@ const lexicalScore = (query: string, market: PolymarketMarket): number => {
   const q = query.trim().toLowerCase();
   if (!q) return 0;
   const source = `${market.title} ${market.description ?? ""} ${(market.category ?? "")} ${market.outcomes.map((o) => o.title).join(" ")}`.toLowerCase();
+  const exact = source.includes(q) ? 1 : 0;
+  const tokens = tokenize(q);
+  if (tokens.length === 0) return exact;
+  let hits = 0;
+  for (const token of tokens) {
+    if (source.includes(token)) hits += 1;
+  }
+  return clamp01(exact * 0.6 + (hits / tokens.length) * 0.7);
+};
+
+const lexicalScoreText = (query: string, text: string): number => {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  const source = text.toLowerCase();
   const exact = source.includes(q) ? 1 : 0;
   const tokens = tokenize(q);
   if (tokens.length === 0) return exact;
@@ -757,19 +951,7 @@ const normalizeAccessStatus = (payload: JsonValue | null): TradeAccessStatus => 
 };
 
 const getClientIpFromRequest = (req: Request): string | null => {
-  const headerCandidates = [
-    req.headers.get("x-forwarded-for"),
-    req.headers.get("x-real-ip"),
-    req.headers.get("cf-connecting-ip"),
-    req.headers.get("true-client-ip"),
-    req.headers.get("fly-client-ip"),
-  ];
-  for (const candidate of headerCandidates) {
-    if (!candidate) continue;
-    const first = candidate.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return null;
+  return getTrustedClientIpFromRequest(req);
 };
 
 const getTradeAccessStatus = async (cacheKey: string, clientIp?: string | null): Promise<TradeAccessStatus> => {
@@ -908,40 +1090,236 @@ const buildL2Signature = (
     .replace(/\//g, "_");
 };
 
+const parseProviderSelection = (input?: {
+  providers?: Array<VenueProvider> | undefined;
+  providerFilter?: "all" | VenueProvider | undefined;
+}): VenueProvider[] => {
+  const enabled = new Set<VenueProvider>(listEnabledProviders());
+  if (enabled.size === 0) return ["polymarket"];
+
+  const fromFilter =
+    input?.providerFilter && input.providerFilter !== "all"
+      ? [input.providerFilter]
+      : [];
+  const fromProviders = Array.isArray(input?.providers) ? input.providers : [];
+  const requested = fromFilter.length > 0 ? fromFilter : fromProviders;
+
+  if (requested.length === 0) return Array.from(enabled);
+  const deduped = Array.from(new Set(requested));
+  const filtered = deduped.filter((provider) => enabled.has(provider));
+  return filtered.length > 0 ? filtered : Array.from(enabled);
+};
+
+const resolveMarketCatalogRefId = async (
+  supabaseService: unknown,
+  provider: VenueProvider,
+  providerMarketId: string
+): Promise<string | null> => {
+  if (!supabaseService || !providerMarketId) return null;
+  try {
+    const { data, error } = await (supabaseService as any)
+      .from("market_catalog")
+      .select("id")
+      .eq("provider", provider)
+      .eq("provider_market_id", providerMarketId)
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const id = String((data as Record<string, unknown>).id ?? "").trim();
+    return id || null;
+  } catch {
+    return null;
+  }
+};
+
+const buildOrderHash = (payload: string): string =>
+  createHash("sha256").update(payload).digest("hex");
+
+const createRelayAuditPending = async (
+  supabaseService: unknown,
+  params: {
+    provider: VenueProvider;
+    userId: string;
+    marketRefId: string | null;
+    idempotencyKey: string;
+    clientOrderId?: string | null;
+    orderHash: string;
+    requestIp?: string | null;
+  }
+): Promise<
+  | { kind: "inserted"; id: number }
+  | { kind: "duplicate"; status: string; httpStatus: number | null }
+> => {
+  if (!supabaseService) return { kind: "inserted", id: 0 };
+
+  const { data: existing } = await (supabaseService as any)
+    .from("trade_relay_audit")
+    .select("id,status,http_status")
+    .eq("provider", params.provider)
+    .eq("user_id", params.userId)
+    .eq("idempotency_key", params.idempotencyKey)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    const status = String((existing as Record<string, unknown>).status ?? "duplicate");
+    const httpStatusRaw = (existing as Record<string, unknown>).http_status;
+    const httpStatus =
+      typeof httpStatusRaw === "number" && Number.isFinite(httpStatusRaw)
+        ? httpStatusRaw
+        : null;
+    return { kind: "duplicate", status, httpStatus };
+  }
+
+  const { data, error } = await (supabaseService as any)
+    .from("trade_relay_audit")
+    .insert({
+      provider: params.provider,
+      user_id: params.userId,
+      market_ref_id: params.marketRefId,
+      idempotency_key: params.idempotencyKey,
+      client_order_id: params.clientOrderId ?? null,
+      order_hash: params.orderHash,
+      status: "pending",
+      request_ip: params.requestIp ?? null,
+    })
+    .select("id")
+    .single();
+
+  if (error || !data) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: error?.message ?? "RELAY_AUDIT_INSERT_FAILED",
+    });
+  }
+
+  const id = Number((data as Record<string, unknown>).id ?? 0);
+  return { kind: "inserted", id: Number.isFinite(id) ? id : 0 };
+};
+
+const finalizeRelayAudit = async (
+  supabaseService: unknown,
+  auditId: number,
+  params: {
+    status: "success" | "failed" | "rejected";
+    httpStatus: number;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }
+) => {
+  if (!supabaseService || !auditId) return;
+  await (supabaseService as any)
+    .from("trade_relay_audit")
+    .update({
+      status: params.status,
+      http_status: params.httpStatus,
+      error_code: params.errorCode ?? null,
+      error_message: params.errorMessage ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", auditId);
+};
+
 export const marketRouter = router({
   listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async () => {
     return DEFAULT_CATEGORIES.map((c) => ({ id: c.id, labelRu: c.labelRu, labelEn: c.labelEn }));
   }),
 
   listMarkets: publicProcedure
-    .input(z.object({ onlyOpen: z.boolean().optional() }).optional())
+    .input(
+      z
+        .object({
+          onlyOpen: z.boolean().optional(),
+          providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
+          providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
+        })
+        .optional()
+    )
     .output(z.array(marketOutput))
     .query(async ({ ctx, input }) => {
       const onlyOpen = input?.onlyOpen ?? false;
-      const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
-        onlyOpen,
-        limit: onlyOpen ? 500 : 800,
+      const selectedProviders = parseProviderSelection({
+        providers: input?.providers,
+        providerFilter: input?.providerFilter,
       });
-      const mapped = rows.map(mapPolymarketMarket);
-      const liveByMarket = await fetchMarketLiveSnapshots(
-        ctx.supabaseService,
-        mapped.map((m) => m.id)
-      );
-      const merged = mergeMarketsWithLive(mapped, liveByMarket);
-      return onlyOpen ? merged.filter((m) => m.state === "open") : merged;
+
+      const responseRows: Array<z.infer<typeof marketOutput>> = [];
+
+      if (selectedProviders.includes("polymarket")) {
+        const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
+          onlyOpen,
+          limit: onlyOpen ? 500 : 800,
+        });
+        const mapped = rows.map(mapPolymarketMarket);
+        const liveByMarket = await fetchMarketLiveSnapshots(
+          ctx.supabaseService,
+          mapped.map((m) => m.id)
+        );
+        const merged = mergeMarketsWithLive(mapped, liveByMarket);
+        responseRows.push(...(onlyOpen ? merged.filter((m) => m.state === "open") : merged));
+      }
+
+      if (selectedProviders.includes("limitless")) {
+        const adapter = getVenueAdapter("limitless");
+        if (adapter.isEnabled()) {
+          const rows = await adapter.listMarketsSnapshot({
+            onlyOpen,
+            limit: onlyOpen ? 400 : 700,
+          });
+          if (rows.length > 0) {
+            void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
+              // Best effort only for canonical table sync.
+            });
+            responseRows.push(...rows.map((row) => mapVenueMarketToMarketOutput(row)));
+          }
+        }
+      }
+
+      const deduped = new Map<string, z.infer<typeof marketOutput>>();
+      for (const row of responseRows) {
+        const key = row.canonicalMarketId ?? `${row.provider ?? "polymarket"}:${row.id}`;
+        const existing = deduped.get(key);
+        if (!existing) {
+          deduped.set(key, row);
+          continue;
+        }
+        if ((row.volume ?? 0) > (existing.volume ?? 0)) {
+          deduped.set(key, row);
+        }
+      }
+
+      return Array.from(deduped.values()).sort((a, b) => Number(b.volume ?? 0) - Number(a.volume ?? 0));
     }),
 
   getMarket: publicProcedure
-    .input(z.object({ marketId: z.string().min(1) }))
+    .input(z.object({ marketId: z.string().min(1), provider: z.enum(["polymarket", "limitless"]).optional() }))
     .output(marketOutput)
     .query(async ({ ctx, input }) => {
-      const row = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+
+      if (ref.provider === "polymarket") {
+        const row = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
+        }
+        const mapped = mapPolymarketMarket(row);
+        const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
+        return mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+      }
+
+      const adapter = getVenueAdapter(ref.provider);
+      if (!adapter.isEnabled()) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Market provider unavailable" });
+      }
+
+      const row = await adapter.getMarketById(ref.providerMarketId);
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
-      const mapped = mapPolymarketMarket(row);
-      const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
-      return mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+      void upsertVenueMarketsToCatalog(ctx.supabaseService, [row]).catch(() => {
+        // Canonical table sync is best effort.
+      });
+      return mapVenueMarketToMarketOutput(row);
     }),
 
   searchSemantic: publicProcedure
@@ -950,6 +1328,8 @@ export const marketRouter = router({
         query: z.string().min(2).max(256),
         limit: z.number().int().positive().max(30).optional(),
         onlyOpen: z.boolean().optional(),
+        providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
+        providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
       })
     )
     .output(marketListV1Output)
@@ -957,62 +1337,111 @@ export const marketRouter = router({
       const limit = Math.max(1, Math.min(30, Number(input.limit ?? 15)));
       const onlyOpen = input.onlyOpen ?? true;
       const query = input.query.trim();
+      const selectedProviders = parseProviderSelection({
+        providers: input.providers,
+        providerFilter: input.providerFilter,
+      });
       if (query.length < 2) {
         return { apiVersion: "v1", items: [] };
       }
 
-      const primary = await searchMirroredPolymarketMarkets(ctx.supabaseService, query, limit * 8);
-      const fallback =
-        primary.length > 0
-          ? []
-          : await listMirroredPolymarketMarkets(ctx.supabaseService, { onlyOpen: true, limit: 300 });
+      const scoredItems: Array<{ market: z.infer<typeof marketOutput>; score: number }> = [];
 
-      const byId = new Map<string, PolymarketMarket>();
-      for (const row of [...primary, ...fallback]) {
-        if (onlyOpen && row.state !== "open") continue;
-        byId.set(row.id, row);
-      }
-      const candidates = Array.from(byId.values());
-      if (candidates.length === 0) {
-        return { apiVersion: "v1", items: [] };
-      }
+      if (selectedProviders.includes("polymarket")) {
+        const primary = await searchMirroredPolymarketMarkets(ctx.supabaseService, query, limit * 8);
+        const fallback =
+          primary.length > 0
+            ? []
+            : await listMirroredPolymarketMarkets(ctx.supabaseService, { onlyOpen: true, limit: 300 });
 
-      const marketIds = candidates.map((m) => m.id);
-      const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, marketIds);
+        const byId = new Map<string, PolymarketMarket>();
+        for (const row of [...primary, ...fallback]) {
+          if (onlyOpen && row.state !== "open") continue;
+          byId.set(row.id, row);
+        }
+        const candidates = Array.from(byId.values());
+        if (candidates.length > 0) {
+          const marketIds = candidates.map((m) => m.id);
+          const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, marketIds);
 
-      const vectorByMarket = new Map<string, number[]>();
-      const chunkSize = 200;
-      for (let i = 0; i < marketIds.length; i += chunkSize) {
-        const chunk = marketIds.slice(i, i + chunkSize);
-        const { data } = await ctx.supabaseService
-          .from("market_embeddings")
-          .select("market_id, embedding")
-          .in("market_id", chunk);
-        for (const row of (data ?? []) as MarketEmbeddingRow[]) {
-          const marketId = row.market_id.trim();
-          const vector = parseVector(row.embedding);
-          if (marketId && vector) vectorByMarket.set(marketId, vector);
+          const vectorByMarket = new Map<string, number[]>();
+          const chunkSize = 200;
+          for (let i = 0; i < marketIds.length; i += chunkSize) {
+            const chunk = marketIds.slice(i, i + chunkSize);
+            const { data } = await ctx.supabaseService
+              .from("market_embeddings")
+              .select("market_id, embedding")
+              .in("market_id", chunk);
+            for (const row of (data ?? []) as MarketEmbeddingRow[]) {
+              const marketId = row.market_id.trim();
+              const vector = parseVector(row.embedding);
+              if (marketId && vector) vectorByMarket.set(marketId, vector);
+            }
+          }
+
+          const queryVector = await getQueryEmbedding(query);
+          const mapped = candidates.map(mapPolymarketMarket);
+          const merged = mergeMarketsWithLive(mapped, liveByMarket);
+
+          scoredItems.push(
+            ...merged.map((market) => {
+              const raw = byId.get(market.id);
+              const lex = raw ? lexicalScore(query, raw) : 0;
+              const semanticVector = queryVector ? vectorByMarket.get(market.id) ?? null : null;
+              const semantic =
+                queryVector && semanticVector ? clamp01((dot(queryVector, semanticVector) + 1) / 2) : 0;
+              const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
+              const score =
+                queryVector && semanticVector
+                  ? clamp01(semantic * 0.65 + lex * 0.25 + volumeBoost * 0.1)
+                  : clamp01(lex * 0.8 + volumeBoost * 0.2);
+              return { market, score };
+            })
+          );
         }
       }
 
-      const queryVector = await getQueryEmbedding(query);
-      const mapped = candidates.map(mapPolymarketMarket);
-      const merged = mergeMarketsWithLive(mapped, liveByMarket);
+      if (selectedProviders.includes("limitless")) {
+        const adapter = getVenueAdapter("limitless");
+        if (adapter.isEnabled()) {
+          const rows = await adapter.searchMarkets(query, Math.max(limit * 6, 60));
+          const filtered = onlyOpen ? rows.filter((row) => row.state === "open") : rows;
+          if (filtered.length > 0) {
+            void upsertVenueMarketsToCatalog(ctx.supabaseService, filtered).catch(() => {
+              // Best effort sync.
+            });
+          }
+          scoredItems.push(
+            ...filtered.map((row) => {
+              const market = mapVenueMarketToMarketOutput(row);
+              const lex = lexicalScoreText(
+                query,
+                `${row.title} ${row.description ?? ""} ${row.category ?? ""} ${row.outcomes
+                  .map((outcome) => outcome.title)
+                  .join(" ")}`
+              );
+              const volumeBoost = clamp01(Math.log10(Math.max(0, row.volume) + 1) / 6);
+              return {
+                market,
+                score: clamp01(lex * 0.8 + volumeBoost * 0.2),
+              };
+            })
+          );
+        }
+      }
 
-      const items = merged
-        .map((market) => {
-          const raw = byId.get(market.id);
-          const lex = raw ? lexicalScore(query, raw) : 0;
-          const semanticVector = queryVector ? vectorByMarket.get(market.id) ?? null : null;
-          const semantic =
-            queryVector && semanticVector ? clamp01((dot(queryVector, semanticVector) + 1) / 2) : 0;
-          const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
-          const score =
-            queryVector && semanticVector
-              ? clamp01(semantic * 0.65 + lex * 0.25 + volumeBoost * 0.1)
-              : clamp01(lex * 0.8 + volumeBoost * 0.2);
-          return { market, score };
-        })
+      const deduped = new Map<string, { market: z.infer<typeof marketOutput>; score: number }>();
+      for (const item of scoredItems) {
+        const key =
+          item.market.canonicalMarketId ??
+          `${item.market.provider ?? "polymarket"}:${item.market.providerMarketId ?? item.market.id}`;
+        const existing = deduped.get(key);
+        if (!existing || item.score > existing.score) {
+          deduped.set(key, item);
+        }
+      }
+
+      const items = Array.from(deduped.values())
         .sort((a, b) => b.score - a.score)
         .slice(0, limit);
 
@@ -1104,12 +1533,26 @@ export const marketRouter = router({
       };
     }),
 
-  checkTradeAccess: publicProcedure.output(tradeAccessOutput).query(async ({ ctx }) => {
-    ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
-    const ip = getClientIpFromRequest(ctx.req);
-    const cacheKey = `access:${ip ?? "unknown"}`;
-    return getTradeAccessStatus(cacheKey, ip);
-  }),
+  checkTradeAccess: publicProcedure
+    .input(z.object({ provider: z.enum(["polymarket", "limitless"]).optional() }).optional())
+    .output(tradeAccessOutput)
+    .query(async ({ ctx, input }) => {
+      ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
+      const provider = (input?.provider ?? "polymarket") as VenueProvider;
+      const adapter = getVenueAdapter(provider);
+      if (!adapter.isEnabled()) {
+        return {
+          status: "BLOCKED_REGION" as const,
+          allowed: false,
+          reasonCode: "PROVIDER_DISABLED",
+          message: "Trading provider is disabled.",
+          checkedAt: new Date().toISOString(),
+        };
+      }
+      const ip = getClientIpFromRequest(ctx.req);
+      const cacheKey = `access:${provider}:${ip ?? "unknown"}`;
+      return adapter.checkTradeAccess({ cacheKey, requestIp: ip });
+    }),
 
   relaySignedOrder: publicProcedure
     .input(relaySignedOrderInput)
@@ -1121,10 +1564,27 @@ export const marketRouter = router({
       }
       ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
 
-      applyRelayRateLimit(authUser.id);
+      const provider = (input.provider ?? "polymarket") as VenueProvider;
+      const adapter = getVenueAdapter(provider);
+      if (!adapter.isEnabled()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "PROVIDER_DISABLED" });
+      }
+
       const ip = getClientIpFromRequest(ctx.req);
-      const cacheKey = `relay:${authUser.id}:${ip ?? "unknown"}`;
-      const access = await getTradeAccessStatus(cacheKey, ip);
+
+      const relayRate = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `relay:${provider}:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 25,
+        windowSeconds: 60,
+      });
+      if (!relayRate.allowed) {
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "ORDER_RELAY_RATE_LIMITED" });
+      }
+
+      const access = await adapter.checkTradeAccess({
+        cacheKey: `relay_access:${provider}:${authUser.id}:${ip ?? "unknown"}`,
+        requestIp: ip,
+      });
       if (!access.allowed) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -1132,105 +1592,109 @@ export const marketRouter = router({
         });
       }
 
-      const makerAddress = input.signedOrder.maker;
-      if (typeof makerAddress !== "string" || makerAddress.trim().length === 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "SIGNED_ORDER_MAKER_MISSING" });
-      }
-
-      const orderPayload = {
+      const orderBody = JSON.stringify({
         order: input.signedOrder,
         owner: input.apiCreds.key,
         orderType: input.orderType,
-      };
-      const orderBody = JSON.stringify(orderPayload);
+        provider,
+      });
       if (orderBody.length > 16 * 1024) {
         throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "SIGNED_ORDER_TOO_LARGE" });
       }
 
-      const timestamp = Math.floor(Date.now() / 1000);
-      const requestPath = "/order";
-      const signature = buildL2Signature(
-        input.apiCreds.secret,
-        timestamp,
-        "POST",
-        requestPath,
-        orderBody
+      const marketRef = parseVenueMarketRef(
+        input.marketId ??
+          (typeof input.signedOrder.market === "string"
+            ? String(input.signedOrder.market)
+            : typeof input.signedOrder.market_id === "string"
+              ? String(input.signedOrder.market_id)
+              : ""),
+        provider
+      );
+      const marketRefId = await resolveMarketCatalogRefId(
+        ctx.supabaseService,
+        marketRef.provider,
+        marketRef.providerMarketId
       );
 
-      const timeoutMs = Math.max(2000, Number(process.env.POLYMARKET_RELAY_TIMEOUT_MS ?? 10000));
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const response = await fetch(`${getClobBaseUrl()}/order`, {
-          method: "POST",
-          cache: "no-store",
-          signal: controller.signal,
-          headers: {
-            "content-type": "application/json",
-            accept: "application/json",
-            "POLY_ADDRESS": makerAddress,
-            "POLY_SIGNATURE": signature,
-            "POLY_TIMESTAMP": String(timestamp),
-            "POLY_API_KEY": input.apiCreds.key,
-            "POLY_PASSPHRASE": input.apiCreds.passphrase,
-            ...(ip
-              ? {
-                  "x-forwarded-for": ip,
-                  "x-real-ip": ip,
-                  "cf-connecting-ip": ip,
-                }
-              : {}),
-          },
-          body: orderBody,
-        });
-        const payload = (await response.json().catch(() => null)) as JsonValue | null;
-        const payloadRec =
-          payload && typeof payload === "object" && !Array.isArray(payload)
-            ? (payload as Record<string, JsonValue | undefined>)
-            : null;
-        if (!response.ok) {
-          const payloadError =
-            payloadRec && typeof payloadRec.error === "string"
-              ? payloadRec.error
-              : `ORDER_RELAY_HTTP_${response.status}`;
-          return {
-            success: false,
-            status: response.status,
-            error: payloadError,
-            payload: payload ?? undefined,
-          };
-        }
-        return {
-          success: true,
-          status: response.status,
-          payload: payload ?? undefined,
-        };
-      } catch (err) {
-        const msg = toErrorMessage(err);
+      const orderHash = buildOrderHash(orderBody);
+      const pendingAudit = await createRelayAuditPending(ctx.supabaseService, {
+        provider,
+        userId: authUser.id,
+        marketRefId,
+        idempotencyKey: input.idempotencyKey,
+        clientOrderId: input.clientOrderId,
+        orderHash,
+        requestIp: ip,
+      });
+
+      if (pendingAudit.kind === "duplicate") {
         return {
           success: false,
-          status: 0,
-          error: msg.includes("aborted") ? "ORDER_RELAY_TIMEOUT" : msg,
+          status: pendingAudit.httpStatus ?? 409,
+          error: "ORDER_RELAY_DUPLICATE",
         };
-      } finally {
-        clearTimeout(timeout);
       }
+
+      const apiCreds: VenueApiCreds = {
+        key: input.apiCreds.key,
+        secret: input.apiCreds.secret,
+        passphrase: input.apiCreds.passphrase,
+      };
+
+      const relay = await adapter.relaySignedOrder({
+        signedOrder: input.signedOrder as Record<string, unknown>,
+        orderType: input.orderType,
+        apiCreds,
+        makerAddress:
+          typeof input.signedOrder.maker === "string" ? String(input.signedOrder.maker) : null,
+        clientOrderId: input.clientOrderId,
+        requestIp: ip,
+      });
+
+      if (relay.success) {
+        await finalizeRelayAudit(ctx.supabaseService, pendingAudit.id, {
+          status: "success",
+          httpStatus: relay.status,
+        });
+      } else {
+        await finalizeRelayAudit(ctx.supabaseService, pendingAudit.id, {
+          status: relay.status >= 400 ? "rejected" : "failed",
+          httpStatus: relay.status,
+          errorCode: relay.error ?? null,
+          errorMessage: relay.error ?? null,
+        });
+      }
+
+      return {
+        success: relay.success,
+        status: relay.status,
+        payload: relay.payload as JsonValue | undefined,
+        error: relay.error,
+      };
     }),
 
   generateMarketContext: publicProcedure
-    .input(z.object({ marketId: z.string().min(1) }))
+    .input(z.object({ marketId: z.string().min(1), provider: z.enum(["polymarket", "limitless"]).optional() }))
     .output(marketContextOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
-      const market = await getMarketFromMirrorOrLive(supabaseService, input.marketId);
-      if (!market) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-      }
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const contextMarketKey =
+        ref.provider === "polymarket"
+          ? ref.providerMarketId
+          : venueToCanonicalId(ref.provider, ref.providerMarketId);
+
+      const market =
+        ref.provider === "polymarket"
+          ? await getMarketFromMirrorOrLive(supabaseService, ref.providerMarketId)
+          : await getVenueAdapter(ref.provider).getMarketById(ref.providerMarketId);
+      if (!market) throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
 
       const existing = await supabaseService
         .from("market_context")
         .select("market_id, context, sources, updated_at")
-        .eq("market_id", input.marketId)
+        .eq("market_id", contextMarketKey)
         .maybeSingle();
       const existingRow = existing.data as MarketContextRow | null;
       if (!existing.error && existingRow?.context) {
@@ -1245,15 +1709,21 @@ export const marketRouter = router({
       }
 
       const generated = await generateMarketContext({
-        marketId: input.marketId,
+        marketId: contextMarketKey,
         title: market.title,
         description: market.description,
-        source: market.sourceUrl,
+        source: market.sourceUrl ?? null,
       });
       const updatedAt = new Date().toISOString();
-      const upsert = await supabaseService.from("market_context").upsert(
+      const marketRefId = await resolveMarketCatalogRefId(
+        ctx.supabaseService,
+        ref.provider,
+        ref.providerMarketId
+      );
+      const upsert = await (supabaseService as any).from("market_context").upsert(
         {
-          market_id: input.marketId,
+          market_id: contextMarketKey,
+          market_ref_id: marketRefId,
           context: generated.context,
           sources: generated.sources,
           updated_at: updatedAt,
@@ -1264,7 +1734,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: upsert.error.message });
       }
       return {
-        marketId: input.marketId,
+        marketId: contextMarketKey,
         context: generated.context,
         sources: generated.sources,
         updatedAt,
@@ -1290,15 +1760,28 @@ export const marketRouter = router({
     }),
 
   setBookmark: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), bookmarked: z.boolean() }))
+    .input(
+      z.object({
+        marketId: z.string().min(1),
+        provider: z.enum(["polymarket", "limitless"]).optional(),
+        bookmarked: z.boolean(),
+      })
+    )
     .output(z.object({ marketId: z.string(), bookmarked: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const marketRefId = await resolveMarketCatalogRefId(
+        ctx.supabaseService,
+        ref.provider,
+        ref.providerMarketId
+      );
       if (input.bookmarked) {
-        const ins = await supabaseService.from("market_bookmarks").insert({
+        const ins = await (supabaseService as any).from("market_bookmarks").insert({
           user_id: authUser.id,
           market_id: input.marketId,
+          market_ref_id: marketRefId,
         });
         if (ins.error && !String(ins.error.message).toLowerCase().includes("duplicate")) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: ins.error.message });
@@ -1315,18 +1798,116 @@ export const marketRouter = router({
     }),
 
   getPriceCandles: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(1000).optional() }))
+    .input(
+      z.object({
+        marketId: z.string().min(1),
+        provider: z.enum(["polymarket", "limitless"]).optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+      })
+    )
     .output(z.array(priceCandleOutput))
     .query(async ({ ctx, input }) => {
-      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
-      if (!market) return [];
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
       const limit = input.limit ?? 200;
-      const localCandles = await listLocalCandles(ctx.supabaseService, market.id, limit);
-      if (localCandles.length > 0) {
-        return localCandles;
+
+      if (ref.provider === "polymarket") {
+        const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+        if (!market) return [];
+
+        const marketRefId = await resolveMarketCatalogRefId(
+          ctx.supabaseService,
+          ref.provider,
+          ref.providerMarketId
+        );
+        if (marketRefId) {
+          const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
+          if (canonical.length > 0) return canonical;
+        }
+
+        const localCandles = await listLocalCandles(ctx.supabaseService, market.id, limit);
+        if (localCandles.length > 0) return localCandles;
+
+        const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
+        if (withToken.length === 0) {
+          const fallback = market.outcomes[0]?.price ?? 0.5;
+          return [
+            {
+              bucket: new Date().toISOString(),
+              outcomeId: market.outcomes[0]?.id ?? null,
+              outcomeTitle: market.outcomes[0]?.title ?? null,
+              outcomeColor: null,
+              open: fallback,
+              high: fallback,
+              low: fallback,
+              close: fallback,
+              volume: market.volume,
+              tradesCount: 0,
+            },
+          ];
+        }
+
+        const isBinary = market.outcomes.length <= 2;
+        const yesOutcome =
+          market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
+          market.outcomes.find((o) => o.sortOrder === 0) ??
+          market.outcomes[0] ??
+          null;
+        const targetOutcomes = isBinary ? withToken.filter((o) => o.id === yesOutcome?.id) : withToken;
+
+        const histories = await Promise.all(
+          targetOutcomes.map(async (o) => ({
+            outcome: o,
+            history: await getPolymarketPriceHistory(String(o.tokenId)),
+          }))
+        );
+
+        const candles = histories
+          .flatMap(({ outcome, history }) => {
+            const deduped = history
+              .slice()
+              .sort((a, b) => a.ts - b.ts)
+              .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
+
+            return deduped.map((point, idx) => {
+              const prev = deduped[idx - 1] ?? point;
+              const open = prev.price;
+              const close = point.price;
+              return {
+                bucket: new Date(point.ts * 1000).toISOString(),
+                outcomeId: outcome.id,
+                outcomeTitle: outcome.title,
+                outcomeColor: null,
+                open,
+                high: Math.max(open, close),
+                low: Math.min(open, close),
+                close,
+                volume: 0,
+                tradesCount: 0,
+              };
+            });
+          })
+          .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
+        if (candles.length === 0) return [];
+        return candles.slice(Math.max(0, candles.length - limit));
       }
-      const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
-      if (withToken.length === 0) {
+
+      const adapter = getVenueAdapter(ref.provider);
+      if (!adapter.isEnabled()) return [];
+      const market = await adapter.getMarketById(ref.providerMarketId);
+      if (!market) return [];
+
+      const marketRefId = await resolveMarketCatalogRefId(
+        ctx.supabaseService,
+        ref.provider,
+        ref.providerMarketId
+      );
+      if (marketRefId) {
+        const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
+        if (canonical.length > 0) return canonical;
+      }
+
+      const history = await adapter.getPriceHistory(market, limit * 3);
+      if (history.length === 0) {
         const fallback = market.outcomes[0]?.price ?? 0.5;
         return [
           {
@@ -1344,67 +1925,88 @@ export const marketRouter = router({
         ];
       }
 
-      const isBinary = market.outcomes.length <= 2;
-      const yesOutcome =
-        market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
-        market.outcomes.find((o) => o.sortOrder === 0) ??
-        market.outcomes[0] ??
-        null;
-      const targetOutcomes = isBinary
-        ? withToken.filter((o) => o.id === yesOutcome?.id)
-        : withToken;
-
-      const histories = await Promise.all(
-        targetOutcomes.map(async (o) => ({
-          outcome: o,
-          history: await getPolymarketPriceHistory(String(o.tokenId)),
-        }))
-      );
-
-      const candles = histories
-        .flatMap(({ outcome, history }) => {
-          const deduped = history
-            .slice()
-            .sort((a, b) => a.ts - b.ts)
-            .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
-
-          return deduped.map((point, idx) => {
-            const prev = deduped[idx - 1] ?? point;
-            const open = prev.price;
-            const close = point.price;
-            return {
-              bucket: new Date(point.ts * 1000).toISOString(),
-              outcomeId: outcome.id,
-              outcomeTitle: outcome.title,
-              outcomeColor: null,
-              open,
-              high: Math.max(open, close),
-              low: Math.min(open, close),
-              close,
-              volume: 0,
-              tradesCount: 0,
-            };
-          });
-        })
-        .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
-      if (candles.length === 0) return [];
+      const deduped = history
+        .slice()
+        .sort((a, b) => a.ts - b.ts)
+        .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
+      const outcome = market.outcomes[0] ?? null;
+      const candles = deduped.map((point, idx) => {
+        const prev = deduped[idx - 1] ?? point;
+        const open = prev.price;
+        const close = point.price;
+        return {
+          bucket: new Date(point.ts * 1000).toISOString(),
+          outcomeId: outcome?.id ?? null,
+          outcomeTitle: outcome?.title ?? null,
+          outcomeColor: null,
+          open,
+          high: Math.max(open, close),
+          low: Math.min(open, close),
+          close,
+          volume: 0,
+          tradesCount: 0,
+        };
+      });
       return candles.slice(Math.max(0, candles.length - limit));
     }),
 
   getPublicTrades: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(200).optional() }))
+    .input(
+      z.object({
+        marketId: z.string().min(1),
+        provider: z.enum(["polymarket", "limitless"]).optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      })
+    )
     .output(z.array(publicTradeOutput))
     .query(async ({ ctx, input }) => {
-      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+
+      if (ref.provider === "polymarket") {
+        const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+        if (!market) return [];
+        const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
+        const outcomesByTitle = new Map(
+          market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
+        );
+        return rows.map((t) => {
+          const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
+          const outcome = outcomesByTitle.get(normalizedOutcome);
+          const action = t.side === "SELL" ? "sell" : "buy";
+          const yn =
+            normalizedOutcome === "yes"
+              ? ("YES" as const)
+              : normalizedOutcome === "no"
+                ? ("NO" as const)
+                : null;
+          return {
+            id: t.id,
+            marketId: market.id,
+            action,
+            outcome: yn,
+            outcomeId: outcome?.id ?? null,
+            outcomeTitle: outcome?.title ?? (t.outcome ?? null),
+            collateralGross: t.size * t.price,
+            sharesDelta: t.size,
+            priceBefore: t.price,
+            priceAfter: t.price,
+            createdAt: new Date(t.timestamp * 1000).toISOString(),
+          };
+        });
+      }
+
+      const adapter = getVenueAdapter(ref.provider);
+      if (!adapter.isEnabled()) return [];
+      const market = await adapter.getMarketById(ref.providerMarketId);
       if (!market) return [];
-      const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
+      const rows = await adapter.getPublicTrades(market, input.limit ?? 50);
       const outcomesByTitle = new Map(
-        market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
+        market.outcomes.map((outcome) => [outcome.title.trim().toLowerCase(), outcome] as const)
       );
-      return rows.map((t) => {
-        const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
+      return rows.map((trade) => {
+        const normalizedOutcome = (trade.outcome ?? "").trim().toLowerCase();
         const outcome = outcomesByTitle.get(normalizedOutcome);
-        const action = t.side === "SELL" ? "sell" : "buy";
+        const action = trade.side === "SELL" ? "sell" : "buy";
         const yn =
           normalizedOutcome === "yes"
             ? ("YES" as const)
@@ -1412,17 +2014,17 @@ export const marketRouter = router({
               ? ("NO" as const)
               : null;
         return {
-          id: t.id,
-          marketId: market.id,
+          id: trade.id,
+          marketId: venueToCanonicalId(ref.provider, ref.providerMarketId),
           action,
           outcome: yn,
           outcomeId: outcome?.id ?? null,
-          outcomeTitle: outcome?.title ?? (t.outcome ?? null),
-          collateralGross: t.size * t.price,
-          sharesDelta: t.size,
-          priceBefore: t.price,
-          priceAfter: t.price,
-          createdAt: new Date(t.timestamp * 1000).toISOString(),
+          outcomeTitle: outcome?.title ?? (trade.outcome ?? null),
+          collateralGross: trade.size * trade.price,
+          sharesDelta: trade.size,
+          priceBefore: trade.price,
+          priceAfter: trade.price,
+          createdAt: new Date(trade.timestamp * 1000).toISOString(),
         };
       });
     }),
@@ -1486,18 +2088,32 @@ export const marketRouter = router({
     }),
 
   postMarketComment: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), body: z.string().min(1).max(2000), parentId: z.string().nullable().optional() }))
+    .input(
+      z.object({
+        marketId: z.string().min(1),
+        provider: z.enum(["polymarket", "limitless"]).optional(),
+        body: z.string().min(1).max(2000),
+        parentId: z.string().nullable().optional(),
+      })
+    )
     .output(marketCommentOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       const body = input.body.trim();
       if (!body) throw new TRPCError({ code: "BAD_REQUEST", message: "Comment body is required" });
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const marketRefId = await resolveMarketCatalogRefId(
+        ctx.supabaseService,
+        ref.provider,
+        ref.providerMarketId
+      );
 
-      const inserted = await supabaseService
+      const inserted = await (supabaseService as any)
         .from("market_comments")
         .insert({
           market_id: input.marketId,
+          market_ref_id: marketRefId,
           user_id: authUser.id,
           parent_id: input.parentId ?? null,
           body,
@@ -1587,10 +2203,20 @@ export const marketRouter = router({
 
       const rows = (data ?? []) as MarketCommentRow[];
       const ids = Array.from(new Set(rows.map((r) => String(r.market_id))));
-      const markets = await Promise.all(
-        ids.map(async (id) => [id, await getMarketFromMirrorOrLive(supabaseService, id)] as const)
+      const marketTitles = await Promise.all(
+        ids.map(async (id) => {
+          const ref = parseVenueMarketRef(id);
+          if (ref.provider === "polymarket") {
+            const market = await getMarketFromMirrorOrLive(supabaseService, ref.providerMarketId);
+            return [id, market?.title ?? null] as const;
+          }
+          const adapter = getVenueAdapter(ref.provider);
+          if (!adapter.isEnabled()) return [id, null] as const;
+          const market = await adapter.getMarketById(ref.providerMarketId);
+          return [id, market?.title ?? null] as const;
+        })
       );
-      const marketsById = new Map(markets);
+      const marketTitlesById = new Map<string, string | null>(marketTitles);
 
       const likeCountsRes = await supabaseService
         .from("market_comment_likes")
@@ -1603,8 +2229,7 @@ export const marketRouter = router({
       }
 
       return rows.map((r) => {
-        const market = marketsById.get(String(r.market_id));
-        const title = market?.title ?? "Market";
+        const title = marketTitlesById.get(String(r.market_id)) ?? "Market";
         return {
           id: String(r.id),
           marketId: String(r.market_id),

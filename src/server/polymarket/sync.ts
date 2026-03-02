@@ -1,6 +1,7 @@
 import { getSupabaseServiceClient } from "../supabase/client";
 import { listPolymarketMarketsSnapshot } from "./client";
 import { upsertMirroredPolymarketMarkets } from "./mirror";
+import { upsertProviderSyncState } from "../venues/catalogStore";
 
 export type PolymarketSyncScope = "open" | "all";
 
@@ -47,6 +48,14 @@ const writeSyncState = async (
     },
     { onConflict: "scope" }
   );
+
+  await upsertProviderSyncState(supabaseService, {
+    provider: "polymarket",
+    scope: payload.scope,
+    startedAt: payload.startedAt,
+    successAt: payload.successAt,
+    errorMessage: payload.errorMessage,
+  });
 };
 
 export async function syncPolymarketMirror(scope: PolymarketSyncScope = "open"): Promise<SyncResult> {

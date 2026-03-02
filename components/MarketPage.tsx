@@ -85,7 +85,12 @@ interface MarketPageProps {
   onResolveOutcome?: (params: { marketId: string; outcome: 'YES' | 'NO' }) => Promise<void>;
   comments: Comment[];
   onOpenUserProfile?: (userId: string) => void;
-  onPostComment: (params: { marketId: string; text: string; parentId?: string | null }) => Promise<void>;
+  onPostComment: (params: {
+    marketId: string;
+    provider?: "polymarket" | "limitless";
+    text: string;
+    parentId?: string | null;
+  }) => Promise<void>;
   onToggleCommentLike?: (commentId: string) => Promise<void>;
   userPositions?: Position[];
   lang?: 'RU' | 'EN';
@@ -431,7 +436,12 @@ const MarketPage: React.FC<MarketPageProps> = ({
     setCommentSendError(null);
     setCommentText('');
     try {
-      await onPostComment({ marketId: market.id, text, parentId: replyTo?.id ?? null });
+      await onPostComment({
+        marketId: market.id,
+        provider: market.provider,
+        text,
+        parentId: replyTo?.id ?? null,
+      });
     } catch (err) {
       console.error("postMarketComment failed", err);
       setCommentSendError(getErrorMessage(err, 'Не удалось отправить комментарий', 'Failed to post comment', lang));
@@ -616,6 +626,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const sourceLabel = lang === "RU" ? "Источник" : "Source";
   const sourceValue = (market.source ?? "").trim();
   const sourceIsUrl = /^https?:\/\//i.test(sourceValue);
+  const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
 
   const renderOutcomeBadge = () => {
     if (!winningSide) return null;
@@ -738,6 +749,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
             <div className="mb-2 pr-12">
               <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-zinc-100 leading-tight mb-3">{localizedTitle}</h1>
               <div className="flex flex-wrap items-center gap-4 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                <span className="inline-flex items-center rounded-full border border-zinc-800 bg-zinc-900/50 px-2 py-1 text-zinc-200">
+                  {providerLabel}
+                </span>
                 <span className="flex items-center gap-2 text-zinc-200 font-mono"><Clock size={14}/> {timeLeft}</span>
                 <span className="flex items-center gap-2"><ShieldCheck size={14}/> 
                   {lang === 'RU' ? 'Объем' : 'Vol'}: {market.volume}

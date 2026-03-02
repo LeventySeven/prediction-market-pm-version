@@ -402,6 +402,12 @@ const getSupabaseApiKey = (): string | null =>
   getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY") ??
   getEnv("SUPABASE_ANON_KEY");
 
+const toBool = (value: string | null): boolean => {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+};
+
 const normalizeBaseUrl = (raw: string): string => raw.replace(/\/+$/, "");
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -750,6 +756,17 @@ async function main() {
           : "supabase db dump (linked Supabase project)";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const requireSqlDump = toBool(getEnv("SUPABASE_CONTEXT_REQUIRE_SQL_DUMP")) || toBool(getEnv("CI"));
+    if (requireSqlDump) {
+      throw new Error(
+        [
+          "Supabase SQL dump mode is required in this environment; OpenAPI fallback is disabled.",
+          "Set SUPABASE_DB_URL (or SUPABASE_DB_PASSWORD + NEXT_PUBLIC_SUPABASE_URL project ref) and ensure CLI auth is configured.",
+          "",
+          `Original error: ${message}`,
+        ].join("\n")
+      );
+    }
     const canFallback = Boolean(supabaseUrl && apiKey);
     if (!canFallback) {
       const dockerHint = isDockerRequiredError(message)

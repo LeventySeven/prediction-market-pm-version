@@ -1,6 +1,6 @@
 # Supabase DB Context (public)
 
-Generated at: `2026-03-01T21:11:15.781Z`
+Generated at: `2026-03-02T11:27:23.042Z`
 Linked Project Ref: `lumqdmcoeyosimpszrrn`
 Source: `Supabase REST OpenAPI fallback (CLI requires Docker)`
 Schema dump file: `supabase/.temp/public_schema.dump.sql`
@@ -8,7 +8,7 @@ Schema dump file: `supabase/.temp/public_schema.dump.sql`
 ## Summary
 - Extensions: **0**
 - Enums: **0**
-- Tables: **9**
+- Tables: **13**
 - Views: **0**
 - Materialized views: **0**
 - Functions: **0**
@@ -42,6 +42,26 @@ Schema dump file: `supabase/.temp/public_schema.dump.sql`
 - `sources`: `unknown(jsonb)` — NOT NULL
 - `updated_at`: `string(timestamp with time zone)` — NOT NULL
 
+### `market_embeddings`
+- Columns: **4**
+- `embedding`: `string(public.vector(1536))` — NOT NULL
+- `market_id`: `string(text)` — NOT NULL
+- `model`: `string(text)` — NOT NULL
+- `updated_at`: `string(timestamp with time zone)` — NOT NULL
+
+### `polymarket_candles_1m`
+- Columns: **10**
+- `bucket_start`: `string(timestamp with time zone)` — NOT NULL
+- `close`: `number(numeric)` — NOT NULL
+- `high`: `number(numeric)` — NOT NULL
+- `low`: `number(numeric)` — NOT NULL
+- `market_id`: `string(text)` — NOT NULL
+- `open`: `number(numeric)` — NOT NULL
+- `source_ts_max`: `string(timestamp with time zone)`
+- `trades_count`: `integer(integer)` — NOT NULL
+- `updated_at`: `string(timestamp with time zone)` — NOT NULL
+- `volume`: `number(numeric)` — NOT NULL
+
 ### `polymarket_market_cache`
 - Columns: **19**
 - `category`: `string(text)`
@@ -64,6 +84,21 @@ Schema dump file: `supabase/.temp/public_schema.dump.sql`
 - `title`: `string(text)` — NOT NULL
 - `volume`: `number(numeric)` — NOT NULL
 
+### `polymarket_market_live`
+- Columns: **12**
+- `best_ask`: `number(numeric)` — NOT NULL
+- `best_bid`: `number(numeric)` — NOT NULL
+- `ingested_at`: `string(timestamp with time zone)` — NOT NULL
+- `last_trade_price`: `number(numeric)` — NOT NULL
+- `last_trade_size`: `number(numeric)` — NOT NULL
+- `market_id`: `string(text)` — NOT NULL
+- `mid`: `number(numeric)` — NOT NULL
+- `open_interest`: `number(numeric)`
+- `rolling_24h_volume`: `number(numeric)` — NOT NULL
+- `source_seq`: `integer(bigint)`
+- `source_ts`: `string(timestamp with time zone)` — NOT NULL
+- `updated_at`: `string(timestamp with time zone)` — NOT NULL
+
 ### `polymarket_sync_state`
 - Columns: **5**
 - `last_error`: `string(text)`
@@ -71,6 +106,17 @@ Schema dump file: `supabase/.temp/public_schema.dump.sql`
 - `last_success_at`: `string(timestamp with time zone)`
 - `scope`: `string(text)` — NOT NULL
 - `updated_at`: `string(timestamp with time zone)` — NOT NULL
+
+### `user_events`
+- Columns: **8**
+- `created_at`: `string(timestamp with time zone)` — NOT NULL
+- `event_type`: `string(text)` — NOT NULL
+- `event_value`: `number(numeric)`
+- `id`: `integer(bigint)` — NOT NULL
+- `market_id`: `string(text)` — NOT NULL
+- `metadata`: `unknown(jsonb)` — NOT NULL
+- `session_id`: `string(text)` — NOT NULL
+- `user_id`: `string(uuid)`
 
 ### `user_referrals`
 - Columns: **4**

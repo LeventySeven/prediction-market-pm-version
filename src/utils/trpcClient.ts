@@ -1,6 +1,7 @@
 import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
 import superjson from "superjson";
 import type { AppRouter } from "@/src/server/trpc/router";
+import { getCsrfCookieName, getCsrfHeaderName } from "@/src/server/security/csrf";
 
 const getBaseUrl = () => {
   // IMPORTANT:
@@ -34,15 +35,32 @@ export const trpcClient = createTRPCProxyClient<AppRouter>({
       url: `${getBaseUrl()}/api/trpc`,
       // Ensure auth cookies are always sent (important for WebViews / cross-origin edge cases).
       fetch(url, options = {}) {
+        const headers: HeadersInit = {
+          ...options.headers,
+        };
+
+        if (typeof window !== "undefined") {
+          const cookieName = getCsrfCookieName();
+          const csrfValue = document.cookie
+            .split(";")
+            .map((entry) => entry.trim())
+            .find((entry) => entry.startsWith(`${cookieName}=`))
+            ?.split("=")
+            .slice(1)
+            .join("=")
+            .trim();
+
+          if (csrfValue) {
+            (headers as Record<string, string>)[getCsrfHeaderName()] = csrfValue;
+          }
+        }
+
         return fetch(url, {
           ...options,
           credentials: "include",
-          headers: {
-            ...options.headers,
-          },
+          headers,
         });
       },
     }),
   ],
 });
-

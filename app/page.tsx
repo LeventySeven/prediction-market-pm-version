@@ -52,6 +52,9 @@ const getErrorMessage = (error: ErrorLike): string => {
 
 type MarketApiRow = {
   id: string;
+  provider?: "polymarket" | "limitless";
+  providerMarketId?: string;
+  canonicalMarketId?: string;
   titleRu: string;
   titleEn: string;
   description?: string | null;
@@ -98,6 +101,12 @@ type MarketApiRow = {
   rolling24hVolume?: number | null;
   openInterest?: number | null;
   liveUpdatedAt?: string | null;
+  capabilities?: {
+    supportsTrading: boolean;
+    supportsCandles: boolean;
+    supportsPublicTrades: boolean;
+    chainId: number | null;
+  } | null;
 };
 
 type MarketLiveRow = Database["public"]["Tables"]["polymarket_market_live"]["Row"];
@@ -115,6 +124,10 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
       : m.volume;
   return {
     id: String(m.id),
+    provider: m.provider ?? "polymarket",
+    providerMarketId: m.providerMarketId ?? String(m.id),
+    canonicalMarketId:
+      m.canonicalMarketId ?? `${m.provider ?? "polymarket"}:${m.providerMarketId ?? String(m.id)}`,
     title,
     titleRu: m.titleRu,
     titleEn: m.titleEn,
@@ -152,6 +165,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     rolling24hVolume: m.rolling24hVolume ?? null,
     openInterest: m.openInterest ?? null,
     liveUpdatedAt: m.liveUpdatedAt ?? null,
+    capabilities: m.capabilities ?? null,
   };
 };
 
@@ -278,6 +292,8 @@ export default function HomePage() {
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
+  type ProviderFilter = "all" | "polymarket" | "limitless";
+  const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>("all");
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
   type LeaderboardSort = "PNL" | "BETS";
   const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
@@ -862,6 +878,11 @@ export default function HomePage() {
     try {
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
+        providerFilter: activeProviderFilter,
+        providers:
+          activeProviderFilter === "all"
+            ? ["polymarket", "limitless"]
+            : [activeProviderFilter],
       });
 
       const mapped: Market[] = (response ?? []).map((m) =>
@@ -878,7 +899,7 @@ export default function HomePage() {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [lang]);
+  }, [activeProviderFilter, lang]);
   const loadMarketsRef = useRef(loadMarkets);
   useEffect(() => {
     loadMarketsRef.current = loadMarkets;
@@ -1206,6 +1227,11 @@ export default function HomePage() {
             query: q,
             limit: 50,
             onlyOpen: false,
+            providerFilter: activeProviderFilter,
+            providers:
+              activeProviderFilter === "all"
+                ? ["polymarket", "limitless"]
+                : [activeProviderFilter],
           });
           rows = (semantic.items ?? []).map((item) => ({
             market: { id: item.market.id },
@@ -1249,7 +1275,7 @@ export default function HomePage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [searchQuery]);
+  }, [activeProviderFilter, searchQuery]);
 
   useEffect(() => {
     if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
@@ -1282,6 +1308,8 @@ export default function HomePage() {
   const filteredMarkets = useMemo(
     () =>
       markets.filter((market) => {
+        const matchesProvider =
+          activeProviderFilter === "all" || (market.provider ?? "polymarket") === activeProviderFilter;
         const matchesCategory =
           activeCategoryId === "all" || (market.categoryId ?? "") === activeCategoryId;
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
@@ -1289,9 +1317,9 @@ export default function HomePage() {
         const matchesSearch = semanticMatch || targetTitle
           .toLowerCase()
           .includes(searchQuery.toLowerCase());
-        return matchesCategory && matchesSearch;
+        return matchesProvider && matchesCategory && matchesSearch;
       }),
-    [activeCategoryId, searchQuery, markets, lang, semanticSearchScores]
+    [activeCategoryId, activeProviderFilter, searchQuery, markets, lang, semanticSearchScores]
   );
 
   const catalogMarkets = useMemo(() => {
@@ -1439,6 +1467,12 @@ export default function HomePage() {
     () => markets.find((market) => market.id === selectedMarketId),
     [selectedMarketId, markets]
   );
+  const selectedProvider = useMemo<"polymarket" | "limitless" | undefined>(() => {
+    if (selectedMarket?.provider) return selectedMarket.provider;
+    if (selectedMarketId?.startsWith("limitless:")) return "limitless";
+    if (selectedMarketId?.startsWith("polymarket:")) return "polymarket";
+    return undefined;
+  }, [selectedMarket?.provider, selectedMarketId]);
 
   const tradeBlockedMessage = useMemo(() => {
     if (!HAS_PRIVY_PROVIDER || !selectedMarketId) return null;
@@ -1658,8 +1692,16 @@ export default function HomePage() {
       try {
         // Fetch independently so one failing endpoint doesn't wipe the others.
         const [candlesRes, tradesRes, commentsRes] = await Promise.allSettled([
-          trpcClient.market.getPriceCandles.query({ marketId: selectedMarketId, limit: 200 }),
-          trpcClient.market.getPublicTrades.query({ marketId: selectedMarketId, limit: 50 }),
+          trpcClient.market.getPriceCandles.query({
+            marketId: selectedMarketId,
+            provider: selectedProvider,
+            limit: 200,
+          }),
+          trpcClient.market.getPublicTrades.query({
+            marketId: selectedMarketId,
+            provider: selectedProvider,
+            limit: 50,
+          }),
           trpcClient.market.getMarketComments.query({ marketId: selectedMarketId, limit: 50 }),
         ]);
 
@@ -1765,7 +1807,7 @@ export default function HomePage() {
         void supabase.removeChannel(candleChannel);
       }
     };
-  }, [selectedMarketId]);
+  }, [selectedMarketId, selectedProvider]);
 
   useEffect(() => {
     if (!HAS_PRIVY_PROVIDER || !selectedMarketId) {
@@ -1778,7 +1820,9 @@ export default function HomePage() {
     const fetchAccess = async () => {
       setTradeAccessLoading(true);
       try {
-        const access = await trpcClient.market.checkTradeAccess.query();
+        const access = await trpcClient.market.checkTradeAccess.query({
+          provider: selectedProvider,
+        });
         if (!cancelled) {
           setTradeAccessState({
             status: access.status ?? "UNKNOWN_TEMP_ERROR",
@@ -1812,7 +1856,7 @@ export default function HomePage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [selectedMarketId]);
+  }, [selectedMarketId, selectedProvider]);
 
   /**
    * Handle placing a bet (buying shares)
@@ -1857,7 +1901,9 @@ export default function HomePage() {
       return;
     }
 
-    const tradeAccess = await trpcClient.market.checkTradeAccess.query().catch(() => null);
+    const tradeAccess = await trpcClient.market.checkTradeAccess
+      .query({ provider: market?.provider ?? undefined })
+      .catch(() => null);
     if (!tradeAccess?.allowed) {
       setBetConfirm({
         open: true,
@@ -1879,6 +1925,7 @@ export default function HomePage() {
       .mutate({
         sessionId: sessionIdRef.current,
         marketId,
+        provider: market?.provider ?? undefined,
         eventType: "trade_intent",
         value: amount,
       })
@@ -1902,6 +1949,22 @@ export default function HomePage() {
           lang === "RU"
             ? "Не удалось подготовить сделку. Проверьте кошелёк и обновите страницу."
             : "Unable to prepare trade. Check your wallet and refresh the page.",
+        isLoading: false,
+      });
+      return;
+    }
+
+    if ((market.provider ?? "polymarket") === "limitless") {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? "Подпись ордеров Limitless на клиенте пока не настроена в этом билде."
+            : "Client-side Limitless order signing is not configured in this build yet.",
         isLoading: false,
       });
       return;
@@ -1971,8 +2034,15 @@ export default function HomePage() {
       clobApiCredsRef.current = built.apiCreds;
 
       const relay = await trpcClient.market.relaySignedOrder.mutate({
+        provider: market.provider ?? "polymarket",
+        marketId: market.id,
         signedOrder: built.signedOrder,
         orderType: built.orderType,
+        idempotencyKey:
+          (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now()}_${Math.random().toString(36).slice(2)}`),
+        clientOrderId: `ui_${Date.now()}`,
         apiCreds: built.apiCreds,
       });
 
@@ -2112,11 +2182,19 @@ export default function HomePage() {
       });
 
       try {
-        await trpcClient.market.setBookmark.mutate({ marketId, bookmarked });
+        const marketProvider =
+          markets.find((market) => market.id === marketId)?.provider ??
+          (marketId.startsWith("limitless:") ? "limitless" : undefined);
+        await trpcClient.market.setBookmark.mutate({
+          marketId,
+          provider: marketProvider,
+          bookmarked,
+        });
         void trpcClient.events.track
           .mutate({
             sessionId: sessionIdRef.current,
             marketId,
+            provider: marketProvider,
             eventType: "bookmark",
             value: bookmarked ? 1 : 0,
           })
@@ -2129,7 +2207,7 @@ export default function HomePage() {
         throw err;
       }
     },
-    [openAuth, user]
+    [markets, openAuth, user]
   );
 
   const openPublicProfile = useCallback(
@@ -2260,11 +2338,17 @@ export default function HomePage() {
   };
 
   const handlePostMarketComment = useCallback(
-    async (params: { marketId: string; text: string; parentId?: string | null }) => {
+    async (params: {
+      marketId: string;
+      provider?: "polymarket" | "limitless";
+      text: string;
+      parentId?: string | null;
+    }) => {
       let created: Awaited<ReturnType<typeof trpcClient.market.postMarketComment.mutate>>;
       try {
         created = await trpcClient.market.postMarketComment.mutate({
           marketId: params.marketId,
+          provider: params.provider,
           body: params.text,
           parentId: params.parentId ?? null,
         });
@@ -2553,6 +2637,34 @@ export default function HomePage() {
                               className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
                                   ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
+                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Providers */}
+                    <div className="px-4 pt-3 border-b border-zinc-900">
+                      <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
+                        {[
+                          { id: "all" as const, labelRu: "Все площадки", labelEn: "All venues" },
+                          { id: "polymarket" as const, labelRu: "Polymarket", labelEn: "Polymarket" },
+                          { id: "limitless" as const, labelRu: "Limitless", labelEn: "Limitless" },
+                        ].map((provider) => {
+                          const selected = activeProviderFilter === provider.id;
+                          const label = lang === "RU" ? provider.labelRu : provider.labelEn;
+                          return (
+                            <button
+                              key={provider.id}
+                              type="button"
+                              onClick={() => setActiveProviderFilter(provider.id)}
+                              className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                                selected
+                                  ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
                                   : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
                               }`}
                             >

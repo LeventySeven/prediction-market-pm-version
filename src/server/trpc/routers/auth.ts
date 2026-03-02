@@ -6,6 +6,7 @@ import { authCookie, clearAuthCookie, signAuthToken, verifyAuthToken } from "../
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
 import { verifyPrivyAccessToken } from "../../auth/privy";
+import { assertCsrfForMutation } from "../../security/csrf";
 
 const publicColumns =
   "id, email, username, display_name, avatar_url, telegram_photo_url, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin, privy_user_id, privy_wallet_address, auth_provider";
@@ -161,6 +162,14 @@ export const authRouter = router({
   privyLogin: publicProcedure
     .input(z.object({ accessToken: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      try {
+        assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+      } catch (error) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+        });
+      }
       const identity = await verifyPrivyAccessToken(input.accessToken);
       const userRow = await upsertPrivyUser(ctx.supabaseService as any, identity);
       await issueAuthCookie(ctx.setCookie, userRow);
@@ -168,6 +177,14 @@ export const authRouter = router({
     }),
 
   privyLogout: publicProcedure.mutation(async ({ ctx }) => {
+    try {
+      assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+    } catch (error) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+      });
+    }
     ctx.setCookie(clearAuthCookie());
     return { success: true };
   }),
@@ -192,6 +209,14 @@ export const authRouter = router({
 
   // Backward compatible alias for any stale clients still calling auth.logout.
   logout: publicProcedure.mutation(async ({ ctx }) => {
+    try {
+      assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+    } catch (error) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+      });
+    }
     ctx.setCookie(clearAuthCookie());
     return { success: true };
   }),
