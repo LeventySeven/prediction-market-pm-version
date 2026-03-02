@@ -38,6 +38,22 @@ const NEW_MARKET_POLL_PAGE_SIZE = Math.max(
   20,
   Math.min(200, Number(process.env.COLLECTOR_NEW_MARKET_POLL_PAGE_SIZE ?? 60))
 );
+const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.COLLECTOR_PRUNE_INTERVAL_MS ?? 3_600_000));
+const PRUNE_EXPIRED_AFTER_DAYS = Math.max(1, Number(process.env.COLLECTOR_PRUNE_EXPIRED_AFTER_DAYS ?? 7));
+const ENABLE_MISSING_MARKET_PRUNE =
+  (process.env.COLLECTOR_ENABLE_MISSING_MARKET_PRUNE || "true").trim().toLowerCase() === "true";
+const MISSING_MARKET_SCAN_PAGE_SIZE = Math.max(
+  50,
+  Math.min(250, Number(process.env.COLLECTOR_MISSING_MARKET_SCAN_PAGE_SIZE ?? 200))
+);
+const MISSING_MARKET_SCAN_MAX_PAGES = Math.max(
+  1,
+  Math.min(80, Number(process.env.COLLECTOR_MISSING_MARKET_SCAN_MAX_PAGES ?? 20))
+);
+const MISSING_MARKET_MISS_THRESHOLD = Math.max(
+  1,
+  Math.min(20, Number(process.env.COLLECTOR_MISSING_MARKET_MISS_THRESHOLD ?? 3))
+);
 const MAX_TRACKED_MARKETS = Math.max(20, Number(process.env.COLLECTOR_MAX_TRACKED_MARKETS ?? 500));
 const MAX_TRACKED_ASSET_IDS = Math.max(100, Number(process.env.COLLECTOR_MAX_TRACKED_ASSET_IDS ?? 1200));
 const LIVE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_UPSERT_CHUNK_SIZE ?? 400)));
@@ -92,6 +108,7 @@ const pendingLive = new Map<string, PendingLive>();
 const pendingCandles = new Map<string, PendingCandle>();
 const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
 const knownMarketFingerprints = new Map<string, string>();
+const missingOpenMarketMisses = new Map<string, number>();
 const trackedAssetIds = new Set<string>();
 let flushing = false;
 let lastHeartbeatAt = Date.now();
@@ -106,6 +123,7 @@ let activeSocket: WebSocket | null = null;
 const activeSubscribedAssetIds = new Set<string>();
 let runningFullSnapshot = false;
 let runningHeadSnapshot = false;
+let runningPrune = false;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -224,6 +242,191 @@ const mergeTrackedAssetIds = (markets: PolymarketMarket[]) => {
       trackedAssetIds.add(outcome.tokenId.trim());
       if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
     }
+  }
+};
+
+const parseIsoOrNull = (value: unknown): string | null => {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toISOString();
+};
+
+const parseExpiryFromPayload = (payload: unknown): string | null => {
+  const rec = asRecord(payload);
+  if (!rec) return null;
+  const expiresAt = parseIsoOrNull(rec.expires_at) ?? parseIsoOrNull(rec.expiresAt);
+  if (expiresAt) return expiresAt;
+  return parseIsoOrNull(rec.closes_at) ?? parseIsoOrNull(rec.closesAt);
+};
+
+const chunkStrings = (values: string[], size: number): string[][] => {
+  const out: string[][] = [];
+  for (let i = 0; i < values.length; i += size) {
+    out.push(values.slice(i, i + size));
+  }
+  return out;
+};
+
+const deleteLegacyPolymarketRows = async (marketIds: string[]) => {
+  if (marketIds.length === 0) return;
+  for (const chunk of chunkStrings(marketIds, 400)) {
+    await (supabase as any).from("polymarket_candles_1m").delete().in("market_id", chunk);
+    await (supabase as any).from("polymarket_market_live").delete().in("market_id", chunk);
+    await (supabase as any).from("polymarket_market_cache").delete().in("market_id", chunk);
+  }
+};
+
+const deleteCanonicalPolymarketRowsByProviderIds = async (providerMarketIds: string[]) => {
+  if (providerMarketIds.length === 0) return;
+  for (const chunk of chunkStrings(providerMarketIds, 400)) {
+    await (supabase as any)
+      .from("market_catalog")
+      .delete()
+      .eq("provider", "polymarket")
+      .in("provider_market_id", chunk);
+  }
+};
+
+const pruneExpiredMarkets = async () => {
+  const cutoffIso = new Date(Date.now() - PRUNE_EXPIRED_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: legacyRows, error: legacyError } = await (supabase as any)
+    .from("polymarket_market_cache")
+    .select("market_id, expires_at")
+    .lt("expires_at", cutoffIso)
+    .limit(8000);
+  if (legacyError) {
+    console.warn("[collector] prune expired legacy query failed", legacyError.message);
+  }
+  const legacyIdsSet = new Set<string>();
+  for (const row of legacyRows ?? []) {
+    const marketId = String((row as Record<string, unknown>).market_id ?? "").trim();
+    if (!marketId) continue;
+    legacyIdsSet.add(marketId);
+  }
+  const legacyIds = Array.from(legacyIdsSet);
+
+  const { data: canonicalRows, error: canonicalError } = await (supabase as any)
+    .from("market_catalog")
+    .select("provider_market_id, provider_payload")
+    .eq("provider", "polymarket")
+    .limit(8000);
+  if (canonicalError) {
+    console.warn("[collector] prune expired canonical query failed", canonicalError.message);
+  }
+
+  const canonicalIdsSet = new Set<string>();
+  for (const row of canonicalRows ?? []) {
+    const rec = row as Record<string, unknown>;
+    const expiryIso = parseExpiryFromPayload(rec.provider_payload);
+    if (!expiryIso || expiryIso > cutoffIso) continue;
+    const marketId = String(rec.provider_market_id ?? "").trim();
+    if (!marketId) continue;
+    canonicalIdsSet.add(marketId);
+  }
+  const canonicalIds = Array.from(canonicalIdsSet);
+
+  const idsToDelete = Array.from(new Set([...legacyIds, ...canonicalIds]));
+  if (idsToDelete.length === 0) return;
+
+  await deleteLegacyPolymarketRows(idsToDelete);
+  await deleteCanonicalPolymarketRowsByProviderIds(idsToDelete);
+  for (const marketId of idsToDelete) {
+    latestLiveState.delete(marketId);
+    knownMarketFingerprints.delete(marketId);
+    missingOpenMarketMisses.delete(marketId);
+  }
+  console.log(`[collector] prune expired removed=${idsToDelete.length} cutoff=${cutoffIso}`);
+};
+
+const pruneMissingOpenMarkets = async () => {
+  if (!ENABLE_MISSING_MARKET_PRUNE) return;
+
+  const coverageMarkets = await listPolymarketMarketsSnapshot({
+    scope: "open",
+    pageSize: MISSING_MARKET_SCAN_PAGE_SIZE,
+    maxPages: MISSING_MARKET_SCAN_MAX_PAGES,
+    hydrateMidpoints: false,
+  });
+  const maxCoverage = MISSING_MARKET_SCAN_PAGE_SIZE * MISSING_MARKET_SCAN_MAX_PAGES;
+  if (coverageMarkets.length >= maxCoverage) {
+    console.warn(
+      `[collector] missing prune skipped because coverage may be truncated fetched=${coverageMarkets.length} max=${maxCoverage}`
+    );
+    return;
+  }
+
+  const openNow = new Set(
+    coverageMarkets
+      .map((market) => market.id)
+      .filter((id) => typeof id === "string" && id.trim().length > 0)
+      .map((id) => id.trim())
+  );
+
+  const [legacyOpenRes, canonicalOpenRes] = await Promise.all([
+    (supabase as any)
+      .from("polymarket_market_cache")
+      .select("market_id")
+      .eq("state", "open")
+      .limit(8000),
+    (supabase as any)
+      .from("market_catalog")
+      .select("provider_market_id")
+      .eq("provider", "polymarket")
+      .eq("state", "open")
+      .limit(8000),
+  ]);
+
+  const currentOpenIds = Array.from(
+    new Set([
+      ...(legacyOpenRes.data ?? [])
+        .map((row: Record<string, unknown>) => String(row.market_id ?? "").trim())
+        .filter(Boolean),
+      ...(canonicalOpenRes.data ?? [])
+        .map((row: Record<string, unknown>) => String(row.provider_market_id ?? "").trim())
+        .filter(Boolean),
+    ])
+  );
+
+  const staleIds: string[] = [];
+  for (const marketId of currentOpenIds) {
+    if (openNow.has(marketId)) {
+      missingOpenMarketMisses.delete(marketId);
+      continue;
+    }
+    const nextMisses = (missingOpenMarketMisses.get(marketId) ?? 0) + 1;
+    missingOpenMarketMisses.set(marketId, nextMisses);
+    if (nextMisses >= MISSING_MARKET_MISS_THRESHOLD) {
+      staleIds.push(marketId);
+    }
+  }
+
+  if (staleIds.length === 0) return;
+
+  await deleteLegacyPolymarketRows(staleIds);
+  await deleteCanonicalPolymarketRowsByProviderIds(staleIds);
+
+  for (const marketId of staleIds) {
+    latestLiveState.delete(marketId);
+    knownMarketFingerprints.delete(marketId);
+    missingOpenMarketMisses.delete(marketId);
+  }
+  console.log(
+    `[collector] prune missing-open removed=${staleIds.length} threshold=${MISSING_MARKET_MISS_THRESHOLD}`
+  );
+};
+
+const pruneStaleMarkets = async () => {
+  if (runningPrune) return;
+  runningPrune = true;
+  try {
+    await pruneExpiredMarkets();
+    await pruneMissingOpenMarkets();
+  } catch (error) {
+    console.error("[collector] prune failed", error instanceof Error ? error.message : String(error));
+  } finally {
+    runningPrune = false;
   }
 };
 
@@ -1010,12 +1213,13 @@ const runWsLoop = async () => {
 
 const start = async () => {
   console.log(
-    `[collector] starting flush=${FLUSH_INTERVAL_MS}ms headPoll=${NEW_MARKET_POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms snapshotSeed=${ENABLE_SNAPSHOT_REALTIME_SEED} canonicalMirror=${ENABLE_CANONICAL_REALTIME_MIRROR}`
+    `[collector] starting flush=${FLUSH_INTERVAL_MS}ms headPoll=${NEW_MARKET_POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms snapshotSeed=${ENABLE_SNAPSHOT_REALTIME_SEED} canonicalMirror=${ENABLE_CANONICAL_REALTIME_MIRROR}`
   );
   startHealthServer();
   await loadPersistedLiveState();
   await syncSnapshot("full");
   await syncSnapshot("head");
+  await pruneStaleMarkets();
 
   setInterval(() => {
     void flushPending();
@@ -1032,6 +1236,10 @@ const start = async () => {
       console.error("[collector] reconcile snapshot failed", error instanceof Error ? error.message : String(error));
     });
   }, RECONCILE_INTERVAL_MS);
+
+  setInterval(() => {
+    void pruneStaleMarkets();
+  }, PRUNE_INTERVAL_MS);
 
   await runWsLoop();
 };

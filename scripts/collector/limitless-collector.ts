@@ -23,7 +23,25 @@ const HEAD_SNAPSHOT_LIMIT = Math.max(
   20,
   Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 80))
 );
+const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.LIMITLESS_COLLECTOR_PRUNE_INTERVAL_MS ?? 3_600_000));
+const PRUNE_EXPIRED_AFTER_DAYS = Math.max(
+  1,
+  Number(process.env.LIMITLESS_COLLECTOR_PRUNE_EXPIRED_AFTER_DAYS ?? 7)
+);
+const ENABLE_MISSING_MARKET_PRUNE =
+  (process.env.LIMITLESS_COLLECTOR_ENABLE_MISSING_MARKET_PRUNE || "true").trim().toLowerCase() === "true";
+const MISSING_MARKET_SCAN_LIMIT = Math.max(
+  50,
+  Math.min(2500, Number(process.env.LIMITLESS_COLLECTOR_MISSING_MARKET_SCAN_LIMIT ?? 1200))
+);
+const MISSING_MARKET_MISS_THRESHOLD = Math.max(
+  1,
+  Math.min(20, Number(process.env.LIMITLESS_COLLECTOR_MISSING_MARKET_MISS_THRESHOLD ?? 3))
+);
+const PROBE_THROTTLE_MS = Math.max(30_000, Number(process.env.LIMITLESS_COLLECTOR_PROBE_THROTTLE_MS ?? 300_000));
 const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
+const LIMITLESS_BASE_URL = (process.env.LIMITLESS_API_BASE_URL || "https://api.limitless.exchange").trim();
+const COLLECTOR_VERSION = "limitless-collector-v2026-03-03b";
 const SEED_REALTIME_FROM_SNAPSHOT =
   (
     process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ??
@@ -72,6 +90,7 @@ const pendingLiveByProviderMarketId = new Map<string, Omit<PendingLive, "market_
 const pendingCandlesByProviderMarketId = new Map<string, Omit<PendingCandle, "market_id">>();
 const lastSnapshotSeedByProviderMarketId = new Map<string, { mid: number; volume: number }>();
 const knownMarketFingerprints = new Map<string, string>();
+const missingOpenMarketMisses = new Map<string, number>();
 
 let lastPollAt = 0;
 let lastFlushAt = 0;
@@ -81,6 +100,8 @@ let lastWsMessageAt = 0;
 let runningFullSnapshot = false;
 let runningHeadSnapshot = false;
 let flushing = false;
+let runningPrune = false;
+let lastProbeAt = 0;
 
 const minuteBucketIso = (tsMs: number): string => {
   const minute = Math.floor(tsMs / 60_000) * 60_000;
@@ -159,6 +180,191 @@ const selectChangedMarkets = (markets: VenueMarket[]): VenueMarket[] => {
     knownMarketFingerprints.set(market.providerMarketId, nextFingerprint);
   }
   return changed;
+};
+
+const probeLimitlessApi = async () => {
+  const now = Date.now();
+  if (now - lastProbeAt < PROBE_THROTTLE_MS) return;
+  lastProbeAt = now;
+
+  const bases = Array.from(
+    new Set([
+      LIMITLESS_BASE_URL,
+      "https://api.limitless.exchange",
+      "https://api.limitless.exchange/api/v1",
+      "https://api.limitless.exchange/api-v1",
+    ])
+  );
+
+  for (const base of bases) {
+    const url = `${base.replace(/\/+$/, "")}/markets/active?page=1&limit=1`;
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      const body = await response.text();
+      let rowsCount = -1;
+      try {
+        const parsed = JSON.parse(body) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const data = (parsed as Record<string, unknown>).data;
+          if (Array.isArray(data)) rowsCount = data.length;
+        } else if (Array.isArray(parsed)) {
+          rowsCount = parsed.length;
+        }
+      } catch {
+        // ignore parse failures
+      }
+      console.log(
+        `[limitless-collector] probe url=${url} status=${response.status} rows=${rowsCount} bodyPreview=${body.slice(0, 140).replace(/\s+/g, " ")}`
+      );
+      if (response.ok && rowsCount !== 0) return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[limitless-collector] probe failed url=${url} err=${message}`);
+    }
+  }
+};
+
+const parseIsoOrNull = (value: unknown): string | null => {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toISOString();
+};
+
+const parseExpiryFromPayload = (payload: unknown): string | null => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const rec = payload as Record<string, unknown>;
+  const expiresAt = parseIsoOrNull(rec.expires_at) ?? parseIsoOrNull(rec.expiresAt);
+  if (expiresAt) return expiresAt;
+  return parseIsoOrNull(rec.closes_at) ?? parseIsoOrNull(rec.closesAt);
+};
+
+const chunkStrings = (values: string[], size: number): string[][] => {
+  const out: string[][] = [];
+  for (let i = 0; i < values.length; i += size) {
+    out.push(values.slice(i, i + size));
+  }
+  return out;
+};
+
+const deleteCanonicalLimitlessRowsByProviderIds = async (providerMarketIds: string[]) => {
+  if (providerMarketIds.length === 0) return;
+  for (const chunk of chunkStrings(providerMarketIds, 400)) {
+    await (supabase as any)
+      .from("market_catalog")
+      .delete()
+      .eq("provider", "limitless")
+      .in("provider_market_id", chunk);
+  }
+};
+
+const pruneExpiredMarkets = async () => {
+  const cutoffIso = new Date(Date.now() - PRUNE_EXPIRED_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await (supabase as any)
+    .from("market_catalog")
+    .select("provider_market_id, provider_payload")
+    .eq("provider", "limitless")
+    .limit(12000);
+  if (error) {
+    console.warn("[limitless-collector] prune expired query failed", error.message);
+    return;
+  }
+
+  const idsToDeleteSet = new Set<string>();
+  for (const row of data ?? []) {
+    const rec = row as Record<string, unknown>;
+    const expiryIso = parseExpiryFromPayload(rec.provider_payload);
+    if (!expiryIso || expiryIso > cutoffIso) continue;
+    const marketId = String(rec.provider_market_id ?? "").trim();
+    if (!marketId) continue;
+    idsToDeleteSet.add(marketId);
+  }
+  const idsToDelete = Array.from(idsToDeleteSet);
+  if (idsToDelete.length === 0) return;
+
+  await deleteCanonicalLimitlessRowsByProviderIds(idsToDelete);
+  for (const marketId of idsToDelete) {
+    knownMarketFingerprints.delete(marketId);
+    missingOpenMarketMisses.delete(marketId);
+  }
+  console.log(`[limitless-collector] prune expired removed=${idsToDelete.length} cutoff=${cutoffIso}`);
+};
+
+const pruneMissingOpenMarkets = async () => {
+  if (!ENABLE_MISSING_MARKET_PRUNE) return;
+
+  const openMarkets = await limitlessAdapter.listMarketsSnapshot({
+    onlyOpen: true,
+    limit: MISSING_MARKET_SCAN_LIMIT,
+  });
+
+  if (openMarkets.length >= MISSING_MARKET_SCAN_LIMIT) {
+    console.warn(
+      `[limitless-collector] missing prune skipped because coverage may be truncated fetched=${openMarkets.length} limit=${MISSING_MARKET_SCAN_LIMIT}`
+    );
+    return;
+  }
+
+  const openNow = new Set(
+    openMarkets
+      .map((market) => market.providerMarketId)
+      .filter((id) => typeof id === "string" && id.trim().length > 0)
+      .map((id) => id.trim())
+  );
+
+  const { data: currentOpenRows, error: currentOpenError } = await (supabase as any)
+    .from("market_catalog")
+    .select("provider_market_id")
+    .eq("provider", "limitless")
+    .eq("state", "open")
+    .limit(12000);
+  if (currentOpenError) {
+    console.warn("[limitless-collector] prune missing query failed", currentOpenError.message);
+    return;
+  }
+
+  const staleIds: string[] = [];
+  for (const row of currentOpenRows ?? []) {
+    const marketId = String((row as Record<string, unknown>).provider_market_id ?? "").trim();
+    if (!marketId) continue;
+    if (openNow.has(marketId)) {
+      missingOpenMarketMisses.delete(marketId);
+      continue;
+    }
+    const nextMisses = (missingOpenMarketMisses.get(marketId) ?? 0) + 1;
+    missingOpenMarketMisses.set(marketId, nextMisses);
+    if (nextMisses >= MISSING_MARKET_MISS_THRESHOLD) {
+      staleIds.push(marketId);
+    }
+  }
+
+  if (staleIds.length === 0) return;
+
+  await deleteCanonicalLimitlessRowsByProviderIds(staleIds);
+  for (const marketId of staleIds) {
+    knownMarketFingerprints.delete(marketId);
+    missingOpenMarketMisses.delete(marketId);
+  }
+  console.log(
+    `[limitless-collector] prune missing-open removed=${staleIds.length} threshold=${MISSING_MARKET_MISS_THRESHOLD}`
+  );
+};
+
+const pruneStaleMarkets = async () => {
+  if (runningPrune) return;
+  runningPrune = true;
+  try {
+    await pruneExpiredMarkets();
+    await pruneMissingOpenMarkets();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[limitless-collector] prune failed", message);
+  } finally {
+    runningPrune = false;
+  }
 };
 
 const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<string, string>> => {
@@ -340,8 +546,9 @@ const snapshotSync = async (mode: "head" | "full") => {
       }
     } else {
       console.warn(
-        `[limitless-collector] ${mode} snapshot returned 0 markets; verify LIMITLESS_API_BASE_URL and venue access`
+        `[limitless-collector] ${mode} snapshot returned 0 markets; base=${LIMITLESS_BASE_URL}; verify LIMITLESS_API_BASE_URL/egress/venue access`
       );
+      await probeLimitlessApi();
     }
 
     if (writeSyncState) {
@@ -463,13 +670,15 @@ const runWsLoop = async () => {
   }
 
   let attempt = 0;
+  const stableThresholdMs = 30_000;
 
   while (true) {
     try {
       console.log("[limitless-collector] connecting", LIMITLESS_WS_CONFIG.url);
       const socket = new WebSocket(LIMITLESS_WS_CONFIG.url);
 
-      await new Promise<void>((resolve, reject) => {
+      const session = await new Promise<{ stableMs: number; closeCode: number; closeReason: string }>((resolve, reject) => {
+        const openedAt = Date.now();
         socket.onopen = () => {
           console.log("[limitless-collector] ws connected");
           for (const channel of LIMITLESS_WS_CONFIG.channels) {
@@ -514,8 +723,15 @@ const runWsLoop = async () => {
           // handled by close and backoff
         };
 
-        socket.onclose = () => {
-          resolve();
+        socket.onclose = (event) => {
+          const reason = typeof event.reason === "string" && event.reason.trim().length > 0
+            ? event.reason.trim()
+            : "no_reason";
+          resolve({
+            stableMs: Date.now() - openedAt,
+            closeCode: Number(event.code || 0),
+            closeReason: reason,
+          });
         };
 
         setTimeout(() => {
@@ -525,7 +741,19 @@ const runWsLoop = async () => {
         }, 15000);
       });
 
-      attempt = 0;
+      const unstable = session.stableMs < stableThresholdMs;
+      if (unstable) {
+        attempt += 1;
+      } else {
+        attempt = 0;
+      }
+      const baseBackoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+      const jitterMs = Math.floor(Math.random() * 700);
+      const backoffMs = baseBackoffMs + jitterMs;
+      console.warn(
+        `[limitless-collector] ws closed code=${session.closeCode} reason=${session.closeReason} stableMs=${session.stableMs} reconnectInMs=${backoffMs}`
+      );
+      await wait(backoffMs);
     } catch (error) {
       const baseBackoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(attempt, 6)));
       const jitterMs = Math.floor(Math.random() * 700);
@@ -584,11 +812,12 @@ const start = async () => {
   }
 
   console.log(
-    `[limitless-collector] starting poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
+    `[limitless-collector] starting version=${COLLECTOR_VERSION} base=${LIMITLESS_BASE_URL} ws=${LIMITLESS_WS_CONFIG?.url ?? "none"} poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
   );
   startHealthServer();
   await snapshotSync("full");
   await snapshotSync("head");
+  await pruneStaleMarkets();
 
   setInterval(() => {
     void snapshotSync("head");
@@ -601,6 +830,10 @@ const start = async () => {
   setInterval(() => {
     void snapshotSync("full");
   }, RECONCILE_INTERVAL_MS);
+
+  setInterval(() => {
+    void pruneStaleMarkets();
+  }, PRUNE_INTERVAL_MS);
 
   await runWsLoop();
 };

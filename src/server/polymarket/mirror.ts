@@ -24,6 +24,8 @@ type MirrorRow = {
   last_synced_at: string;
 };
 
+type ExistingMirrorRow = MirrorRow;
+
 const asString = (value: unknown): string | null => {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   return null;
@@ -42,6 +44,37 @@ const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 };
+
+const normalizeJson = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((item) => normalizeJson(item));
+  if (!value || typeof value !== "object") return value ?? null;
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(source).sort()) {
+    out[key] = normalizeJson(source[key]);
+  }
+  return out;
+};
+
+const stableJson = (value: unknown): string => JSON.stringify(normalizeJson(value ?? {}));
+
+const mirrorRowsEqual = (existing: ExistingMirrorRow, next: MirrorRow): boolean =>
+  String(existing.condition_id) === String(next.condition_id) &&
+  String(existing.slug) === String(next.slug) &&
+  String(existing.title) === String(next.title) &&
+  (existing.description ?? null) === (next.description ?? null) &&
+  (existing.image_url ?? null) === (next.image_url ?? null) &&
+  (existing.source_url ?? null) === (next.source_url ?? null) &&
+  String(existing.state) === String(next.state) &&
+  String(existing.market_created_at) === String(next.market_created_at) &&
+  String(existing.closes_at) === String(next.closes_at) &&
+  String(existing.expires_at) === String(next.expires_at) &&
+  (existing.category ?? null) === (next.category ?? null) &&
+  Number(existing.volume ?? 0) === Number(next.volume ?? 0) &&
+  stableJson(existing.clob_token_ids) === stableJson(next.clob_token_ids) &&
+  stableJson(existing.outcomes) === stableJson(next.outcomes) &&
+  (existing.resolved_outcome_title ?? null) === (next.resolved_outcome_title ?? null) &&
+  String(existing.search_text) === String(next.search_text);
 
 const parseStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -193,8 +226,38 @@ export async function upsertMirroredPolymarketMarkets(
   const chunkSize = 200;
   let written = 0;
 
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const batch = rows.slice(i, i + chunkSize);
+  const existingByMarketId = new Map<string, ExistingMirrorRow>();
+  const marketIds = Array.from(new Set(rows.map((row) => row.market_id)));
+  for (let i = 0; i < marketIds.length; i += 300) {
+    const chunk = marketIds.slice(i, i + 300);
+    const { data, error } = await (supabaseService as any)
+      .from("polymarket_market_cache")
+      .select(
+        "market_id, condition_id, slug, title, description, image_url, source_url, state, market_created_at, closes_at, expires_at, category, volume, clob_token_ids, outcomes, resolved_outcome_title, search_text, source_updated_at, last_synced_at"
+      )
+      .in("market_id", chunk);
+    if (error) throw new Error(error.message ?? "MIRROR_PREFETCH_FAILED");
+    for (const row of (data ?? []) as ExistingMirrorRow[]) {
+      const marketId = String((row as Record<string, unknown>).market_id ?? "").trim();
+      if (!marketId) continue;
+      existingByMarketId.set(marketId, row);
+    }
+  }
+
+  const rowsToUpsert = rows
+    .filter((row) => {
+      const existing = existingByMarketId.get(row.market_id);
+      if (!existing) return true;
+      return !mirrorRowsEqual(existing, row);
+    })
+    .map((row) => ({
+      ...row,
+      source_updated_at: nowIso,
+      last_synced_at: nowIso,
+    }));
+
+  for (let i = 0; i < rowsToUpsert.length; i += chunkSize) {
+    const batch = rowsToUpsert.slice(i, i + chunkSize);
     const { error } = await (supabaseService as any)
       .from("polymarket_market_cache")
       .upsert(batch, { onConflict: "market_id" });
