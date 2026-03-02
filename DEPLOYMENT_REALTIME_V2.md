@@ -92,6 +92,7 @@ Limitless read/trade configuration (only if enabling Limitless):
 - `LIMITLESS_ORDER_RELAY_URL=<provider order relay endpoint>`
 - `LIMITLESS_ACCESS_STATUS_TTL_MS=60000`
 - `LIMITLESS_RELAY_TIMEOUT_MS=10000`
+- `LIMITLESS_DEBUG=false`
 - `ENABLE_CATALOG_SYNC_ON_READ=false`
 
 ### 3.2 Polymarket Collector Worker Required
@@ -146,6 +147,7 @@ Set these in the worker service that runs `bun run collector:limitless`:
 - `LIMITLESS_COLLECTOR_MISSING_MARKET_SCAN_LIMIT=1200`
 - `LIMITLESS_COLLECTOR_MISSING_MARKET_MISS_THRESHOLD=3`
 - `LIMITLESS_COLLECTOR_PROBE_THROTTLE_MS=300000`
+- `LIMITLESS_COLLECTOR_WS_MAX_1002_BEFORE_DISABLE=5`
 - `LIMITLESS_COLLECTOR_HEALTH_PORT=8081`
 
 ## 4. Local Preflight

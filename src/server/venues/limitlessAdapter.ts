@@ -20,6 +20,7 @@ const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
 const DEFAULT_BASE_ALT = `${DEFAULT_BASE_ROOT}/api-v1`;
 const DEFAULT_SITE = "https://limitless.exchange";
 const SNAPSHOT_CACHE_TTL_MS = Math.max(1000, Number(process.env.LIMITLESS_MARKETS_CACHE_TTL_MS ?? 15_000));
+const LIMITLESS_DEBUG = (process.env.LIMITLESS_DEBUG || "").trim().toLowerCase() === "true";
 
 const normalizeBase = (base: string): string => base.trim().replace(/\/+$/, "");
 
@@ -108,10 +109,19 @@ const parseRows = (payload: unknown): Record<string, unknown>[] => {
   const obj = asRecord(payload);
   if (!obj) return [];
 
-  const candidates = [obj.items, obj.data, obj.markets, obj.results];
+  const candidates = [obj.items, obj.data, obj.markets, obj.results, obj.rows, obj.payload, obj.response];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
       return candidate.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
+    }
+    const rec = asRecord(candidate);
+    if (rec) {
+      const nestedCandidates = [rec.items, rec.data, rec.markets, rec.results, rec.rows];
+      for (const nested of nestedCandidates) {
+        if (Array.isArray(nested)) {
+          return nested.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
+        }
+      }
     }
   }
 
@@ -296,14 +306,24 @@ const fetchJson = async (url: string): Promise<unknown> => {
     cache: "no-store",
     headers: {
       accept: "application/json",
+      "user-agent": "prediction-market-worker/1.0 (+https://prediction-market.local)",
     },
   });
 
   if (!response.ok) {
+    if (LIMITLESS_DEBUG) {
+      const body = await response.text().catch(() => "");
+      console.warn(`[limitless-adapter] http ${response.status} ${url} body=${body.slice(0, 180).replace(/\s+/g, " ")}`);
+    }
     throw new Error(`HTTP_${response.status}`);
   }
 
-  return await response.json();
+  const payload = await response.json();
+  if (LIMITLESS_DEBUG) {
+    const rows = parseRows(payload);
+    console.log(`[limitless-adapter] ok ${url} rows=${rows.length}`);
+  }
+  return payload;
 };
 
 const fetchMarketRows = async (params: {
@@ -322,7 +342,13 @@ const fetchMarketRows = async (params: {
         const payload = await fetchJson(url);
         const rows = parseRows(payload);
         if (rows.length > 0) return rows;
+        if (LIMITLESS_DEBUG) {
+          console.warn(`[limitless-adapter] empty rows from ${url}`);
+        }
       } catch {
+        if (LIMITLESS_DEBUG) {
+          console.warn(`[limitless-adapter] request failed ${url}`);
+        }
         // try next endpoint
       }
     }
@@ -347,6 +373,9 @@ const fetchMarketRows = async (params: {
         collected.push(...rows);
         if (rows.length < limitForPage) break;
       } catch {
+        if (LIMITLESS_DEBUG) {
+          console.warn(`[limitless-adapter] paged request failed ${url}`);
+        }
         break;
       }
     }
@@ -366,7 +395,10 @@ const fetchMarketRows = async (params: {
       continue;
     }
 
-    const openRows = await fetchPaged(base, "/markets/active", "sortBy=newest");
+    const openRowsPrimary = await fetchPaged(base, "/markets/active", "sortBy=newest");
+    const openRows = openRowsPrimary.length > 0
+      ? openRowsPrimary
+      : await fetchPaged(base, "/markets/active");
     if (openRows.length > 0) {
       if (params.onlyOpen) return openRows.slice(0, limit);
       if (openRows.length >= limit) return openRows.slice(0, limit);
@@ -621,6 +653,17 @@ export const limitlessAdapter: VenueAdapter = {
       .map(mapLimitlessMarket)
       .filter((item): item is VenueMarket => Boolean(item))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    if (LIMITLESS_DEBUG) {
+      console.log(`[limitless-adapter] snapshot raw=${rows.length} mapped=${mapped.length} onlyOpen=${onlyOpen} limit=${limit}`);
+      if (mapped.length > 0) {
+        console.log(
+          `[limitless-adapter] sample ids=${mapped
+            .slice(0, 3)
+            .map((m) => m.providerMarketId)
+            .join(",")}`
+        );
+      }
+    }
     snapshotCache.set(cacheKey, { rows: mapped, expiresAt: now + SNAPSHOT_CACHE_TTL_MS });
     if (params?.onlyOpen) return mapped.filter((m) => m.state === "open");
     return mapped;

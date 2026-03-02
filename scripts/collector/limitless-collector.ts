@@ -42,6 +42,10 @@ const PROBE_THROTTLE_MS = Math.max(30_000, Number(process.env.LIMITLESS_COLLECTO
 const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
 const LIMITLESS_BASE_URL = (process.env.LIMITLESS_API_BASE_URL || "https://api.limitless.exchange").trim();
 const COLLECTOR_VERSION = "limitless-collector-v2026-03-03b";
+const WS_MAX_1002_BEFORE_DISABLE = Math.max(
+  1,
+  Number(process.env.LIMITLESS_COLLECTOR_WS_MAX_1002_BEFORE_DISABLE ?? 5)
+);
 const SEED_REALTIME_FROM_SNAPSHOT =
   (
     process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ??
@@ -670,6 +674,7 @@ const runWsLoop = async () => {
   }
 
   let attempt = 0;
+  let ws1002Streak = 0;
   const stableThresholdMs = 30_000;
 
   while (true) {
@@ -742,6 +747,19 @@ const runWsLoop = async () => {
       });
 
       const unstable = session.stableMs < stableThresholdMs;
+      if (session.closeCode === 1002) {
+        ws1002Streak += 1;
+      } else {
+        ws1002Streak = 0;
+      }
+      if (ws1002Streak >= WS_MAX_1002_BEFORE_DISABLE) {
+        console.warn(
+          `[limitless-collector] disabling ws after ${ws1002Streak} consecutive code=1002 closes; continuing in polling-only mode`
+        );
+        while (true) {
+          await wait(Math.max(POLL_INTERVAL_MS, 10_000));
+        }
+      }
       if (unstable) {
         attempt += 1;
       } else {
