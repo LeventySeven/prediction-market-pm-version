@@ -417,8 +417,12 @@ export const polymarketAdapter: VenueAdapter = {
   checkTradeAccess,
   relaySignedOrder,
   wsCollectorConfig: () => ({
-    url: (process.env.POLYMARKET_RTDS_WS_URL || "wss://ws-live-data.polymarket.com").trim(),
-    channels: ["prices", "activity", "clob_market"],
+    url: (
+      process.env.POLYMARKET_MARKET_WS_URL ||
+      process.env.POLYMARKET_RTDS_WS_URL ||
+      "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    ).trim(),
+    channels: ["market"],
   }),
 };
 

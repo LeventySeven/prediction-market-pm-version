@@ -17,6 +17,7 @@ const RECONCILE_INTERVAL_MS = Math.max(
   Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 120000)
 );
 const HEALTH_PORT = Math.max(0, Number(process.env.LIMITLESS_COLLECTOR_HEALTH_PORT ?? 8081));
+const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 600)));
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -77,6 +78,23 @@ const parseNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
+const parseTsMs = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value > 10_000_000_000) return Math.floor(value);
+    if (value > 1_000_000_000) return Math.floor(value * 1000);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const asNum = Number(value);
+    if (Number.isFinite(asNum)) {
+      if (asNum > 10_000_000_000) return Math.floor(asNum);
+      if (asNum > 1_000_000_000) return Math.floor(asNum * 1000);
+    }
+    const parsed = Date.parse(value);
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
@@ -168,8 +186,10 @@ const snapshotSync = async () => {
   if (runningSnapshot) return;
   runningSnapshot = true;
   const startedAt = new Date().toISOString();
+  const startedMs = Date.now();
 
   try {
+    console.log("[limitless-collector] snapshot sync started");
     await upsertProviderSyncState(supabase, {
       provider: "limitless",
       scope: "open",
@@ -179,8 +199,10 @@ const snapshotSync = async () => {
 
     const markets = await limitlessAdapter.listMarketsSnapshot({
       onlyOpen: true,
-      limit: 800,
+      limit: SNAPSHOT_LIMIT,
     });
+
+    console.log(`[limitless-collector] snapshot fetched ${markets.length} markets`);
 
     if (markets.length > 0) {
       await upsertVenueMarketsToCatalog(supabase, markets);
@@ -221,6 +243,10 @@ const snapshotSync = async () => {
       }
 
       await flushPending();
+    } else {
+      console.warn(
+        "[limitless-collector] snapshot returned 0 markets; verify LIMITLESS_API_BASE_URL and venue access"
+      );
     }
 
     const finishedAt = new Date().toISOString();
@@ -231,6 +257,8 @@ const snapshotSync = async () => {
       successAt: finishedAt,
       errorMessage: null,
     });
+    const elapsedMs = Date.now() - startedMs;
+    console.log(`[limitless-collector] snapshot sync completed in ${elapsedMs}ms`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[limitless-collector] snapshot sync failed", message);
@@ -267,15 +295,8 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
   if (!providerMarketId) return;
 
   const nowIso = new Date().toISOString();
-  const sourceTs =
-    typeof payload.source_ts === "string"
-      ? payload.source_ts
-      : typeof payload.timestamp === "string"
-        ? payload.timestamp
-        : nowIso;
-
-  const sourceTsMs = Date.parse(sourceTs);
-  const sourceTsIso = Number.isFinite(sourceTsMs) ? new Date(sourceTsMs).toISOString() : nowIso;
+  const sourceTsMs = parseTsMs(payload.source_ts ?? payload.timestamp ?? payload.ts) ?? Date.now();
+  const sourceTsIso = new Date(sourceTsMs).toISOString();
 
   const midRaw =
     parseNumber(payload.mid) ??
@@ -456,6 +477,9 @@ const start = async () => {
     return;
   }
 
+  console.log(
+    `[limitless-collector] starting poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms snapshotLimit=${SNAPSHOT_LIMIT}`
+  );
   startHealthServer();
   await snapshotSync();
 

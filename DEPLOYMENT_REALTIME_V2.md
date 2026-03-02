@@ -86,7 +86,7 @@ Recommended explicit values (to avoid implicit defaults):
 
 Limitless read/trade configuration (only if enabling Limitless):
 - `ENABLE_LIMITLESS=true`
-- `LIMITLESS_API_BASE_URL=https://api.limitless.exchange/api/v1`
+- `LIMITLESS_API_BASE_URL=https://api.limitless.exchange`
 - `LIMITLESS_CHAIN_ID=8453`
 - `LIMITLESS_ACCESS_STATUS_URL=<provider access-status endpoint>`
 - `LIMITLESS_ORDER_RELAY_URL=<provider order relay endpoint>`
@@ -98,11 +98,13 @@ Limitless read/trade configuration (only if enabling Limitless):
 Set these in the worker service that runs `bun run collector:polymarket`:
 - `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`)
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `POLYMARKET_RTDS_WS_URL=wss://ws-live-data.polymarket.com`
+- `POLYMARKET_MARKET_WS_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market`
+- `POLYMARKET_RTDS_WS_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market` (backward-compatible alias)
 - `COLLECTOR_FLUSH_INTERVAL_MS=700`
 - `COLLECTOR_RECONCILE_INTERVAL_MS=120000`
 - `COLLECTOR_HEARTBEAT_TIMEOUT_MS=45000`
 - `COLLECTOR_HEARTBEAT_CLOSE_MULTIPLIER=4`
+- `COLLECTOR_WS_SUBSCRIPTION_CHUNK_SIZE=250`
 - `COLLECTOR_RECONNECT_JITTER_MS=700`
 - `COLLECTOR_DEAD_LETTER_LOG_EVERY_MS=5000`
 - `COLLECTOR_SNAPSHOT_PAGE_SIZE=150`
@@ -117,11 +119,12 @@ Set these in the worker service that runs `bun run collector:limitless`:
 - `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`)
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `ENABLE_LIMITLESS=true`
-- `LIMITLESS_API_BASE_URL`
-- `LIMITLESS_RTDS_WS_URL` (optional; collector falls back to polling when absent)
+- `LIMITLESS_API_BASE_URL=https://api.limitless.exchange`
+- `LIMITLESS_RTDS_WS_URL=wss://ws.limitless.exchange` (optional; collector falls back to polling when absent)
 - `LIMITLESS_COLLECTOR_POLL_INTERVAL_MS=15000`
 - `LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS=700`
 - `LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS=120000`
+- `LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT=600`
 - `LIMITLESS_COLLECTOR_HEALTH_PORT=8081`
 
 ## 4. Local Preflight

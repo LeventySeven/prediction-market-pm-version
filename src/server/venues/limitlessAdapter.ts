@@ -15,10 +15,42 @@ type JsonLike =
   | JsonLike[]
   | { [key: string]: JsonLike | undefined };
 
-const DEFAULT_BASE = "https://api.limitless.exchange/api/v1";
+const DEFAULT_BASE_ROOT = "https://api.limitless.exchange";
+const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
+const DEFAULT_BASE_ALT = `${DEFAULT_BASE_ROOT}/api-v1`;
 const DEFAULT_SITE = "https://limitless.exchange";
+const SNAPSHOT_CACHE_TTL_MS = Math.max(1000, Number(process.env.LIMITLESS_MARKETS_CACHE_TTL_MS ?? 15_000));
 
-const getBaseUrl = () => (process.env.LIMITLESS_API_BASE_URL || DEFAULT_BASE).replace(/\/+$/, "");
+const normalizeBase = (base: string): string => base.trim().replace(/\/+$/, "");
+
+const getCandidateBaseUrls = (): string[] => {
+  const fromEnv = normalizeBase(process.env.LIMITLESS_API_BASE_URL || DEFAULT_BASE_ROOT);
+  const candidates = new Set<string>([fromEnv, DEFAULT_BASE_ROOT, DEFAULT_BASE, DEFAULT_BASE_ALT]);
+
+  const addVariants = (base: string) => {
+    if (base.endsWith("/api/v1")) {
+      const root = base.replace(/\/api\/v1$/, "");
+      candidates.add(root);
+      candidates.add(`${root}/api-v1`);
+      return;
+    }
+    if (base.endsWith("/api-v1")) {
+      const root = base.replace(/\/api-v1$/, "");
+      candidates.add(root);
+      candidates.add(`${root}/api/v1`);
+      return;
+    }
+    candidates.add(`${base}/api/v1`);
+    candidates.add(`${base}/api-v1`);
+  };
+
+  addVariants(fromEnv);
+  addVariants(DEFAULT_BASE_ROOT);
+
+  return Array.from(candidates).filter(Boolean);
+};
+
+const getPrimaryBaseUrl = (): string => getCandidateBaseUrls()[0] ?? DEFAULT_BASE;
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -219,32 +251,91 @@ const fetchMarketRows = async (params: {
   limit?: number;
   onlyOpen?: boolean;
 }): Promise<Record<string, unknown>[]> => {
-  const base = getBaseUrl();
   const limit = Math.max(1, Math.min(params.limit ?? 300, 1000));
-  const urls: string[] = [];
+  const pageSize = Math.max(20, Math.min(200, Number(process.env.LIMITLESS_MARKETS_PAGE_SIZE ?? 100)));
+  const maxPages = Math.max(1, Math.min(20, Math.ceil(limit / pageSize) + 2));
+  const bases = getCandidateBaseUrls();
 
-  if (params.query && params.query.trim().length > 0) {
-    const q = encodeURIComponent(params.query.trim());
-    urls.push(`${base}/markets/search?q=${q}&limit=${limit}`);
-    urls.push(`${base}/markets?q=${q}&limit=${limit}`);
-  } else {
-    const status = params.onlyOpen ? "open" : "all";
-    urls.push(`${base}/markets?limit=${limit}&status=${status}`);
-    urls.push(`${base}/markets?limit=${limit}`);
-  }
-
-  for (const url of urls) {
-    try {
-      const payload = await fetchJson(url);
-      const rows = parseRows(payload);
-      if (rows.length > 0) return rows;
-    } catch {
-      // try next endpoint
+  const fetchFirstNonEmpty = async (urls: string[]): Promise<Record<string, unknown>[]> => {
+    for (const url of urls) {
+      try {
+        const payload = await fetchJson(url);
+        const rows = parseRows(payload);
+        if (rows.length > 0) return rows;
+      } catch {
+        // try next endpoint
+      }
     }
+    return [];
+  };
+
+  const fetchPaged = async (
+    base: string,
+    route: string,
+    extraQuery?: string
+  ): Promise<Record<string, unknown>[]> => {
+    const collected: Record<string, unknown>[] = [];
+    for (let page = 1; page <= maxPages && collected.length < limit; page += 1) {
+      const limitForPage = Math.min(pageSize, limit - collected.length);
+      const queryParts = [`page=${page}`, `limit=${limitForPage}`];
+      if (extraQuery && extraQuery.trim().length > 0) queryParts.push(extraQuery.trim());
+      const url = `${base}${route}?${queryParts.join("&")}`;
+      try {
+        const payload = await fetchJson(url);
+        const rows = parseRows(payload);
+        if (rows.length === 0) break;
+        collected.push(...rows);
+        if (rows.length < limitForPage) break;
+      } catch {
+        break;
+      }
+    }
+    return collected.slice(0, limit);
+  };
+
+  for (const base of bases) {
+    if (params.query && params.query.trim().length > 0) {
+      const q = encodeURIComponent(params.query.trim());
+      const rows = await fetchFirstNonEmpty([
+        `${base}/markets/search?q=${q}&limit=${limit}`,
+        `${base}/markets/search?query=${q}&limit=${limit}`,
+        `${base}/markets?q=${q}&limit=${limit}`,
+        `${base}/markets?query=${q}&limit=${limit}`,
+      ]);
+      if (rows.length > 0) return rows.slice(0, limit);
+      continue;
+    }
+
+    const openRows = await fetchPaged(base, "/markets/active", "sortBy=newest");
+    if (openRows.length > 0) {
+      if (params.onlyOpen) return openRows.slice(0, limit);
+      if (openRows.length >= limit) return openRows.slice(0, limit);
+    }
+
+    const status = params.onlyOpen ? "open" : "all";
+    const rows = await fetchFirstNonEmpty([
+      `${base}/markets?limit=${limit}&status=${status}&sortBy=newest`,
+      `${base}/markets?limit=${limit}&status=${status}`,
+      `${base}/markets?limit=${limit}`,
+    ]);
+    if (rows.length > 0) {
+      if (openRows.length === 0 || params.onlyOpen) return rows.slice(0, limit);
+      const deduped = new Map<string, Record<string, unknown>>();
+      for (const row of [...openRows, ...rows]) {
+        const id = toString(row.id) ?? toString(row.market_id) ?? toString(row.slug);
+        if (!id) continue;
+        if (!deduped.has(id)) deduped.set(id, row);
+      }
+      return Array.from(deduped.values()).slice(0, limit);
+    }
+
+    if (openRows.length > 0) return openRows.slice(0, limit);
   }
 
   return [];
 };
+
+const snapshotCache = new Map<string, { expiresAt: number; rows: VenueMarket[] }>();
 
 const accessCache = new Map<string, { expiresAt: number; value: VenueTradeAccessStatus }>();
 
@@ -365,7 +456,7 @@ const checkTradeAccess = async (params: {
 };
 
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
-  const relayUrl = (process.env.LIMITLESS_ORDER_RELAY_URL || `${getBaseUrl()}/orders`).trim();
+  const relayUrl = (process.env.LIMITLESS_ORDER_RELAY_URL || `${getPrimaryBaseUrl()}/orders`).trim();
   if (!relayUrl) {
     return { success: false, status: 500, error: "LIMITLESS_RELAY_URL_MISSING" };
   }
@@ -456,11 +547,21 @@ export const limitlessAdapter: VenueAdapter = {
   },
   isEnabled: () => (process.env.ENABLE_LIMITLESS || "").trim().toLowerCase() === "true",
   listMarketsSnapshot: async (params) => {
-    const rows = await fetchMarketRows({
-      limit: params?.limit,
-      onlyOpen: params?.onlyOpen ?? false,
-    });
-    const mapped = rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
+    const onlyOpen = params?.onlyOpen ?? false;
+    const limit = Math.max(1, Math.min(params?.limit ?? 300, 1000));
+    const cacheKey = `${onlyOpen ? "open" : "all"}:${limit}`;
+    const now = Date.now();
+    const cached = snapshotCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.rows.slice(0, limit);
+    }
+
+    const rows = await fetchMarketRows({ limit, onlyOpen });
+    const mapped = rows
+      .map(mapLimitlessMarket)
+      .filter((item): item is VenueMarket => Boolean(item))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    snapshotCache.set(cacheKey, { rows: mapped, expiresAt: now + SNAPSHOT_CACHE_TTL_MS });
     if (params?.onlyOpen) return mapped.filter((m) => m.state === "open");
     return mapped;
   },
@@ -473,17 +574,19 @@ export const limitlessAdapter: VenueAdapter = {
     const clean = marketId.trim();
     if (!clean) return null;
 
-    const base = getBaseUrl();
-    const urls = [`${base}/markets/${encodeURIComponent(clean)}`, `${base}/market/${encodeURIComponent(clean)}`];
-    for (const url of urls) {
-      try {
-        const payload = await fetchJson(url);
-        const row = asRecord(payload);
-        if (!row) continue;
-        const mapped = mapLimitlessMarket(row);
-        if (mapped) return mapped;
-      } catch {
-        // fallback below
+    const bases = getCandidateBaseUrls();
+    for (const base of bases) {
+      const urls = [`${base}/markets/${encodeURIComponent(clean)}`, `${base}/market/${encodeURIComponent(clean)}`];
+      for (const url of urls) {
+        try {
+          const payload = await fetchJson(url);
+          const row = asRecord(payload);
+          if (!row) continue;
+          const mapped = mapLimitlessMarket(row);
+          if (mapped) return mapped;
+        } catch {
+          // fallback below
+        }
       }
     }
 
@@ -492,113 +595,115 @@ export const limitlessAdapter: VenueAdapter = {
     return mapped.find((m) => m.providerMarketId === clean || m.slug === clean) ?? null;
   },
   getPriceHistory: async (market, limit = 400) => {
-    const base = getBaseUrl();
     const id = encodeURIComponent(market.providerMarketId);
-    const urls = [
-      `${base}/markets/${id}/candles?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-      `${base}/candles?market_id=${id}&interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-      `${base}/markets/${id}/prices?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-    ];
+    for (const base of getCandidateBaseUrls()) {
+      const urls = [
+        `${base}/markets/${id}/candles?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
+        `${base}/candles?market_id=${id}&interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
+        `${base}/markets/${id}/prices?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
+      ];
 
-    for (const url of urls) {
-      try {
-        const payload = await fetchJson(url);
-        const rows = parseRows(payload);
-        if (rows.length === 0 && Array.isArray(payload)) {
-          const directRows = (payload as unknown[])
-            .map((item) => asRecord(item))
-            .filter((item): item is Record<string, unknown> => Boolean(item));
-          if (directRows.length > 0) {
-            const points = directRows
-              .map((row) => {
-                const ts =
-                  toNumber(row.ts) ??
-                  toNumber(row.timestamp) ??
-                  toNumber(row.t) ??
-                  toNumber(row.time) ??
-                  null;
-                const price =
-                  toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
-                if (ts === null || price === null) return null;
-                const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-                return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
-              })
-              .filter((item): item is { ts: number; price: number } => Boolean(item));
-            if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
+      for (const url of urls) {
+        try {
+          const payload = await fetchJson(url);
+          const rows = parseRows(payload);
+          if (rows.length === 0 && Array.isArray(payload)) {
+            const directRows = (payload as unknown[])
+              .map((item) => asRecord(item))
+              .filter((item): item is Record<string, unknown> => Boolean(item));
+            if (directRows.length > 0) {
+              const points = directRows
+                .map((row) => {
+                  const ts =
+                    toNumber(row.ts) ??
+                    toNumber(row.timestamp) ??
+                    toNumber(row.t) ??
+                    toNumber(row.time) ??
+                    null;
+                  const price =
+                    toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
+                  if (ts === null || price === null) return null;
+                  const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
+                  return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
+                })
+                .filter((item): item is { ts: number; price: number } => Boolean(item));
+              if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
+            }
           }
+
+          const points = rows
+            .map((row) => {
+              const ts =
+                toNumber(row.ts) ??
+                toNumber(row.timestamp) ??
+                toNumber(row.t) ??
+                toNumber(row.time) ??
+                null;
+              const price =
+                toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
+              if (ts === null || price === null) return null;
+              const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
+              return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
+            })
+            .filter((item): item is { ts: number; price: number } => Boolean(item));
+
+          if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
+        } catch {
+          // try next
         }
-
-        const points = rows
-          .map((row) => {
-            const ts =
-              toNumber(row.ts) ??
-              toNumber(row.timestamp) ??
-              toNumber(row.t) ??
-              toNumber(row.time) ??
-              null;
-            const price =
-              toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
-            if (ts === null || price === null) return null;
-            const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-            return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
-          })
-          .filter((item): item is { ts: number; price: number } => Boolean(item));
-
-        if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
-      } catch {
-        // try next
       }
     }
 
     return [];
   },
   getPublicTrades: async (market, limit = 50) => {
-    const base = getBaseUrl();
     const id = encodeURIComponent(market.providerMarketId);
-    const urls = [
-      `${base}/markets/${id}/trades?limit=${Math.max(1, Math.min(limit, 200))}`,
-      `${base}/trades?market_id=${id}&limit=${Math.max(1, Math.min(limit, 200))}`,
-    ];
+    for (const base of getCandidateBaseUrls()) {
+      const urls = [
+        `${base}/markets/${id}/trades?limit=${Math.max(1, Math.min(limit, 200))}`,
+        `${base}/trades?market_id=${id}&limit=${Math.max(1, Math.min(limit, 200))}`,
+      ];
 
-    for (const url of urls) {
-      try {
-        const payload = await fetchJson(url);
-        const rows = parseRows(payload);
-        if (rows.length === 0 && !Array.isArray(payload)) continue;
-        const sourceRows = rows.length > 0
-          ? rows
-          : (payload as unknown[])
-              .map((item) => asRecord(item))
-              .filter((item): item is Record<string, unknown> => Boolean(item));
+      for (const url of urls) {
+        try {
+          const payload = await fetchJson(url);
+          const rows = parseRows(payload);
+          if (rows.length === 0 && !Array.isArray(payload)) continue;
+          const sourceRows = rows.length > 0
+            ? rows
+            : (payload as unknown[])
+                .map((item) => asRecord(item))
+                .filter((item): item is Record<string, unknown> => Boolean(item));
 
-        const mapped = sourceRows
-          .map((row) => {
-            const sideRaw = toString(row.side)?.toUpperCase();
-            const side = sideRaw === "SELL" ? "SELL" : sideRaw === "BUY" ? "BUY" : null;
-            if (!side) return null;
-            const price = toNumber(row.price);
-            const size = toNumber(row.size) ?? toNumber(row.amount);
-            const ts = toNumber(row.timestamp) ?? toNumber(row.ts) ?? toNumber(row.time);
-            if (price === null || size === null || ts === null) return null;
-            const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-            const id =
-              toString(row.id) ??
-              toString(row.tradeId) ??
-              `${market.providerMarketId}:${unix}:${price}:${size}:${side}`;
-            return {
-              id,
-              side,
-              outcome: toString(row.outcome),
-              size: Math.max(0, size),
-              price: clamp01(price > 1 ? price / 100 : price),
-              timestamp: unix,
-            };
-          })
-          .filter((item): item is { id: string; side: "BUY" | "SELL"; outcome: string | null; size: number; price: number; timestamp: number } => Boolean(item));
+          const mapped = sourceRows
+            .map((row) => {
+              const sideRaw = toString(row.side)?.toUpperCase();
+              const side = sideRaw === "SELL" ? "SELL" : sideRaw === "BUY" ? "BUY" : null;
+              if (!side) return null;
+              const price = toNumber(row.price);
+              const size = toNumber(row.size) ?? toNumber(row.amount);
+              const ts = toNumber(row.timestamp) ?? toNumber(row.ts) ?? toNumber(row.time);
+              if (price === null || size === null || ts === null) return null;
+              const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
+              const id =
+                toString(row.id) ??
+                toString(row.tradeId) ??
+                `${market.providerMarketId}:${unix}:${price}:${size}:${side}`;
+              return {
+                id,
+                side,
+                outcome: toString(row.outcome),
+                size: Math.max(0, size),
+                price: clamp01(price > 1 ? price / 100 : price),
+                timestamp: unix,
+              };
+            })
+            .filter((item): item is { id: string; side: "BUY" | "SELL"; outcome: string | null; size: number; price: number; timestamp: number } => Boolean(item));
 
-        if (mapped.length > 0) return mapped;
-      } catch {
-        // try next endpoint
+          if (mapped.length > 0) return mapped;
+        } catch {
+          // try next endpoint
+        }
       }
     }
 
@@ -607,7 +712,7 @@ export const limitlessAdapter: VenueAdapter = {
   checkTradeAccess,
   relaySignedOrder,
   wsCollectorConfig: () => ({
-    url: (process.env.LIMITLESS_RTDS_WS_URL || "").trim() || null,
+    url: (process.env.LIMITLESS_RTDS_WS_URL || process.env.LIMITLESS_WS_URL || "").trim() || null,
     channels: ["markets", "prices", "trades"],
   }),
 };

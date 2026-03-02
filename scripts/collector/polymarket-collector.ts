@@ -11,11 +11,16 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
 }
 
-const RTDS_URL = (process.env.POLYMARKET_RTDS_WS_URL || "wss://ws-live-data.polymarket.com").trim();
+const MARKET_WS_URL = (
+  process.env.POLYMARKET_MARKET_WS_URL ||
+  process.env.POLYMARKET_RTDS_WS_URL ||
+  "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+).trim();
 const FLUSH_INTERVAL_MS = Math.max(250, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 700));
 const RECONCILE_INTERVAL_MS = Math.max(30_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 120_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(10_000, Number(process.env.COLLECTOR_HEARTBEAT_TIMEOUT_MS ?? 45_000));
 const HEARTBEAT_CLOSE_MULTIPLIER = Math.max(2, Number(process.env.COLLECTOR_HEARTBEAT_CLOSE_MULTIPLIER ?? 4));
+const WS_SUBSCRIPTION_CHUNK_SIZE = Math.max(50, Math.min(500, Number(process.env.COLLECTOR_WS_SUBSCRIPTION_CHUNK_SIZE ?? 250)));
 const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
 const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
 const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
@@ -68,6 +73,7 @@ type PendingCandle = {
 const pendingLive = new Map<string, PendingLive>();
 const pendingCandles = new Map<string, PendingCandle>();
 const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
+const trackedAssetIds = new Set<string>();
 let flushing = false;
 let lastHeartbeatAt = Date.now();
 let lastWsMessageAt = 0;
@@ -76,6 +82,8 @@ let lastReconcileAt = 0;
 let deadLetterSuppressed = 0;
 let lastDeadLetterLogAt = 0;
 const startedAt = Date.now();
+let activeSocket: WebSocket | null = null;
+const activeSubscribedAssetIds = new Set<string>();
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -90,9 +98,43 @@ const toNumber = (value: Json | undefined): number | null => {
   return null;
 };
 
+const asRecord = (value: unknown): Record<string, Json | undefined> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, Json | undefined>;
+};
+
+const parseTsMs = (value: Json | undefined): number | null => {
+  const numeric = toNumber(value);
+  if (numeric !== null) {
+    if (numeric > 10_000_000_000) return Math.floor(numeric);
+    if (numeric > 1_000_000_000) return Math.floor(numeric * 1000);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const asNum = Number(trimmed);
+    if (Number.isFinite(asNum)) {
+      if (asNum > 10_000_000_000) return Math.floor(asNum);
+      if (asNum > 1_000_000_000) return Math.floor(asNum * 1000);
+    }
+    const parsed = Date.parse(trimmed);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
 const minuteBucketIso = (tsMs: number): string => {
   const minute = Math.floor(tsMs / 60_000) * 60_000;
   return new Date(minute).toISOString();
+};
+
+const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
+  if (rows.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    chunks.push(rows.slice(i, i + chunkSize));
+  }
+  return chunks;
 };
 
 const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<string, string>> => {
@@ -289,6 +331,9 @@ const looksLikeLivePayload = (payload: JsonMap): boolean => {
     "seq",
     "timestamp",
     "ts",
+    "bids",
+    "asks",
+    "price_changes",
   ];
   return keys.some((key) => payload[key] !== undefined);
 };
@@ -368,29 +413,71 @@ const parseMarketId = (payload: JsonMap): string | null => {
   return null;
 };
 
+const parseBookPrice = (value: Json | undefined, side: "bid" | "ask"): number | null => {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const prices: number[] = [];
+  for (const level of value) {
+    const rec = asRecord(level);
+    if (!rec) continue;
+    const p = toNumber(rec.price ?? rec.p);
+    if (p !== null) {
+      prices.push(clampPrice(p > 1 ? p / 100 : p));
+    }
+  }
+  if (prices.length === 0) return null;
+  return side === "bid" ? Math.max(...prices) : Math.min(...prices);
+};
+
+const parseBestFromPriceChanges = (value: Json | undefined): { bid: number | null; ask: number | null } => {
+  if (!Array.isArray(value) || value.length === 0) return { bid: null, ask: null };
+  let bestBid: number | null = null;
+  let bestAsk: number | null = null;
+  for (const item of value) {
+    const rec = asRecord(item);
+    if (!rec) continue;
+    const side = typeof rec.side === "string" ? rec.side.trim().toUpperCase() : "";
+    const rawPrice = toNumber(rec.price ?? rec.p);
+    if (rawPrice === null) continue;
+    const price = clampPrice(rawPrice > 1 ? rawPrice / 100 : rawPrice);
+    if (side === "BUY") {
+      bestBid = bestBid === null ? price : Math.max(bestBid, price);
+    } else if (side === "SELL") {
+      bestAsk = bestAsk === null ? price : Math.min(bestAsk, price);
+    }
+  }
+  return { bid: bestBid, ask: bestAsk };
+};
+
 const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
   const marketId = parseMarketId(payload);
   if (!marketId) return null;
 
   const nowIso = new Date().toISOString();
-  const sourceTsRaw =
-    (typeof payload.source_ts === "string" && payload.source_ts) ||
-    (typeof payload.timestamp === "string" && payload.timestamp) ||
-    (typeof payload.ts === "string" && payload.ts) ||
-    nowIso;
-
-  const sourceTsMs = Date.parse(sourceTsRaw);
-  const sourceTsIso = Number.isFinite(sourceTsMs) ? new Date(sourceTsMs).toISOString() : nowIso;
+  const sourceTsMs = parseTsMs(payload.source_ts ?? payload.timestamp ?? payload.ts) ?? Date.now();
+  const sourceTsIso = new Date(sourceTsMs).toISOString();
 
   const prev = pendingLive.get(marketId);
+  const priceChanges = parseBestFromPriceChanges(payload.price_changes ?? payload.changes);
+  const parsedBidFromBook = parseBookPrice(payload.bids, "bid");
+  const parsedAskFromBook = parseBookPrice(payload.asks, "ask");
 
   const mid = toNumber(payload.mid ?? payload.price ?? payload.last_trade_price ?? payload.lastPrice);
-  const bestBid = toNumber(payload.best_bid ?? payload.bid ?? payload.bestBid) ?? prev?.best_bid ?? 0;
-  const bestAsk = toNumber(payload.best_ask ?? payload.ask ?? payload.bestAsk) ?? prev?.best_ask ?? 0;
+  const bestBidRaw =
+    toNumber(payload.best_bid ?? payload.bid ?? payload.bestBid) ??
+    priceChanges.bid ??
+    parsedBidFromBook ??
+    prev?.best_bid ??
+    0;
+  const bestAskRaw =
+    toNumber(payload.best_ask ?? payload.ask ?? payload.bestAsk) ??
+    priceChanges.ask ??
+    parsedAskFromBook ??
+    prev?.best_ask ??
+    0;
   const lastTradePrice =
     toNumber(payload.last_trade_price ?? payload.price ?? payload.lastPrice) ?? prev?.last_trade_price ?? 0;
   const lastTradeSize =
-    toNumber(payload.last_trade_size ?? payload.size ?? payload.trade_size) ?? prev?.last_trade_size ?? 0;
+    toNumber(payload.last_trade_size ?? payload.size ?? payload.trade_size ?? payload.amount) ?? prev?.last_trade_size ?? 0;
   const rolling24hVolume =
     toNumber(payload.rolling_24h_volume ?? payload.volume ?? payload.volume_24h) ??
     prev?.rolling_24h_volume ??
@@ -401,14 +488,21 @@ const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
     prev?.source_seq ??
     null;
 
-  const normalizedMid = mid !== null ? clampPrice(mid) : prev?.mid ?? 0;
+  const bestBid = clampPrice(bestBidRaw > 1 ? bestBidRaw / 100 : bestBidRaw);
+  const bestAsk = clampPrice(bestAskRaw > 1 ? bestAskRaw / 100 : bestAskRaw);
+  const derivedMid = bestBid > 0 && bestAsk > 0 ? clampPrice((bestBid + bestAsk) / 2) : prev?.mid ?? 0;
+  const normalizedMid =
+    mid !== null
+      ? clampPrice(mid > 1 ? mid / 100 : mid)
+      : derivedMid;
+  const normalizedTradePrice = clampPrice(lastTradePrice > 1 ? lastTradePrice / 100 : lastTradePrice);
 
   return {
     market_id: marketId,
-    best_bid: clampPrice(bestBid),
-    best_ask: clampPrice(bestAsk),
+    best_bid: bestBid,
+    best_ask: bestAsk,
     mid: normalizedMid,
-    last_trade_price: clampPrice(lastTradePrice),
+    last_trade_price: normalizedTradePrice,
     last_trade_size: Math.max(0, lastTradeSize),
     rolling_24h_volume: Math.max(0, rolling24hVolume),
     open_interest: openInterest,
@@ -583,6 +677,28 @@ const bootstrapSnapshot = async () => {
       rememberLiveState(row);
     }
 
+    const nextTrackedAssetIds = new Set<string>();
+    for (const market of markets) {
+      for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
+        if (typeof tokenId === "string" && tokenId.trim().length > 0) {
+          nextTrackedAssetIds.add(tokenId.trim());
+        }
+      }
+      for (const outcome of market.outcomes) {
+        if (typeof outcome.tokenId === "string" && outcome.tokenId.trim().length > 0) {
+          nextTrackedAssetIds.add(outcome.tokenId.trim());
+        }
+      }
+    }
+    trackedAssetIds.clear();
+    for (const assetId of nextTrackedAssetIds) {
+      trackedAssetIds.add(assetId);
+    }
+
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      await syncMarketSubscriptions(activeSocket, false);
+    }
+
     console.log(`[collector] snapshot synced ${markets.length} markets`);
   } finally {
     lastReconcileAt = Date.now();
@@ -605,18 +721,55 @@ const extractMessages = (payload: Json): JsonMap[] => {
   return [];
 };
 
-const subscribeToDefaultTopics = (socket: WebSocket) => {
-  const subscriptions = [
-    { type: "subscribe", channel: "prices" },
-    { type: "subscribe", channel: "activity" },
-    { type: "subscribe", channel: "clob_market" },
-  ];
-  for (const item of subscriptions) {
-    try {
-      socket.send(JSON.stringify(item));
-    } catch {
-      // ignore
+const syncMarketSubscriptions = async (socket: WebSocket, forceResubscribe: boolean) => {
+  const desiredAssetIds = Array.from(trackedAssetIds);
+  if (desiredAssetIds.length === 0) return;
+
+  if (forceResubscribe) {
+    activeSubscribedAssetIds.clear();
+  }
+
+  const toSubscribe = desiredAssetIds.filter((assetId) => !activeSubscribedAssetIds.has(assetId));
+  const toUnsubscribe = forceResubscribe
+    ? []
+    : Array.from(activeSubscribedAssetIds).filter((assetId) => !trackedAssetIds.has(assetId));
+
+  for (const chunk of chunkArray(toSubscribe, WS_SUBSCRIPTION_CHUNK_SIZE)) {
+    const payload: Record<string, unknown> = {
+      type: "market",
+      assets_ids: chunk,
+      custom_feature_enabled: true,
+    };
+    if (!forceResubscribe) {
+      payload.operation = "subscribe";
     }
+    try {
+      socket.send(JSON.stringify(payload));
+      for (const assetId of chunk) activeSubscribedAssetIds.add(assetId);
+    } catch {
+      // ignore send failures
+    }
+  }
+
+  for (const chunk of chunkArray(toUnsubscribe, WS_SUBSCRIPTION_CHUNK_SIZE)) {
+    const payload = {
+      type: "market",
+      operation: "unsubscribe",
+      assets_ids: chunk,
+      custom_feature_enabled: true,
+    };
+    try {
+      socket.send(JSON.stringify(payload));
+      for (const assetId of chunk) activeSubscribedAssetIds.delete(assetId);
+    } catch {
+      // ignore send failures
+    }
+  }
+
+  if (toSubscribe.length > 0 || toUnsubscribe.length > 0) {
+    console.log(
+      `[collector] ws subscriptions synced subscribed=${activeSubscribedAssetIds.size} added=${toSubscribe.length} removed=${toUnsubscribe.length}`
+    );
   }
 };
 
@@ -626,9 +779,15 @@ const runWsLoop = async () => {
 
   while (true) {
     try {
-      console.log("[collector] connecting", RTDS_URL);
-      const socket = new WebSocket(RTDS_URL);
+      if (trackedAssetIds.size === 0) {
+        await wait(2000);
+        continue;
+      }
+      console.log("[collector] connecting", MARKET_WS_URL);
+      const socket = new WebSocket(MARKET_WS_URL);
       lastHeartbeatAt = Date.now();
+      activeSocket = socket;
+      activeSubscribedAssetIds.clear();
 
       const session = await new Promise<{ stableMs: number }>((resolve, reject) => {
         let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -636,7 +795,7 @@ const runWsLoop = async () => {
 
         socket.onopen = () => {
           console.log("[collector] ws connected");
-          subscribeToDefaultTopics(socket);
+          void syncMarketSubscriptions(socket, true);
           heartbeatTimer = setInterval(() => {
             if (Date.now() - lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS * HEARTBEAT_CLOSE_MULTIPLIER) {
               console.warn("[collector] ws heartbeat timeout, reconnecting");
@@ -685,6 +844,10 @@ const runWsLoop = async () => {
 
         socket.onclose = (event) => {
           if (heartbeatTimer) clearInterval(heartbeatTimer);
+          if (activeSocket === socket) {
+            activeSocket = null;
+            activeSubscribedAssetIds.clear();
+          }
           const reason = typeof event.reason === "string" && event.reason.trim() ? event.reason.trim() : "no_reason";
           console.warn(`[collector] ws closed code=${event.code} reason=${reason}`);
           resolve({ stableMs: Date.now() - openedAt });
@@ -709,6 +872,10 @@ const runWsLoop = async () => {
       const jitterMs = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
       const backoffMs = baseBackoffMs + jitterMs;
       console.error("[collector] ws loop error", error instanceof Error ? error.message : String(error));
+      if (activeSocket && activeSocket.readyState !== WebSocket.OPEN) {
+        activeSocket = null;
+        activeSubscribedAssetIds.clear();
+      }
       attempt += 1;
       await wait(backoffMs);
     }
