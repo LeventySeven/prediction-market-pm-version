@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
-import { listPolymarketMarketsSnapshot } from "../../src/server/polymarket/client";
+import { listPolymarketMarketsSnapshot, type PolymarketMarket } from "../../src/server/polymarket/client";
 import { upsertMirroredPolymarketMarkets } from "../../src/server/polymarket/mirror";
 import type { Database, Json } from "../../src/types/database";
 
@@ -16,8 +16,12 @@ const MARKET_WS_URL = (
   process.env.POLYMARKET_RTDS_WS_URL ||
   "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ).trim();
-const FLUSH_INTERVAL_MS = Math.max(250, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 700));
-const RECONCILE_INTERVAL_MS = Math.max(30_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 120_000));
+const MARKET_WS_FALLBACK_URL = "wss://ws-live-data.polymarket.com";
+const MARKET_WS_URLS = Array.from(
+  new Set([MARKET_WS_URL, "wss://ws-subscriptions-clob.polymarket.com/ws/market", MARKET_WS_FALLBACK_URL])
+).filter((url) => typeof url === "string" && url.trim().length > 0);
+const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 2_000));
+const RECONCILE_INTERVAL_MS = Math.max(60_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 300_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(10_000, Number(process.env.COLLECTOR_HEARTBEAT_TIMEOUT_MS ?? 45_000));
 const HEARTBEAT_CLOSE_MULTIPLIER = Math.max(2, Number(process.env.COLLECTOR_HEARTBEAT_CLOSE_MULTIPLIER ?? 4));
 const WS_SUBSCRIPTION_CHUNK_SIZE = Math.max(50, Math.min(500, Number(process.env.COLLECTOR_WS_SUBSCRIPTION_CHUNK_SIZE ?? 250)));
@@ -25,9 +29,23 @@ const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_J
 const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
 const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
 const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 150)));
-const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 6)));
+const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 3)));
+const NEW_MARKET_POLL_INTERVAL_MS = Math.max(
+  5000,
+  Number(process.env.COLLECTOR_NEW_MARKET_POLL_INTERVAL_MS ?? 10_000)
+);
+const NEW_MARKET_POLL_PAGE_SIZE = Math.max(
+  20,
+  Math.min(200, Number(process.env.COLLECTOR_NEW_MARKET_POLL_PAGE_SIZE ?? 60))
+);
+const MAX_TRACKED_MARKETS = Math.max(20, Number(process.env.COLLECTOR_MAX_TRACKED_MARKETS ?? 500));
+const MAX_TRACKED_ASSET_IDS = Math.max(100, Number(process.env.COLLECTOR_MAX_TRACKED_ASSET_IDS ?? 1200));
 const LIVE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_UPSERT_CHUNK_SIZE ?? 400)));
 const CANDLE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_CANDLE_UPSERT_CHUNK_SIZE ?? 400)));
+const ENABLE_SNAPSHOT_REALTIME_SEED =
+  (process.env.COLLECTOR_ENABLE_SNAPSHOT_REALTIME_SEED || "false").trim().toLowerCase() === "true";
+const ENABLE_CANONICAL_REALTIME_MIRROR =
+  (process.env.COLLECTOR_ENABLE_CANONICAL_REALTIME_MIRROR || "false").trim().toLowerCase() === "true";
 
 const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -73,17 +91,21 @@ type PendingCandle = {
 const pendingLive = new Map<string, PendingLive>();
 const pendingCandles = new Map<string, PendingCandle>();
 const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
+const knownMarketFingerprints = new Map<string, string>();
 const trackedAssetIds = new Set<string>();
 let flushing = false;
 let lastHeartbeatAt = Date.now();
 let lastWsMessageAt = 0;
 let lastFlushAt = 0;
 let lastReconcileAt = 0;
+let lastHeadPollAt = 0;
 let deadLetterSuppressed = 0;
 let lastDeadLetterLogAt = 0;
 const startedAt = Date.now();
 let activeSocket: WebSocket | null = null;
 const activeSubscribedAssetIds = new Set<string>();
+let runningFullSnapshot = false;
+let runningHeadSnapshot = false;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -135,6 +157,74 @@ const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
     chunks.push(rows.slice(i, i + chunkSize));
   }
   return chunks;
+};
+
+const fingerprintMarket = (market: PolymarketMarket): string => {
+  const outcomes = market.outcomes
+    .map((outcome) => `${outcome.id}|${outcome.tokenId ?? ""}|${outcome.title}|${outcome.sortOrder}`)
+    .join(";");
+  const tokens = market.clobTokenIds.join(",");
+  return [
+    market.state,
+    market.slug,
+    market.title,
+    market.description ?? "",
+    market.imageUrl ?? "",
+    market.sourceUrl ?? "",
+    market.createdAt,
+    market.closesAt,
+    market.expiresAt,
+    market.category ?? "",
+    market.resolvedOutcomeTitle ?? "",
+    outcomes,
+    tokens,
+  ].join("||");
+};
+
+const selectChangedMarkets = (markets: PolymarketMarket[]): PolymarketMarket[] => {
+  const changed: PolymarketMarket[] = [];
+  for (const market of markets) {
+    const nextFingerprint = fingerprintMarket(market);
+    const previousFingerprint = knownMarketFingerprints.get(market.id);
+    if (previousFingerprint !== nextFingerprint) {
+      changed.push(market);
+    }
+    knownMarketFingerprints.set(market.id, nextFingerprint);
+  }
+  return changed;
+};
+
+const collectTrackedAssetIds = (markets: PolymarketMarket[]): Set<string> => {
+  const out = new Set<string>();
+  for (const market of markets.slice(0, MAX_TRACKED_MARKETS)) {
+    for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
+      if (typeof tokenId !== "string" || tokenId.trim().length === 0) continue;
+      out.add(tokenId.trim());
+      if (out.size >= MAX_TRACKED_ASSET_IDS) return out;
+    }
+    for (const outcome of market.outcomes) {
+      if (typeof outcome.tokenId !== "string" || outcome.tokenId.trim().length === 0) continue;
+      out.add(outcome.tokenId.trim());
+      if (out.size >= MAX_TRACKED_ASSET_IDS) return out;
+    }
+  }
+  return out;
+};
+
+const mergeTrackedAssetIds = (markets: PolymarketMarket[]) => {
+  if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
+  for (const market of markets.slice(0, Math.max(10, Math.min(100, MAX_TRACKED_MARKETS)))) {
+    for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
+      if (typeof tokenId !== "string" || tokenId.trim().length === 0) continue;
+      trackedAssetIds.add(tokenId.trim());
+      if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
+    }
+    for (const outcome of market.outcomes) {
+      if (typeof outcome.tokenId !== "string" || outcome.tokenId.trim().length === 0) continue;
+      trackedAssetIds.add(outcome.tokenId.trim());
+      if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
+    }
+  }
 };
 
 const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<string, string>> => {
@@ -338,6 +428,25 @@ const looksLikeLivePayload = (payload: JsonMap): boolean => {
   return keys.some((key) => payload[key] !== undefined);
 };
 
+const isNewMarketEventPayload = (payload: JsonMap): boolean => {
+  const candidates = [
+    payload.event,
+    payload.event_type,
+    payload.eventType,
+    payload.type,
+    payload.channel,
+    payload.topic,
+  ];
+  for (const value of candidates) {
+    if (typeof value !== "string") continue;
+    const normalized = value.trim().toLowerCase();
+    if (normalized.includes("new_market") || normalized.includes("newmarket")) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const startHealthServer = () => {
   if (HEALTH_PORT <= 0) return;
   const server = createServer((req, res) => {
@@ -353,7 +462,10 @@ const startHealthServer = () => {
     const websocketHealthy = recentSignalAt > 0 && now - recentSignalAt <= HEARTBEAT_TIMEOUT_MS * 2;
     const reconcileHealthy =
       lastReconcileAt > 0 && now - lastReconcileAt <= Math.max(RECONCILE_INTERVAL_MS * 3, 180_000);
-    const ready = websocketHealthy && reconcileHealthy;
+    const headPollHealthy =
+      lastHeadPollAt > 0 &&
+      now - lastHeadPollAt <= Math.max(NEW_MARKET_POLL_INTERVAL_MS * 4, 60_000);
+    const ready = websocketHealthy && reconcileHealthy && headPollHealthy;
     const payload = {
       ok: path === "/health" ? true : ready,
       ready,
@@ -364,8 +476,11 @@ const startHealthServer = () => {
       lastWsMessageAt: lastWsMessageAt > 0 ? new Date(lastWsMessageAt).toISOString() : null,
       lastFlushAt: lastFlushAt > 0 ? new Date(lastFlushAt).toISOString() : null,
       lastReconcileAt: lastReconcileAt > 0 ? new Date(lastReconcileAt).toISOString() : null,
+      lastHeadPollAt: lastHeadPollAt > 0 ? new Date(lastHeadPollAt).toISOString() : null,
       websocketHealthy,
       reconcileHealthy,
+      headPollHealthy,
+      trackedAssetIds: trackedAssetIds.size,
     };
     res.statusCode = path === "/ready" && !ready ? 503 : 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -590,7 +705,7 @@ const flushPending = async () => {
       }
     }
 
-    if (liveRows.length > 0 || candleRows.length > 0) {
+    if (ENABLE_CANONICAL_REALTIME_MIRROR && (liveRows.length > 0 || candleRows.length > 0)) {
       await mirrorIntoCanonicalRealtime(liveRows, candleRows);
     }
   } finally {
@@ -599,109 +714,106 @@ const flushPending = async () => {
   }
 };
 
-const bootstrapSnapshot = async () => {
+const syncSnapshot = async (mode: "full" | "head") => {
+  if (mode === "full") {
+    if (runningFullSnapshot) return;
+    runningFullSnapshot = true;
+  } else {
+    if (runningHeadSnapshot || runningFullSnapshot) return;
+    runningHeadSnapshot = true;
+  }
+
   try {
     const markets = await listPolymarketMarketsSnapshot({
       scope: "open",
-      pageSize: SNAPSHOT_PAGE_SIZE,
-      maxPages: SNAPSHOT_MAX_PAGES,
+      pageSize: mode === "head" ? NEW_MARKET_POLL_PAGE_SIZE : SNAPSHOT_PAGE_SIZE,
+      maxPages: mode === "head" ? 1 : SNAPSHOT_MAX_PAGES,
       hydrateMidpoints: false,
     });
 
     if (markets.length === 0) return;
 
-    await upsertMirroredPolymarketMarkets(supabase, markets);
-
-    const nowIso = new Date().toISOString();
-    const currentBucket = minuteBucketIso(Date.now());
-    const liveRows: PendingLive[] = markets.map((market) => {
-      const yes = market.outcomes[0]?.price ?? 0.5;
-      const no = market.outcomes[1]?.price ?? Math.max(0, 1 - yes);
-      const bid = Math.max(0, Math.min(1, Math.min(yes, no)));
-      const ask = Math.max(0, Math.min(1, Math.max(yes, no)));
-      return {
-        market_id: market.id,
-        best_bid: bid,
-        best_ask: ask,
-        mid: clampPrice(yes),
-        last_trade_price: clampPrice(yes),
-        last_trade_size: 0,
-        rolling_24h_volume: Math.max(0, market.volume),
-        open_interest: null,
-        source_seq: null,
-        source_ts: nowIso,
-        updated_at: nowIso,
-        ingested_at: nowIso,
-      };
-    });
-
-    try {
-      await upsertRowsInChunks(
-        "polymarket_market_live",
-        liveRows as unknown as Record<string, unknown>[],
-        "market_id",
-        LIVE_UPSERT_CHUNK_SIZE,
-        "SNAPSHOT_LIVE_UPSERT_FAILED"
-      );
-    } catch (error) {
-      console.error("[collector] snapshot live upsert failed", error instanceof Error ? error.message : String(error));
+    const changedMarkets = selectChangedMarkets(markets);
+    if (changedMarkets.length > 0) {
+      await upsertMirroredPolymarketMarkets(supabase, changedMarkets);
     }
 
-    const baselineCandles: PendingCandle[] = liveRows.map((row) => ({
-      market_id: row.market_id,
-      bucket_start: currentBucket,
-      open: row.mid,
-      high: row.mid,
-      low: row.mid,
-      close: row.mid,
-      volume: 0,
-      trades_count: 0,
-      source_ts_max: row.source_ts,
-      updated_at: nowIso,
-    }));
-    try {
-      await upsertRowsInChunks(
-        "polymarket_candles_1m",
-        baselineCandles as unknown as Record<string, unknown>[],
-        "market_id,bucket_start",
-        CANDLE_UPSERT_CHUNK_SIZE,
-        "SNAPSHOT_CANDLE_UPSERT_FAILED"
-      );
-    } catch (error) {
-      console.error("[collector] snapshot candle backfill failed", error instanceof Error ? error.message : String(error));
-    }
+    if (ENABLE_SNAPSHOT_REALTIME_SEED) {
+      const nowIso = new Date().toISOString();
+      const liveRows: PendingLive[] = changedMarkets
+        .filter((market) => !latestLiveState.has(market.id))
+        .map((market) => {
+          const yes = market.outcomes[0]?.price ?? 0.5;
+          const no = market.outcomes[1]?.price ?? Math.max(0, 1 - yes);
+          const bid = Math.max(0, Math.min(1, Math.min(yes, no)));
+          const ask = Math.max(0, Math.min(1, Math.max(yes, no)));
+          return {
+            market_id: market.id,
+            best_bid: bid,
+            best_ask: ask,
+            mid: clampPrice(yes),
+            last_trade_price: clampPrice(yes),
+            last_trade_size: 0,
+            rolling_24h_volume: Math.max(0, market.volume),
+            open_interest: null,
+            source_seq: null,
+            source_ts: nowIso,
+            updated_at: nowIso,
+            ingested_at: nowIso,
+          };
+        });
 
-    await mirrorIntoCanonicalRealtime(liveRows, baselineCandles);
-
-    for (const row of liveRows) {
-      rememberLiveState(row);
-    }
-
-    const nextTrackedAssetIds = new Set<string>();
-    for (const market of markets) {
-      for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
-        if (typeof tokenId === "string" && tokenId.trim().length > 0) {
-          nextTrackedAssetIds.add(tokenId.trim());
+      if (liveRows.length > 0) {
+        try {
+          await upsertRowsInChunks(
+            "polymarket_market_live",
+            liveRows as unknown as Record<string, unknown>[],
+            "market_id",
+            LIVE_UPSERT_CHUNK_SIZE,
+            "SNAPSHOT_LIVE_UPSERT_FAILED"
+          );
+        } catch (error) {
+          console.error("[collector] snapshot live upsert failed", error instanceof Error ? error.message : String(error));
         }
-      }
-      for (const outcome of market.outcomes) {
-        if (typeof outcome.tokenId === "string" && outcome.tokenId.trim().length > 0) {
-          nextTrackedAssetIds.add(outcome.tokenId.trim());
+
+        if (ENABLE_CANONICAL_REALTIME_MIRROR) {
+          await mirrorIntoCanonicalRealtime(liveRows, []);
         }
+
+        for (const row of liveRows) {
+          rememberLiveState(row);
+        }
+        console.log(`[collector] snapshot seeded realtime for ${liveRows.length} new markets`);
       }
     }
-    trackedAssetIds.clear();
-    for (const assetId of nextTrackedAssetIds) {
-      trackedAssetIds.add(assetId);
+
+    if (mode === "full") {
+      const nextTrackedAssetIds = collectTrackedAssetIds(markets);
+      trackedAssetIds.clear();
+      for (const assetId of nextTrackedAssetIds) {
+        trackedAssetIds.add(assetId);
+      }
+    } else {
+      mergeTrackedAssetIds(markets);
     }
 
     if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
       await syncMarketSubscriptions(activeSocket, false);
     }
 
-    console.log(`[collector] snapshot synced ${markets.length} markets`);
+    const tag = mode === "head" ? "head sync" : "snapshot sync";
+    console.log(
+      `[collector] ${tag} fetched=${markets.length} changed=${changedMarkets.length} trackedAssets=${trackedAssetIds.size}`
+    );
   } finally {
-    lastReconcileAt = Date.now();
+    const now = Date.now();
+    if (mode === "full") {
+      lastReconcileAt = now;
+      runningFullSnapshot = false;
+    } else {
+      lastHeadPollAt = now;
+      runningHeadSnapshot = false;
+    }
   }
 };
 
@@ -778,13 +890,14 @@ const runWsLoop = async () => {
   const stableThresholdMs = Math.max(30_000, HEARTBEAT_TIMEOUT_MS);
 
   while (true) {
+    const wsUrl = MARKET_WS_URLS[Math.abs(attempt) % MARKET_WS_URLS.length] ?? MARKET_WS_URL;
     try {
       if (trackedAssetIds.size === 0) {
         await wait(2000);
         continue;
       }
-      console.log("[collector] connecting", MARKET_WS_URL);
-      const socket = new WebSocket(MARKET_WS_URL);
+      console.log("[collector] connecting", wsUrl);
+      const socket = new WebSocket(wsUrl);
       lastHeartbeatAt = Date.now();
       activeSocket = socket;
       activeSubscribedAssetIds.clear();
@@ -818,6 +931,16 @@ const runWsLoop = async () => {
             const parsed = JSON.parse(raw) as Json;
             const messages = extractMessages(parsed);
             for (const message of messages) {
+              if (isNewMarketEventPayload(message)) {
+                void syncSnapshot("head").catch((error) => {
+                  console.error(
+                    "[collector] new-market head sync failed",
+                    error instanceof Error ? error.message : String(error)
+                  );
+                });
+                continue;
+              }
+
               const update = parseIncomingUpdate(message);
               if (!update) {
                 if (looksLikeLivePayload(message)) {
@@ -871,7 +994,10 @@ const runWsLoop = async () => {
       const baseBackoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
       const jitterMs = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
       const backoffMs = baseBackoffMs + jitterMs;
-      console.error("[collector] ws loop error", error instanceof Error ? error.message : String(error));
+      console.error(
+        "[collector] ws loop error",
+        error instanceof Error ? `${error.message} (${wsUrl})` : `${String(error)} (${wsUrl})`
+      );
       if (activeSocket && activeSocket.readyState !== WebSocket.OPEN) {
         activeSocket = null;
         activeSubscribedAssetIds.clear();
@@ -883,16 +1009,26 @@ const runWsLoop = async () => {
 };
 
 const start = async () => {
+  console.log(
+    `[collector] starting flush=${FLUSH_INTERVAL_MS}ms headPoll=${NEW_MARKET_POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms snapshotSeed=${ENABLE_SNAPSHOT_REALTIME_SEED} canonicalMirror=${ENABLE_CANONICAL_REALTIME_MIRROR}`
+  );
   startHealthServer();
   await loadPersistedLiveState();
-  await bootstrapSnapshot();
+  await syncSnapshot("full");
+  await syncSnapshot("head");
 
   setInterval(() => {
     void flushPending();
   }, FLUSH_INTERVAL_MS);
 
   setInterval(() => {
-    void bootstrapSnapshot().catch((error) => {
+    void syncSnapshot("head").catch((error) => {
+      console.error("[collector] head snapshot failed", error instanceof Error ? error.message : String(error));
+    });
+  }, NEW_MARKET_POLL_INTERVAL_MS);
+
+  setInterval(() => {
+    void syncSnapshot("full").catch((error) => {
       console.error("[collector] reconcile snapshot failed", error instanceof Error ? error.message : String(error));
     });
   }, RECONCILE_INTERVAL_MS);

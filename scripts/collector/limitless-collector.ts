@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
 import { limitlessAdapter } from "../../src/server/venues/limitlessAdapter";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
+import type { VenueMarket } from "../../src/server/venues/types";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -10,14 +11,26 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
 }
 
-const POLL_INTERVAL_MS = Math.max(5000, Number(process.env.LIMITLESS_COLLECTOR_POLL_INTERVAL_MS ?? 15000));
-const FLUSH_INTERVAL_MS = Math.max(250, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 700));
+const POLL_INTERVAL_MS = Math.max(10_000, Number(process.env.LIMITLESS_COLLECTOR_POLL_INTERVAL_MS ?? 45_000));
+const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 2_000));
 const RECONCILE_INTERVAL_MS = Math.max(
-  30_000,
-  Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 120000)
+  60_000,
+  Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300000)
 );
 const HEALTH_PORT = Math.max(0, Number(process.env.LIMITLESS_COLLECTOR_HEALTH_PORT ?? 8081));
-const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 600)));
+const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 200)));
+const HEAD_SNAPSHOT_LIMIT = Math.max(
+  20,
+  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 80))
+);
+const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
+const SEED_REALTIME_FROM_SNAPSHOT =
+  (
+    process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ??
+    (LIMITLESS_WS_CONFIG?.url ? "false" : "true")
+  )
+    .trim()
+    .toLowerCase() === "true";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -57,12 +70,16 @@ type PendingCandle = {
 
 const pendingLiveByProviderMarketId = new Map<string, Omit<PendingLive, "market_id">>();
 const pendingCandlesByProviderMarketId = new Map<string, Omit<PendingCandle, "market_id">>();
+const lastSnapshotSeedByProviderMarketId = new Map<string, { mid: number; volume: number }>();
+const knownMarketFingerprints = new Map<string, string>();
 
 let lastPollAt = 0;
 let lastFlushAt = 0;
 let lastReconcileAt = 0;
+let lastHeadPollAt = 0;
 let lastWsMessageAt = 0;
-let runningSnapshot = false;
+let runningFullSnapshot = false;
+let runningHeadSnapshot = false;
 let flushing = false;
 
 const minuteBucketIso = (tsMs: number): string => {
@@ -98,6 +115,50 @@ const parseTsMs = (value: unknown): number | null => {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+};
+
+const fingerprintMarket = (market: VenueMarket): string => {
+  const outcomes = [...market.outcomes]
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((outcome) =>
+      [
+        outcome.id,
+        outcome.providerOutcomeId ?? "",
+        outcome.providerTokenId ?? "",
+        outcome.title,
+        outcome.sortOrder,
+        outcome.isActive ? "1" : "0",
+      ].join("|")
+    )
+    .join(";");
+
+  return [
+    market.state,
+    market.slug,
+    market.title,
+    market.description ?? "",
+    market.category ?? "",
+    market.sourceUrl ?? "",
+    market.imageUrl ?? "",
+    market.createdAt,
+    market.closesAt,
+    market.expiresAt,
+    market.resolvedOutcomeTitle ?? "",
+    outcomes,
+  ].join("||");
+};
+
+const selectChangedMarkets = (markets: VenueMarket[]): VenueMarket[] => {
+  const changed: VenueMarket[] = [];
+  for (const market of markets) {
+    const nextFingerprint = fingerprintMarket(market);
+    const previousFingerprint = knownMarketFingerprints.get(market.providerMarketId);
+    if (previousFingerprint !== nextFingerprint) {
+      changed.push(market);
+    }
+    knownMarketFingerprints.set(market.providerMarketId, nextFingerprint);
+  }
+  return changed;
 };
 
 const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<string, string>> => {
@@ -182,96 +243,140 @@ const flushPending = async () => {
   }
 };
 
-const snapshotSync = async () => {
-  if (runningSnapshot) return;
-  runningSnapshot = true;
+const snapshotSync = async (mode: "head" | "full") => {
+  if (mode === "full") {
+    if (runningFullSnapshot) return;
+    runningFullSnapshot = true;
+  } else {
+    if (runningHeadSnapshot || runningFullSnapshot) return;
+    runningHeadSnapshot = true;
+  }
+
+  const limit = mode === "head" ? HEAD_SNAPSHOT_LIMIT : SNAPSHOT_LIMIT;
+  const writeSyncState = mode === "full";
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
 
   try {
-    console.log("[limitless-collector] snapshot sync started");
-    await upsertProviderSyncState(supabase, {
-      provider: "limitless",
-      scope: "open",
-      startedAt,
-      errorMessage: null,
-    });
+    console.log(`[limitless-collector] ${mode} snapshot sync started`);
+    if (writeSyncState) {
+      await upsertProviderSyncState(supabase, {
+        provider: "limitless",
+        scope: "open",
+        startedAt,
+        errorMessage: null,
+      });
+    }
 
     const markets = await limitlessAdapter.listMarketsSnapshot({
       onlyOpen: true,
-      limit: SNAPSHOT_LIMIT,
+      limit,
     });
 
-    console.log(`[limitless-collector] snapshot fetched ${markets.length} markets`);
+    console.log(`[limitless-collector] ${mode} snapshot fetched ${markets.length} markets`);
 
     if (markets.length > 0) {
-      await upsertVenueMarketsToCatalog(supabase, markets);
-
-      const nowIso = new Date().toISOString();
-      const bucket = minuteBucketIso(Date.now());
-      for (const market of markets) {
-        const primary = market.outcomes[0] ?? null;
-        const primaryPrice = clamp01(primary?.price ?? 0.5);
-        const fallbackAsk = clamp01(primaryPrice + 0.01);
-        const fallbackBid = clamp01(primaryPrice - 0.01);
-        pendingLiveByProviderMarketId.set(market.providerMarketId, {
-          best_bid: Math.min(fallbackBid, primaryPrice),
-          best_ask: Math.max(fallbackAsk, primaryPrice),
-          mid: primaryPrice,
-          last_trade_price: primaryPrice,
-          last_trade_size: 0,
-          rolling_24h_volume: Math.max(0, market.volume),
-          open_interest: null,
-          source_seq: null,
-          source_ts: nowIso,
-          updated_at: nowIso,
-          ingested_at: nowIso,
-        });
-
-        pendingCandlesByProviderMarketId.set(market.providerMarketId, {
-          outcome_key: "__market__",
-          bucket_start: bucket,
-          open: primaryPrice,
-          high: primaryPrice,
-          low: primaryPrice,
-          close: primaryPrice,
-          volume: 0,
-          trades_count: 0,
-          source_ts_max: nowIso,
-          updated_at: nowIso,
-        });
+      const changedMarkets = selectChangedMarkets(markets);
+      if (changedMarkets.length > 0) {
+        await upsertVenueMarketsToCatalog(supabase, changedMarkets);
       }
+      console.log(`[limitless-collector] ${mode} snapshot changed=${changedMarkets.length}`);
 
-      await flushPending();
+      if (SEED_REALTIME_FROM_SNAPSHOT) {
+        const nowIso = new Date().toISOString();
+        const bucket = minuteBucketIso(Date.now());
+        let seededCount = 0;
+        for (const market of markets) {
+          const primary = market.outcomes[0] ?? null;
+          const primaryPrice = clamp01(primary?.price ?? 0.5);
+          const rolling24hVolume = Math.max(0, market.volume);
+          const prev = lastSnapshotSeedByProviderMarketId.get(market.providerMarketId);
+          const changed =
+            !prev ||
+            Math.abs(prev.mid - primaryPrice) >= 0.002 ||
+            Math.abs(prev.volume - rolling24hVolume) >= 1;
+          if (!changed) continue;
+
+          lastSnapshotSeedByProviderMarketId.set(market.providerMarketId, {
+            mid: primaryPrice,
+            volume: rolling24hVolume,
+          });
+
+          const fallbackAsk = clamp01(primaryPrice + 0.01);
+          const fallbackBid = clamp01(primaryPrice - 0.01);
+          pendingLiveByProviderMarketId.set(market.providerMarketId, {
+            best_bid: Math.min(fallbackBid, primaryPrice),
+            best_ask: Math.max(fallbackAsk, primaryPrice),
+            mid: primaryPrice,
+            last_trade_price: primaryPrice,
+            last_trade_size: 0,
+            rolling_24h_volume: rolling24hVolume,
+            open_interest: null,
+            source_seq: null,
+            source_ts: nowIso,
+            updated_at: nowIso,
+            ingested_at: nowIso,
+          });
+
+          pendingCandlesByProviderMarketId.set(market.providerMarketId, {
+            outcome_key: "__market__",
+            bucket_start: bucket,
+            open: primaryPrice,
+            high: primaryPrice,
+            low: primaryPrice,
+            close: primaryPrice,
+            volume: 0,
+            trades_count: 0,
+            source_ts_max: nowIso,
+            updated_at: nowIso,
+          });
+          seededCount += 1;
+        }
+
+        if (seededCount > 0) {
+          await flushPending();
+        }
+        console.log(`[limitless-collector] ${mode} snapshot realtime seeds queued=${seededCount}`);
+      }
     } else {
       console.warn(
-        "[limitless-collector] snapshot returned 0 markets; verify LIMITLESS_API_BASE_URL and venue access"
+        `[limitless-collector] ${mode} snapshot returned 0 markets; verify LIMITLESS_API_BASE_URL and venue access`
       );
     }
 
-    const finishedAt = new Date().toISOString();
-    await upsertProviderSyncState(supabase, {
-      provider: "limitless",
-      scope: "open",
-      startedAt,
-      successAt: finishedAt,
-      errorMessage: null,
-    });
+    if (writeSyncState) {
+      const finishedAt = new Date().toISOString();
+      await upsertProviderSyncState(supabase, {
+        provider: "limitless",
+        scope: "open",
+        startedAt,
+        successAt: finishedAt,
+        errorMessage: null,
+      });
+    }
     const elapsedMs = Date.now() - startedMs;
-    console.log(`[limitless-collector] snapshot sync completed in ${elapsedMs}ms`);
+    console.log(`[limitless-collector] ${mode} snapshot sync completed in ${elapsedMs}ms`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("[limitless-collector] snapshot sync failed", message);
-    await upsertProviderSyncState(supabase, {
-      provider: "limitless",
-      scope: "open",
-      startedAt,
-      errorMessage: message,
-    });
+    console.error(`[limitless-collector] ${mode} snapshot sync failed`, message);
+    if (writeSyncState) {
+      await upsertProviderSyncState(supabase, {
+        provider: "limitless",
+        scope: "open",
+        startedAt,
+        errorMessage: message,
+      });
+    }
   } finally {
-    lastPollAt = Date.now();
-    lastReconcileAt = lastPollAt;
-    runningSnapshot = false;
+    const now = Date.now();
+    lastPollAt = now;
+    if (mode === "full") {
+      lastReconcileAt = now;
+      runningFullSnapshot = false;
+    } else {
+      lastHeadPollAt = now;
+      runningHeadSnapshot = false;
+    }
   }
 };
 
@@ -352,8 +457,7 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
 };
 
 const runWsLoop = async () => {
-  const wsConfig = limitlessAdapter.wsCollectorConfig?.();
-  if (!wsConfig?.url) {
+  if (!LIMITLESS_WS_CONFIG?.url) {
     console.log("[limitless-collector] websocket URL not configured; running in polling mode");
     return;
   }
@@ -362,13 +466,13 @@ const runWsLoop = async () => {
 
   while (true) {
     try {
-      console.log("[limitless-collector] connecting", wsConfig.url);
-      const socket = new WebSocket(wsConfig.url);
+      console.log("[limitless-collector] connecting", LIMITLESS_WS_CONFIG.url);
+      const socket = new WebSocket(LIMITLESS_WS_CONFIG.url);
 
       await new Promise<void>((resolve, reject) => {
         socket.onopen = () => {
           console.log("[limitless-collector] ws connected");
-          for (const channel of wsConfig.channels) {
+          for (const channel of LIMITLESS_WS_CONFIG.channels) {
             try {
               socket.send(JSON.stringify({ type: "subscribe", channel }));
             } catch {
@@ -448,7 +552,8 @@ const startHealthServer = () => {
     const now = Date.now();
     const ready =
       now - lastPollAt <= Math.max(POLL_INTERVAL_MS * 3, 60_000) &&
-      now - lastReconcileAt <= Math.max(RECONCILE_INTERVAL_MS * 3, 180_000);
+      now - lastReconcileAt <= Math.max(RECONCILE_INTERVAL_MS * 3, 180_000) &&
+      now - lastHeadPollAt <= Math.max(POLL_INTERVAL_MS * 4, 60_000);
 
     const payload = {
       ok: path === "/health" ? true : ready,
@@ -458,6 +563,7 @@ const startHealthServer = () => {
       lastPollAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
       lastFlushAt: lastFlushAt > 0 ? new Date(lastFlushAt).toISOString() : null,
       lastReconcileAt: lastReconcileAt > 0 ? new Date(lastReconcileAt).toISOString() : null,
+      lastHeadPollAt: lastHeadPollAt > 0 ? new Date(lastHeadPollAt).toISOString() : null,
       lastWsMessageAt: lastWsMessageAt > 0 ? new Date(lastWsMessageAt).toISOString() : null,
     };
 
@@ -478,13 +584,14 @@ const start = async () => {
   }
 
   console.log(
-    `[limitless-collector] starting poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms snapshotLimit=${SNAPSHOT_LIMIT}`
+    `[limitless-collector] starting poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
   );
   startHealthServer();
-  await snapshotSync();
+  await snapshotSync("full");
+  await snapshotSync("head");
 
   setInterval(() => {
-    void snapshotSync();
+    void snapshotSync("head");
   }, POLL_INTERVAL_MS);
 
   setInterval(() => {
@@ -492,7 +599,7 @@ const start = async () => {
   }, FLUSH_INTERVAL_MS);
 
   setInterval(() => {
-    void snapshotSync();
+    void snapshotSync("full");
   }, RECONCILE_INTERVAL_MS);
 
   await runWsLoop();
