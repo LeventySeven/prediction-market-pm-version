@@ -62,14 +62,33 @@ const toNumber = (value: unknown): number | null => {
 };
 
 const toString = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  const trimmed = String(value).trim();
   return trimmed.length > 0 ? trimmed : null;
 };
 
 const toIso = (value: unknown): string => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value > 10_000_000_000 ? Math.floor(value) : Math.floor(value * 1000);
+    return new Date(ms).toISOString();
+  }
   const raw = toString(value);
   if (!raw) return new Date().toISOString();
+  const asNum = Number(raw);
+  if (Number.isFinite(asNum)) {
+    const ms = asNum > 10_000_000_000 ? Math.floor(asNum) : Math.floor(asNum * 1000);
+    return new Date(ms).toISOString();
+  }
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
 };
@@ -150,13 +169,34 @@ const parseOutcomes = (
       .filter((item): item is VenueMarket["outcomes"][number] => Boolean(item));
   }
 
-  const yesPriceRaw = toNumber(row.yesPrice) ?? toNumber(row.probability) ?? toNumber(row.price) ?? 0.5;
+  const pricesRaw = Array.isArray(row.prices) ? row.prices : [];
+  const yesFromPrices = pricesRaw.length > 0 ? toNumber(pricesRaw[0]) : null;
+  const noFromPrices = pricesRaw.length > 1 ? toNumber(pricesRaw[1]) : null;
+  const yesTokenFromTokens =
+    asRecord(row.tokens) && typeof (row.tokens as Record<string, unknown>).yes !== "undefined"
+      ? toString((row.tokens as Record<string, unknown>).yes)
+      : null;
+  const noTokenFromTokens =
+    asRecord(row.tokens) && typeof (row.tokens as Record<string, unknown>).no !== "undefined"
+      ? toString((row.tokens as Record<string, unknown>).no)
+      : null;
+
+  const yesPriceRaw =
+    yesFromPrices ?? toNumber(row.yesPrice) ?? toNumber(row.probability) ?? toNumber(row.price) ?? 0.5;
   const yesPrice = yesPriceRaw > 1 ? clamp01(yesPriceRaw / 100) : clamp01(yesPriceRaw);
+  const noPrice =
+    noFromPrices === null
+      ? clamp01(1 - yesPrice)
+      : noFromPrices > 1
+        ? clamp01(noFromPrices / 100)
+        : clamp01(noFromPrices);
+
   return [
     {
       id: `${marketId}:yes`,
       providerOutcomeId: `${marketId}:yes`,
-      providerTokenId: toString(row.yesTokenId) ?? toString(row.yes_token_id) ?? null,
+      providerTokenId:
+        toString(row.yesTokenId) ?? toString(row.yes_token_id) ?? yesTokenFromTokens ?? null,
       title: "YES",
       probability: yesPrice,
       price: yesPrice,
@@ -166,10 +206,11 @@ const parseOutcomes = (
     {
       id: `${marketId}:no`,
       providerOutcomeId: `${marketId}:no`,
-      providerTokenId: toString(row.noTokenId) ?? toString(row.no_token_id) ?? null,
+      providerTokenId:
+        toString(row.noTokenId) ?? toString(row.no_token_id) ?? noTokenFromTokens ?? null,
       title: "NO",
-      probability: clamp01(1 - yesPrice),
-      price: clamp01(1 - yesPrice),
+      probability: noPrice,
+      price: noPrice,
       sortOrder: 1,
       isActive: true,
     },
@@ -191,11 +232,27 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
     toString(row.title) ?? toString(row.question) ?? toString(row.name) ?? `Market ${providerMarketId}`;
 
   const closesAt =
-    toIso(row.closesAt ?? row.closeTime ?? row.close_time ?? row.endTime ?? row.end_time ?? row.expiration);
+    toIso(
+      row.closesAt ??
+      row.closeTime ??
+      row.close_time ??
+      row.endTime ??
+      row.end_time ??
+      row.expirationTimestamp ??
+      row.expiration
+    );
   const expiresAt =
-    toIso(row.expiresAt ?? row.expireTime ?? row.expire_time ?? row.endTime ?? row.end_time ?? closesAt);
+    toIso(
+      row.expiresAt ??
+      row.expireTime ??
+      row.expire_time ??
+      row.expirationTimestamp ??
+      row.endTime ??
+      row.end_time ??
+      closesAt
+    );
   const createdAt =
-    toIso(row.createdAt ?? row.created_at ?? row.startTime ?? row.start_time ?? closesAt);
+    toIso(row.createdAt ?? row.created_at ?? row.startTime ?? row.start_time ?? row.createdAtTimestamp ?? closesAt);
 
   const sourceUrlRaw = toString(row.url) ?? toString(row.sourceUrl) ?? toString(row.source_url);
   const sourceUrl = sourceUrlRaw && /^https?:\/\//i.test(sourceUrlRaw)
@@ -218,7 +275,10 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
     closesAt,
     expiresAt,
     createdAt,
-    category: toString(row.category) ?? toString(row.tag),
+    category:
+      toString(row.category) ??
+      toString(row.tag) ??
+      (Array.isArray(row.categories) ? toString(row.categories[0]) : null),
     volume,
     resolvedOutcomeTitle: toString(row.resolvedOutcome) ?? toString(row.winningOutcome),
     outcomes: parseOutcomes(row, providerMarketId),
