@@ -28,6 +28,7 @@ import type { Database } from "@/src/types/database";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
+const CATALOG_PAGE_SIZE = 50;
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 type ErrorLike = string | Error | { message?: string; data?: { message?: string } } | null | undefined;
@@ -294,6 +295,8 @@ export default function HomePage() {
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
   type ProviderFilter = "all" | "polymarket" | "limitless";
   const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>("all");
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [hasNextCatalogPage, setHasNextCatalogPage] = useState(false);
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
   type LeaderboardSort = "PNL" | "BETS";
   const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
@@ -325,6 +328,7 @@ export default function HomePage() {
   } | null>(null);
   const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
   const sessionIdRef = useRef<string>(createSessionId());
+  const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -876,8 +880,12 @@ export default function HomePage() {
     setMarketsError(null);
     setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
     try {
+      const fetchSize = CATALOG_PAGE_SIZE + 1;
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
+        page: catalogPage,
+        pageSize: fetchSize,
+        sortBy: "newest",
         providerFilter: activeProviderFilter,
         providers:
           activeProviderFilter === "all"
@@ -885,9 +893,11 @@ export default function HomePage() {
             : [activeProviderFilter],
       });
 
-      const mapped: Market[] = (response ?? []).map((m) =>
-        mapMarketApiToMarket(m as MarketApiRow, lang)
-      );
+      const hasMore = (response?.length ?? 0) > CATALOG_PAGE_SIZE;
+      setHasNextCatalogPage(hasMore);
+      const mapped: Market[] = (response ?? [])
+        .slice(0, CATALOG_PAGE_SIZE)
+        .map((m) => mapMarketApiToMarket(m as MarketApiRow, lang));
       setMarkets(mapped);
     } catch (err) {
       console.error("Failed to load markets", err);
@@ -895,11 +905,12 @@ export default function HomePage() {
         lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets."
       );
       setMarkets([]);
+      setHasNextCatalogPage(false);
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [activeProviderFilter, lang]);
+  }, [activeProviderFilter, catalogPage, lang]);
   const loadMarketsRef = useRef(loadMarkets);
   useEffect(() => {
     loadMarketsRef.current = loadMarkets;
@@ -1305,6 +1316,31 @@ export default function HomePage() {
     };
   }, [semanticSearchIds, searchQuery, markets, lang]);
 
+  useEffect(() => {
+    if (!selectedMarketId) return;
+    if (markets.some((market) => market.id === selectedMarketId)) {
+      ensuredMarketIdsRef.current.add(selectedMarketId);
+      return;
+    }
+    if (ensuredMarketIdsRef.current.has(selectedMarketId)) return;
+    ensuredMarketIdsRef.current.add(selectedMarketId);
+
+    let cancelled = false;
+    void (async () => {
+      const row = await trpcClient.market.getMarket.query({ marketId: selectedMarketId }).catch(() => null);
+      if (!row || cancelled) return;
+      const mapped = mapMarketApiToMarket(row as MarketApiRow, lang);
+      setMarkets((prev) => {
+        if (prev.some((market) => market.id === mapped.id)) return prev;
+        return [mapped, ...prev];
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lang, markets, selectedMarketId]);
+
   const filteredMarkets = useMemo(
     () =>
       markets.filter((market) => {
@@ -1462,6 +1498,39 @@ export default function HomePage() {
   const bookmarkedMarkets = useMemo(() => {
     return markets.filter((m) => bookmarkedMarketIds.has(m.id));
   }, [markets, bookmarkedMarketIds]);
+
+  useEffect(() => {
+    const knownIds = new Set(markets.map((market) => market.id));
+    const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarkedMarketIds)]))
+      .filter((marketId) => !knownIds.has(marketId))
+      .filter((marketId) => !ensuredMarketIdsRef.current.has(marketId))
+      .slice(0, 40);
+    if (missing.length === 0) return;
+    for (const marketId of missing) ensuredMarketIdsRef.current.add(marketId);
+
+    let cancelled = false;
+    void (async () => {
+      const rows = await Promise.all(
+        missing.map((marketId) => trpcClient.market.getMarket.query({ marketId }).catch(() => null))
+      );
+      if (cancelled) return;
+      const additions = rows
+        .filter((value): value is MarketApiRow => Boolean(value))
+        .map((row) => mapMarketApiToMarket(row, lang));
+      if (additions.length === 0) return;
+      setMarkets((prev) => {
+        const byId = new Map(prev.map((market) => [market.id, market] as const));
+        for (const market of additions) {
+          byId.set(market.id, market);
+        }
+        return Array.from(byId.values());
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bookmarkedMarketIds, lang, markets, myBetMarketIds]);
 
   const selectedMarket = useMemo(
     () => markets.find((market) => market.id === selectedMarketId),
@@ -2661,7 +2730,10 @@ export default function HomePage() {
                             <button
                               key={provider.id}
                               type="button"
-                              onClick={() => setActiveProviderFilter(provider.id)}
+                              onClick={() => {
+                                setCatalogPage(1);
+                                setActiveProviderFilter(provider.id);
+                              }}
                               className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
                                   ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
@@ -2703,21 +2775,44 @@ export default function HomePage() {
                           {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
                         </div>
                       ) : catalogMarkets.length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
-                          {catalogMarkets.map((market) => (
-                            <MarketCard
-                              key={market.id}
-                              market={market}
-                              bookmarked={bookmarkedMarketIds.has(market.id)}
-                              onClick={() => {
-                                setMarketBetIntent(null);
-                                void openMarketWithAuthCheck(market);
-                              }}
-                              onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                              lang={lang}
-                            />
-                          ))}
-                        </div>
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+                            {catalogMarkets.map((market) => (
+                              <MarketCard
+                                key={market.id}
+                                market={market}
+                                bookmarked={bookmarkedMarketIds.has(market.id)}
+                                onClick={() => {
+                                  setMarketBetIntent(null);
+                                  void openMarketWithAuthCheck(market);
+                                }}
+                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                lang={lang}
+                              />
+                            ))}
+                          </div>
+                          <div className="pb-8 flex items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setCatalogPage((prev) => Math.max(1, prev - 1))}
+                              disabled={loadingMarkets || catalogPage <= 1}
+                              className="h-9 px-3 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-zinc-200"
+                            >
+                              {lang === "RU" ? "Назад" : "Prev"}
+                            </button>
+                            <div className="text-xs text-zinc-400 min-w-[100px] text-center">
+                              {(lang === "RU" ? "Страница" : "Page") + ` ${catalogPage}`}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setCatalogPage((prev) => prev + 1)}
+                              disabled={loadingMarkets || !hasNextCatalogPage}
+                              className="h-9 px-3 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-zinc-200"
+                            >
+                              {lang === "RU" ? "Далее" : "Next"}
+                            </button>
+                          </div>
+                        </>
                       ) : marketsError ? (
                         <div className="text-center py-20 text-zinc-500 px-4">
                           <p className="text-sm">{marketsError}</p>

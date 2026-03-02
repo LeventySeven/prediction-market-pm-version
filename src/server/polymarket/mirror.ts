@@ -217,16 +217,34 @@ export async function upsertMirroredPolymarketMarkets(
 
 export async function listMirroredPolymarketMarkets(
   supabaseService: unknown,
-  params?: { onlyOpen?: boolean; limit?: number }
+  params?: {
+    onlyOpen?: boolean;
+    limit?: number;
+    offset?: number;
+    sortBy?: "volume" | "created_desc" | "created_asc";
+  }
 ): Promise<PolymarketMarket[]> {
   if (!supabaseService) return [];
   const onlyOpen = params?.onlyOpen ?? false;
   const limit = clampLimit(params?.limit ?? 500, 1, 5000);
+  const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+  const sortBy = params?.sortBy ?? "volume";
+
+  const applySort = (query: any) => {
+    if (sortBy === "created_desc") {
+      return query.order("market_created_at", { ascending: false });
+    }
+    if (sortBy === "created_asc") {
+      return query.order("market_created_at", { ascending: true });
+    }
+    return query.order("volume", { ascending: false });
+  };
+
   let query = (supabaseService as any)
     .from("polymarket_market_cache")
-    .select("*")
-    .order("volume", { ascending: false })
-    .limit(limit);
+    .select("*");
+  query = applySort(query)
+    .range(offset, offset + limit - 1);
   if (onlyOpen) {
     query = query.eq("state", "open");
   }

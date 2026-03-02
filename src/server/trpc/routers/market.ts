@@ -488,7 +488,7 @@ const getMarketFromMirrorOrLive = async (
 
 const listMarketsFromMirrorOrLive = async (
   supabaseService: SupabaseServiceClient,
-  params: { onlyOpen: boolean; limit: number }
+  params: { onlyOpen: boolean; limit: number; sortBy: "newest" | "volume" }
 ): Promise<PolymarketMarket[]> => {
   let mirrored: PolymarketMarket[] = [];
   let hadMirrorRows = false;
@@ -497,6 +497,7 @@ const listMarketsFromMirrorOrLive = async (
     mirrored = await listMirroredPolymarketMarkets(supabaseService, {
       onlyOpen: params.onlyOpen,
       limit: params.limit,
+      sortBy: params.sortBy === "newest" ? "created_desc" : "volume",
     });
     hadMirrorRows = mirrored.length > 0;
     if (hadMirrorRows) {
@@ -508,7 +509,12 @@ const listMarketsFromMirrorOrLive = async (
   }
 
   try {
-    const live = await listPolymarketMarkets(params.limit);
+    const live = await listPolymarketMarkets(params.limit, { hydrateMidpoints: false });
+    const sortedLive = [...live].sort((a, b) =>
+      params.sortBy === "newest"
+        ? Date.parse(b.createdAt) - Date.parse(a.createdAt)
+        : Number(b.volume ?? 0) - Number(a.volume ?? 0)
+    );
     if (live.length > 0) {
       try {
         await upsertMirroredPolymarketMarkets(supabaseService, live);
@@ -516,7 +522,9 @@ const listMarketsFromMirrorOrLive = async (
         console.warn("Mirror upsert after live listMarkets failed", err);
       }
     }
-    return params.onlyOpen ? live.filter((m) => m.state === "open") : live;
+    return params.onlyOpen
+      ? sortedLive.filter((m) => m.state === "open")
+      : sortedLive;
   } catch (err) {
     if (hadMirrorRows) {
       console.warn("Live listMarkets failed, serving stale mirrored markets", err);
@@ -576,6 +584,29 @@ type MarketCommentLikeRow = Pick<
   Database["public"]["Tables"]["market_comment_likes"]["Row"],
   "comment_id" | "user_id"
 >;
+
+const sortMarketRows = (
+  rows: Array<z.infer<typeof marketOutput>>,
+  sortBy: "newest" | "volume"
+): Array<z.infer<typeof marketOutput>> => {
+  const sorted = [...rows];
+  sorted.sort((a, b) => {
+    if (sortBy === "newest") {
+      const aTs = Date.parse(String(a.createdAt ?? ""));
+      const bTs = Date.parse(String(b.createdAt ?? ""));
+      const aSafe = Number.isFinite(aTs) ? aTs : 0;
+      const bSafe = Number.isFinite(bTs) ? bTs : 0;
+      if (bSafe !== aSafe) return bSafe - aSafe;
+      return Number(b.volume ?? 0) - Number(a.volume ?? 0);
+    }
+    const volumeDelta = Number(b.volume ?? 0) - Number(a.volume ?? 0);
+    if (volumeDelta !== 0) return volumeDelta;
+    const aTs = Date.parse(String(a.createdAt ?? ""));
+    const bTs = Date.parse(String(b.createdAt ?? ""));
+    return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
+  });
+  return sorted;
+};
 type UserProfileRow = Pick<
   Database["public"]["Tables"]["users"]["Row"],
   "id" | "display_name" | "username" | "avatar_url" | "telegram_photo_url"
@@ -1230,6 +1261,9 @@ export const marketRouter = router({
       z
         .object({
           onlyOpen: z.boolean().optional(),
+          page: z.number().int().positive().max(1000).optional(),
+          pageSize: z.number().int().positive().max(100).optional(),
+          sortBy: z.enum(["newest", "volume"]).optional(),
           providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
           providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
         })
@@ -1238,6 +1272,11 @@ export const marketRouter = router({
     .output(z.array(marketOutput))
     .query(async ({ ctx, input }) => {
       const onlyOpen = input?.onlyOpen ?? false;
+      const page = Math.max(1, Number(input?.page ?? 1));
+      const pageSize = Math.max(1, Math.min(100, Number(input?.pageSize ?? 50)));
+      const sortBy: "newest" | "volume" = input?.sortBy ?? "newest";
+      const offset = (page - 1) * pageSize;
+      const candidateLimit = Math.min(4000, Math.max(pageSize * 2, offset + pageSize * 2));
       const selectedProviders = parseProviderSelection({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
@@ -1248,7 +1287,8 @@ export const marketRouter = router({
       if (selectedProviders.includes("polymarket")) {
         const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
           onlyOpen,
-          limit: onlyOpen ? 500 : 800,
+          limit: candidateLimit,
+          sortBy,
         });
         const mapped = rows.map(mapPolymarketMarket);
         const liveByMarket = await fetchMarketLiveSnapshots(
@@ -1264,7 +1304,7 @@ export const marketRouter = router({
         if (adapter.isEnabled()) {
           const rows = await adapter.listMarketsSnapshot({
             onlyOpen,
-            limit: onlyOpen ? 400 : 700,
+            limit: candidateLimit,
           });
           if (rows.length > 0) {
             void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
@@ -1288,7 +1328,8 @@ export const marketRouter = router({
         }
       }
 
-      return Array.from(deduped.values()).sort((a, b) => Number(b.volume ?? 0) - Number(a.volume ?? 0));
+      const sorted = sortMarketRows(Array.from(deduped.values()), sortBy);
+      return sorted.slice(offset, offset + pageSize);
     }),
 
   getMarket: publicProcedure

@@ -15,9 +15,14 @@ const RTDS_URL = (process.env.POLYMARKET_RTDS_WS_URL || "wss://ws-live-data.poly
 const FLUSH_INTERVAL_MS = Math.max(250, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 700));
 const RECONCILE_INTERVAL_MS = Math.max(30_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 120_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(10_000, Number(process.env.COLLECTOR_HEARTBEAT_TIMEOUT_MS ?? 45_000));
+const HEARTBEAT_CLOSE_MULTIPLIER = Math.max(2, Number(process.env.COLLECTOR_HEARTBEAT_CLOSE_MULTIPLIER ?? 4));
 const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
 const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
 const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
+const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 150)));
+const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 6)));
+const LIVE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_UPSERT_CHUNK_SIZE ?? 400)));
+const CANDLE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_CANDLE_UPSERT_CHUNK_SIZE ?? 400)));
 
 const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -114,6 +119,25 @@ const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<strin
   return out;
 };
 
+const upsertRowsInChunks = async (
+  table: string,
+  rows: Record<string, unknown>[],
+  onConflict: string,
+  chunkSize: number,
+  errorLabel: string
+) => {
+  if (rows.length === 0) return;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const batch = rows.slice(i, i + chunkSize);
+    const { error } = await (supabase as any)
+      .from(table)
+      .upsert(batch, { onConflict });
+    if (error) {
+      throw new Error(`${errorLabel}:${error.message}`);
+    }
+  }
+};
+
 const mirrorIntoCanonicalRealtime = async (liveRows: PendingLive[], candleRows: PendingCandle[]) => {
   const providerMarketIds = Array.from(
     new Set([
@@ -167,20 +191,30 @@ const mirrorIntoCanonicalRealtime = async (liveRows: PendingLive[], candleRows: 
     .filter((row): row is NonNullable<typeof row> => row !== null);
 
   if (canonicalLiveRows.length > 0) {
-    const { error } = await (supabase as any)
-      .from("market_live")
-      .upsert(canonicalLiveRows, { onConflict: "market_id" });
-    if (error) {
-      console.error("[collector] canonical live upsert failed", error.message);
+    try {
+      await upsertRowsInChunks(
+        "market_live",
+        canonicalLiveRows as unknown as Record<string, unknown>[],
+        "market_id",
+        LIVE_UPSERT_CHUNK_SIZE,
+        "CANONICAL_LIVE_UPSERT_FAILED"
+      );
+    } catch (error) {
+      console.error("[collector] canonical live upsert failed", error instanceof Error ? error.message : String(error));
     }
   }
 
   if (canonicalCandleRows.length > 0) {
-    const { error } = await (supabase as any)
-      .from("market_candles_1m")
-      .upsert(canonicalCandleRows, { onConflict: "market_id,outcome_key,bucket_start" });
-    if (error) {
-      console.error("[collector] canonical candle upsert failed", error.message);
+    try {
+      await upsertRowsInChunks(
+        "market_candles_1m",
+        canonicalCandleRows as unknown as Record<string, unknown>[],
+        "market_id,outcome_key,bucket_start",
+        CANDLE_UPSERT_CHUNK_SIZE,
+        "CANONICAL_CANDLE_UPSERT_FAILED"
+      );
+    } catch (error) {
+      console.error("[collector] canonical candle upsert failed", error instanceof Error ? error.message : String(error));
     }
   }
 };
@@ -433,22 +467,32 @@ const flushPending = async () => {
     if (pendingLive.size > 0) {
       liveRows = Array.from(pendingLive.values());
       pendingLive.clear();
-      const { error } = await supabase
-        .from("polymarket_market_live")
-        .upsert(liveRows, { onConflict: "market_id" });
-      if (error) {
-        console.error("[collector] live upsert failed", error.message);
+      try {
+        await upsertRowsInChunks(
+          "polymarket_market_live",
+          liveRows as unknown as Record<string, unknown>[],
+          "market_id",
+          LIVE_UPSERT_CHUNK_SIZE,
+          "LIVE_UPSERT_FAILED"
+        );
+      } catch (error) {
+        console.error("[collector] live upsert failed", error instanceof Error ? error.message : String(error));
       }
     }
 
     if (pendingCandles.size > 0) {
       candleRows = Array.from(pendingCandles.values());
       pendingCandles.clear();
-      const { error } = await supabase
-        .from("polymarket_candles_1m")
-        .upsert(candleRows, { onConflict: "market_id,bucket_start" });
-      if (error) {
-        console.error("[collector] candle upsert failed", error.message);
+      try {
+        await upsertRowsInChunks(
+          "polymarket_candles_1m",
+          candleRows as unknown as Record<string, unknown>[],
+          "market_id,bucket_start",
+          CANDLE_UPSERT_CHUNK_SIZE,
+          "CANDLE_UPSERT_FAILED"
+        );
+      } catch (error) {
+        console.error("[collector] candle upsert failed", error instanceof Error ? error.message : String(error));
       }
     }
 
@@ -465,9 +509,9 @@ const bootstrapSnapshot = async () => {
   try {
     const markets = await listPolymarketMarketsSnapshot({
       scope: "open",
-      pageSize: 200,
-      maxPages: 10,
-      hydrateMidpoints: true,
+      pageSize: SNAPSHOT_PAGE_SIZE,
+      maxPages: SNAPSHOT_MAX_PAGES,
+      hydrateMidpoints: false,
     });
 
     if (markets.length === 0) return;
@@ -497,12 +541,16 @@ const bootstrapSnapshot = async () => {
       };
     });
 
-    const { error } = await supabase
-      .from("polymarket_market_live")
-      .upsert(liveRows, { onConflict: "market_id" });
-
-    if (error) {
-      console.error("[collector] snapshot live upsert failed", error.message);
+    try {
+      await upsertRowsInChunks(
+        "polymarket_market_live",
+        liveRows as unknown as Record<string, unknown>[],
+        "market_id",
+        LIVE_UPSERT_CHUNK_SIZE,
+        "SNAPSHOT_LIVE_UPSERT_FAILED"
+      );
+    } catch (error) {
+      console.error("[collector] snapshot live upsert failed", error instanceof Error ? error.message : String(error));
     }
 
     const baselineCandles: PendingCandle[] = liveRows.map((row) => ({
@@ -517,11 +565,16 @@ const bootstrapSnapshot = async () => {
       source_ts_max: row.source_ts,
       updated_at: nowIso,
     }));
-    const { error: candleError } = await supabase
-      .from("polymarket_candles_1m")
-      .upsert(baselineCandles, { onConflict: "market_id,bucket_start", ignoreDuplicates: true });
-    if (candleError) {
-      console.error("[collector] snapshot candle backfill failed", candleError.message);
+    try {
+      await upsertRowsInChunks(
+        "polymarket_candles_1m",
+        baselineCandles as unknown as Record<string, unknown>[],
+        "market_id,bucket_start",
+        CANDLE_UPSERT_CHUNK_SIZE,
+        "SNAPSHOT_CANDLE_UPSERT_FAILED"
+      );
+    } catch (error) {
+      console.error("[collector] snapshot candle backfill failed", error instanceof Error ? error.message : String(error));
     }
 
     await mirrorIntoCanonicalRealtime(liveRows, baselineCandles);
@@ -569,6 +622,7 @@ const subscribeToDefaultTopics = (socket: WebSocket) => {
 
 const runWsLoop = async () => {
   let attempt = 0;
+  const stableThresholdMs = Math.max(30_000, HEARTBEAT_TIMEOUT_MS);
 
   while (true) {
     try {
@@ -576,14 +630,16 @@ const runWsLoop = async () => {
       const socket = new WebSocket(RTDS_URL);
       lastHeartbeatAt = Date.now();
 
-      await new Promise<void>((resolve, reject) => {
+      const session = await new Promise<{ stableMs: number }>((resolve, reject) => {
         let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        const openedAt = Date.now();
 
         socket.onopen = () => {
           console.log("[collector] ws connected");
           subscribeToDefaultTopics(socket);
           heartbeatTimer = setInterval(() => {
-            if (Date.now() - lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS) {
+            if (Date.now() - lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS * HEARTBEAT_CLOSE_MULTIPLIER) {
+              console.warn("[collector] ws heartbeat timeout, reconnecting");
               try {
                 socket.close();
               } catch {
@@ -627,9 +683,11 @@ const runWsLoop = async () => {
           console.error("[collector] ws error", event);
         };
 
-        socket.onclose = () => {
+        socket.onclose = (event) => {
           if (heartbeatTimer) clearInterval(heartbeatTimer);
-          resolve();
+          const reason = typeof event.reason === "string" && event.reason.trim() ? event.reason.trim() : "no_reason";
+          console.warn(`[collector] ws closed code=${event.code} reason=${reason}`);
+          resolve({ stableMs: Date.now() - openedAt });
         };
 
         setTimeout(() => {
@@ -638,8 +696,14 @@ const runWsLoop = async () => {
           }
         }, 15_000);
       });
-
-      attempt = 0;
+      if (session.stableMs >= stableThresholdMs) {
+        attempt = 0;
+      } else {
+        attempt += 1;
+      }
+      const baseBackoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+      const jitterMs = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
+      await wait(baseBackoffMs + jitterMs);
     } catch (error) {
       const baseBackoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
       const jitterMs = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
