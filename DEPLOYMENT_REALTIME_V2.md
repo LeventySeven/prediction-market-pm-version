@@ -93,6 +93,7 @@ Limitless read/trade configuration (only if enabling Limitless):
 - `LIMITLESS_ACCESS_STATUS_TTL_MS=60000`
 - `LIMITLESS_RELAY_TIMEOUT_MS=10000`
 - `LIMITLESS_DEBUG=false`
+- `LIMITLESS_ACTIVE_PAGE_LIMIT=25`
 - `ENABLE_CATALOG_SYNC_ON_READ=false`
 
 ### 3.2 Polymarket Collector Worker Required

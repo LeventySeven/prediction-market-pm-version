@@ -20,6 +20,10 @@ const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
 const DEFAULT_BASE_ALT = `${DEFAULT_BASE_ROOT}/api-v1`;
 const DEFAULT_SITE = "https://limitless.exchange";
 const SNAPSHOT_CACHE_TTL_MS = Math.max(1000, Number(process.env.LIMITLESS_MARKETS_CACHE_TTL_MS ?? 15_000));
+const LIMITLESS_ACTIVE_PAGE_LIMIT = Math.max(
+  1,
+  Math.min(25, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 25))
+);
 const LIMITLESS_DEBUG = (process.env.LIMITLESS_DEBUG || "").trim().toLowerCase() === "true";
 
 const normalizeBase = (base: string): string => base.trim().replace(/\/+$/, "");
@@ -332,7 +336,10 @@ const fetchMarketRows = async (params: {
   onlyOpen?: boolean;
 }): Promise<Record<string, unknown>[]> => {
   const limit = Math.max(1, Math.min(params.limit ?? 300, 1000));
-  const pageSize = Math.max(20, Math.min(200, Number(process.env.LIMITLESS_MARKETS_PAGE_SIZE ?? 100)));
+  const pageSize = Math.max(
+    5,
+    Math.min(LIMITLESS_ACTIVE_PAGE_LIMIT, Number(process.env.LIMITLESS_MARKETS_PAGE_SIZE ?? LIMITLESS_ACTIVE_PAGE_LIMIT))
+  );
   const maxPages = Math.max(1, Math.min(20, Math.ceil(limit / pageSize) + 2));
   const bases = getCandidateBaseUrls();
 
