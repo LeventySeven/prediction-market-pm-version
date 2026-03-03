@@ -83,3 +83,65 @@ It performs:
 - websocket ingestion from RTDS,
 - batched upserts to `polymarket_market_live` and `polymarket_candles_1m`,
 - mirror cache sync safety updates.
+
+## Upstash Redis (Cache + Stream)
+
+This repo supports Upstash as a Phase-2 acceleration layer for:
+- cached market list/detail/trades reads (short TTL cache-aside),
+- optional SSE market-live stream (`/api/stream/markets`),
+- hot activity bootstrap from Redis for faster market open.
+
+### 1. Create Upstash Redis
+
+1. Create a Redis database in Upstash.
+2. Open your database dashboard and copy:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+
+### 2. Configure env (root `.env`)
+
+Use `.env.example` as source of truth. Add these keys to the root `.env` file:
+
+```bash
+ENABLE_UPSTASH_CACHE=true
+ENABLE_UPSTASH_STREAM=true
+NEXT_PUBLIC_ENABLE_UPSTASH_STREAM=true
+
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+
+UPSTASH_MARKETS_LIST_TTL_SEC=3
+UPSTASH_MARKET_DETAIL_TTL_SEC=7
+UPSTASH_MARKET_TRADES_TTL_SEC=3
+
+UPSTASH_LIVE_STATE_TTL_SEC=20
+UPSTASH_ACTIVITY_TTL_SEC=120
+UPSTASH_ACTIVITY_MAX_ITEMS=200
+
+UPSTASH_STREAM_POLL_INTERVAL_MS=1000
+UPSTASH_STREAM_HEARTBEAT_MS=15000
+```
+
+### 3. Run app + collector
+
+```bash
+bun run dev
+bun run collector:polymarket
+```
+
+Collector writes market live/activity snapshots into Upstash while continuing to write Supabase as source of truth.
+
+### 4. Quick checks
+
+1. Market list/detail/trades endpoints should become cache-backed automatically.
+2. Stream endpoint should respond:
+
+```bash
+curl -N \"http://localhost:3000/api/stream/markets?ids=<market_id>\"
+```
+
+3. Health endpoint still works:
+
+```bash
+curl \"http://localhost:3000/api/health\"
+```

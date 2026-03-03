@@ -37,6 +37,17 @@ import {
   incrementRealtimeMetricCounter,
   recordRealtimeMetricTiming,
 } from "../../observability/realtimeMetrics";
+import {
+  buildMarketDetailCacheKey,
+  buildMarketListCacheKey,
+  buildMarketTradesCacheKey,
+  readUpstashActivityTicks,
+  readUpstashCache,
+  upstashMarketDetailTtlSec,
+  upstashMarketListTtlSec,
+  upstashMarketTradesTtlSec,
+  writeUpstashCache,
+} from "../../cache/upstash";
 
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
@@ -1720,6 +1731,24 @@ export const marketRouter = router({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
       });
+      const selectedCacheProviders = selectedProviders
+        .filter((provider): provider is "polymarket" | "limitless" => provider === "polymarket" || provider === "limitless")
+        .sort();
+
+      const listCacheKey = buildMarketListCacheKey({
+        onlyOpen,
+        page,
+        pageSize,
+        sortBy,
+        providers: selectedCacheProviders,
+      });
+      const cachedList = await readUpstashCache(listCacheKey, z.array(marketOutput));
+      if (cachedList) {
+        incrementRealtimeMetricCounter("upstash.cache.marketList.hit");
+        recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
+        return cachedList;
+      }
+      incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
 
       const responseRows: Array<z.infer<typeof marketOutput>> = [];
 
@@ -1781,6 +1810,7 @@ export const marketRouter = router({
 
       const sorted = sortMarketRows(Array.from(deduped.values()), sortBy);
       const out = sorted.slice(offset, offset + pageSize);
+      void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
       recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
       return out;
     }),
@@ -1792,6 +1822,17 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getMarket.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const detailCacheKey = buildMarketDetailCacheKey({
+        provider: ref.provider,
+        providerMarketId: ref.providerMarketId,
+      });
+      const cachedDetail = await readUpstashCache(detailCacheKey, marketOutput);
+      if (cachedDetail) {
+        incrementRealtimeMetricCounter("upstash.cache.marketDetail.hit");
+        recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
+        return cachedDetail;
+      }
+      incrementRealtimeMetricCounter("upstash.cache.marketDetail.miss");
 
       if (ref.provider === "polymarket") {
         const row = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
@@ -1801,6 +1842,7 @@ export const marketRouter = router({
         const mapped = mapPolymarketMarket(row);
         const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
         const out = mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+        void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
         recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
         return out;
       }
@@ -1820,6 +1862,7 @@ export const marketRouter = router({
         });
       }
       const out = mapVenueMarketToMarketOutput(row);
+      void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
       recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
       return out;
     }),
@@ -2484,6 +2527,26 @@ export const marketRouter = router({
         return [];
       }
 
+      const redisTicks = await readUpstashActivityTicks(market.id, limit);
+      if (redisTicks.length > 0) {
+        incrementRealtimeMetricCounter("upstash.cache.liveActivity.hit");
+        const mappedRedisTicks = redisTicks.map((tick) => ({
+          id: tick.id,
+          marketId: tick.marketId,
+          tradeId: tick.tradeId,
+          side: tick.side,
+          outcome: tick.outcome,
+          price: tick.price,
+          size: tick.size,
+          notional: tick.notional,
+          sourceTs: tick.sourceTs,
+          createdAt: tick.createdAt,
+        }));
+        recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
+        return mappedRedisTicks;
+      }
+      incrementRealtimeMetricCounter("upstash.cache.liveActivity.miss");
+
       const rows = await listLocalLiveActivityTicks(ctx.supabaseService, market.id, limit);
       recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
       return rows;
@@ -2502,6 +2565,19 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getPublicTrades.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
+      const tradesCacheKey = buildMarketTradesCacheKey({
+        provider: ref.provider,
+        providerMarketId: ref.providerMarketId,
+        limit,
+      });
+      const cachedTrades = await readUpstashCache(tradesCacheKey, z.array(publicTradeOutput));
+      if (cachedTrades) {
+        incrementRealtimeMetricCounter("upstash.cache.marketTrades.hit");
+        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+        return cachedTrades;
+      }
+      incrementRealtimeMetricCounter("upstash.cache.marketTrades.miss");
 
       if (ref.provider === "polymarket") {
         const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
@@ -2509,7 +2585,7 @@ export const marketRouter = router({
           recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
           return [];
         }
-        const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
+        const rows = await getPolymarketPublicTrades(market.conditionId, limit);
         const outcomesByTitle = new Map(
           market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
         );
@@ -2537,6 +2613,7 @@ export const marketRouter = router({
             createdAt: new Date(t.timestamp * 1000).toISOString(),
           };
         });
+        void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
         recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
         return out;
       }
@@ -2551,7 +2628,7 @@ export const marketRouter = router({
         recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
         return [];
       }
-      const rows = await adapter.getPublicTrades(market, input.limit ?? 50);
+      const rows = await adapter.getPublicTrades(market, limit);
       const outcomesByTitle = new Map(
         market.outcomes.map((outcome) => [outcome.title.trim().toLowerCase(), outcome] as const)
       );
@@ -2579,6 +2656,7 @@ export const marketRouter = router({
           createdAt: new Date(trade.timestamp * 1000).toISOString(),
         };
       });
+      void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
       recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
       return out;
     }),

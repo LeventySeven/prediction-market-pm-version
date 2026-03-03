@@ -40,6 +40,7 @@ import type { Database } from "@/src/types/database";
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 50;
+const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 type ErrorLike = string | Error | { message?: string; data?: { message?: string } } | null | undefined;
@@ -1265,98 +1266,206 @@ export default function HomePage() {
   ]);
 
   useEffect(() => {
-    const supabase = getBrowserSupabaseClient();
-    if (!supabase) return;
     if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) return;
     const targetIds = Array.from(new Set(visibleCatalogMarketIds.filter(Boolean))).slice(0, 80);
     if (targetIds.length === 0) return;
 
-    const pendingRows = new Map<string, MarketLiveRow>();
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let fallbackTriggered = false;
+    const startSupabaseVisibleSubscription = () => {
+      const supabase = getBrowserSupabaseClient();
+      if (!supabase) return () => undefined;
 
-    const flushLiveRows = () => {
-      flushTimer = null;
-      if (pendingRows.size === 0) return;
-      const batch = Array.from(pendingRows.values());
-      pendingRows.clear();
-      incrementClientCounter("catalog.realtime.flushes");
-      incrementClientCounter("catalog.realtime.rowsApplied", batch.length);
+      const pendingRows = new Map<string, MarketLiveRow>();
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      let fallbackTriggered = false;
 
-      setMarketLivePatchById((prev) => {
-        let changed = false;
-        const next = { ...prev };
+      const flushLiveRows = () => {
+        flushTimer = null;
+        if (pendingRows.size === 0) return;
+        const batch = Array.from(pendingRows.values());
+        pendingRows.clear();
+        incrementClientCounter("catalog.realtime.flushes");
+        incrementClientCounter("catalog.realtime.rowsApplied", batch.length);
 
-        for (const row of batch) {
-          const marketId = row.market_id.trim();
-          if (!marketId) continue;
-          const patch: MarketLivePatch = {
-            bestBid: asNumber(row.best_bid),
-            bestAsk: asNumber(row.best_ask),
-            mid: asNumber(row.mid),
-            lastTradePrice: asNumber(row.last_trade_price),
-            lastTradeSize: asNumber(row.last_trade_size),
-            rolling24hVolume: asNumber(row.rolling_24h_volume),
-            openInterest: asNumber(row.open_interest),
-            liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
-          };
-          if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
-          next[marketId] = patch;
-          changed = true;
+        setMarketLivePatchById((prev) => {
+          let changed = false;
+          const next = { ...prev };
+
+          for (const row of batch) {
+            const marketId = row.market_id.trim();
+            if (!marketId) continue;
+            const patch: MarketLivePatch = {
+              bestBid: asNumber(row.best_bid),
+              bestAsk: asNumber(row.best_ask),
+              mid: asNumber(row.mid),
+              lastTradePrice: asNumber(row.last_trade_price),
+              lastTradeSize: asNumber(row.last_trade_size),
+              rolling24hVolume: asNumber(row.rolling_24h_volume),
+              openInterest: asNumber(row.open_interest),
+              liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
+            };
+            if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
+            next[marketId] = patch;
+            changed = true;
+          }
+
+          return changed ? next : prev;
+        });
+      };
+
+      const queueLiveRow = (row: MarketLiveRow) => {
+        const marketId = row.market_id.trim();
+        if (!marketId) return;
+        pendingRows.set(marketId, row);
+        incrementClientCounter("catalog.realtime.rowsReceived");
+        if (!flushTimer) {
+          flushTimer = setTimeout(flushLiveRows, 250);
         }
+      };
 
-        return changed ? next : prev;
-      });
-    };
-
-    const queueLiveRow = (row: MarketLiveRow) => {
-      const marketId = row.market_id.trim();
-      if (!marketId) return;
-      pendingRows.set(marketId, row);
-      incrementClientCounter("catalog.realtime.rowsReceived");
-      if (!flushTimer) {
-        flushTimer = setTimeout(flushLiveRows, 250);
+      const channel = supabase.channel(`markets-live-visible-${targetIds.length}`);
+      for (const marketId of targetIds) {
+        channel.on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+          (payload) => {
+            if (payload.new && typeof payload.new === "object") {
+              queueLiveRow(payload.new as MarketLiveRow);
+            }
+          }
+        );
+        channel.on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+          (payload) => {
+            if (payload.new && typeof payload.new === "object") {
+              queueLiveRow(payload.new as MarketLiveRow);
+            }
+          }
+        );
       }
+
+      channel.subscribe((status) => {
+        if (
+          !fallbackTriggered &&
+          (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED")
+        ) {
+          fallbackTriggered = true;
+          incrementClientCounter("catalog.realtime.channelRecovery");
+          void loadMarketsRef.current();
+        }
+      });
+
+      return () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        pendingRows.clear();
+        void supabase.removeChannel(channel);
+      };
     };
 
-    const channel = supabase.channel(`markets-live-visible-${targetIds.length}`);
-    for (const marketId of targetIds) {
-      channel.on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
-        (payload) => {
-          if (payload.new && typeof payload.new === "object") {
-            queueLiveRow(payload.new as MarketLiveRow);
+    if (ENABLE_UPSTASH_STREAM) {
+      const pendingPatches = new Map<string, MarketLivePatch>();
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      let fallbackTriggered = false;
+      let stopSupabaseFallback: (() => void) | null = null;
+
+      const flushLivePatches = () => {
+        flushTimer = null;
+        if (pendingPatches.size === 0) return;
+        const batch = Array.from(pendingPatches.entries());
+        pendingPatches.clear();
+        incrementClientCounter("catalog.realtime.flushes");
+        incrementClientCounter("catalog.realtime.rowsApplied", batch.length);
+
+        setMarketLivePatchById((prev) => {
+          let changed = false;
+          const next = { ...prev };
+
+          for (const [marketId, patch] of batch) {
+            if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
+            next[marketId] = patch;
+            changed = true;
           }
+
+          return changed ? next : prev;
+        });
+      };
+
+      const queuePatch = (marketId: string, patch: MarketLivePatch) => {
+        const cleanMarketId = marketId.trim();
+        if (!cleanMarketId) return;
+        pendingPatches.set(cleanMarketId, patch);
+        incrementClientCounter("catalog.realtime.rowsReceived");
+        if (!flushTimer) {
+          flushTimer = setTimeout(flushLivePatches, 120);
         }
-      );
-      channel.on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
-        (payload) => {
-          if (payload.new && typeof payload.new === "object") {
-            queueLiveRow(payload.new as MarketLiveRow);
+      };
+
+      const streamUrl = `/api/stream/markets?ids=${encodeURIComponent(targetIds.join(","))}`;
+      const stream = new EventSource(streamUrl);
+
+      const activateSupabaseFallback = () => {
+        if (stopSupabaseFallback) return;
+        stopSupabaseFallback = startSupabaseVisibleSubscription();
+      };
+
+      stream.addEventListener("live", (evt) => {
+        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+        if (!payloadRaw) return;
+        try {
+          const payload = JSON.parse(payloadRaw) as {
+            patches?: Array<{
+              marketId?: string;
+              bestBid?: number | null;
+              bestAsk?: number | null;
+              mid?: number | null;
+              lastTradePrice?: number | null;
+              lastTradeSize?: number | null;
+              rolling24hVolume?: number | null;
+              openInterest?: number | null;
+              sourceTs?: string | null;
+            }>;
+          };
+          const patches = Array.isArray(payload.patches) ? payload.patches : [];
+          for (const patchRow of patches) {
+            const marketId = String(patchRow.marketId ?? "").trim();
+            if (!marketId) continue;
+            queuePatch(marketId, {
+              bestBid: asNumber(patchRow.bestBid),
+              bestAsk: asNumber(patchRow.bestAsk),
+              mid: asNumber(patchRow.mid),
+              lastTradePrice: asNumber(patchRow.lastTradePrice),
+              lastTradeSize: asNumber(patchRow.lastTradeSize),
+              rolling24hVolume: asNumber(patchRow.rolling24hVolume),
+              openInterest: asNumber(patchRow.openInterest),
+              liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
+            });
           }
+        } catch {
+          // Ignore malformed stream payloads and keep listening.
         }
-      );
+      });
+
+      stream.onerror = () => {
+        if (!fallbackTriggered) {
+          fallbackTriggered = true;
+          incrementClientCounter("catalog.realtime.channelRecovery");
+          activateSupabaseFallback();
+          void loadMarketsRef.current();
+        }
+      };
+
+      return () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        pendingPatches.clear();
+        stream.close();
+        if (stopSupabaseFallback) {
+          stopSupabaseFallback();
+          stopSupabaseFallback = null;
+        }
+      };
     }
 
-    channel.subscribe((status) => {
-      if (
-        !fallbackTriggered &&
-        (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED")
-      ) {
-        fallbackTriggered = true;
-        incrementClientCounter("catalog.realtime.channelRecovery");
-        void loadMarketsRef.current();
-      }
-    });
-
-    return () => {
-      if (flushTimer) clearTimeout(flushTimer);
-      pendingRows.clear();
-      void supabase.removeChannel(channel);
-    };
+    return startSupabaseVisibleSubscription();
   }, [currentView, selectedMarketId, documentVisible, visibleCatalogMarketIds]);
 
   const legacyBets = useMemo(

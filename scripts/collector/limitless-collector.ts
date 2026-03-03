@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
+import { writeUpstashMarketLivePatches } from "../../src/server/cache/upstash";
 import { limitlessAdapter } from "../../src/server/venues/limitlessAdapter";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
-import type { VenueMarket } from "../../src/server/venues/types";
+import { venueToCanonicalId, type VenueMarket } from "../../src/server/venues/types";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -604,12 +605,40 @@ const flushPending = async () => {
 
     if (pendingLiveByProviderMarketId.size > 0) {
       const rows: PendingLive[] = [];
+      const upstashPatches: Array<{
+        marketId: string;
+        bestBid: number;
+        bestAsk: number;
+        mid: number;
+        lastTradePrice: number;
+        lastTradeSize: number;
+        rolling24hVolume: number;
+        openInterest: number | null;
+        sourceTs: string;
+        sourceSeq: number | null;
+      }> = [];
       for (const [providerMarketId, payload] of pendingLiveByProviderMarketId.entries()) {
         const marketId = catalogIds.get(providerMarketId);
+        upstashPatches.push({
+          marketId: venueToCanonicalId("limitless", providerMarketId),
+          bestBid: payload.best_bid,
+          bestAsk: payload.best_ask,
+          mid: payload.mid,
+          lastTradePrice: payload.last_trade_price,
+          lastTradeSize: payload.last_trade_size,
+          rolling24hVolume: payload.rolling_24h_volume,
+          openInterest: payload.open_interest,
+          sourceTs: payload.source_ts,
+          sourceSeq: payload.source_seq,
+        });
         if (!marketId) continue;
         rows.push({ market_id: marketId, ...payload });
       }
       pendingLiveByProviderMarketId.clear();
+
+      if (upstashPatches.length > 0) {
+        await writeUpstashMarketLivePatches(upstashPatches);
+      }
 
       if (rows.length > 0) {
         const { error } = await (supabase as any)

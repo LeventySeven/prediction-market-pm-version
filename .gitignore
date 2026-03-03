@@ -60,6 +60,8 @@ supabase/openapi.public.json
 
 # Hardhat / Smart Contracts
 cache/
+!src/server/cache/
+!src/server/cache/**
 artifacts/
 typechain-types/
 src/types/contracts/

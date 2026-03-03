@@ -3,6 +3,10 @@ import { createServer } from "node:http";
 import { listPolymarketMarketsSnapshot, type PolymarketMarket } from "../../src/server/polymarket/client";
 import { parseLiveTick } from "../../src/server/polymarket/liveTickParser";
 import { upsertMirroredPolymarketMarkets } from "../../src/server/polymarket/mirror";
+import {
+  writeUpstashActivityTicks,
+  writeUpstashMarketLivePatches,
+} from "../../src/server/cache/upstash";
 import type { Database, Json } from "../../src/types/database";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -967,6 +971,40 @@ const flushPending = async () => {
       } catch (error) {
         console.error("[collector] tick upsert failed", error instanceof Error ? error.message : String(error));
       }
+    }
+
+    if (liveRows.length > 0) {
+      await writeUpstashMarketLivePatches(
+        liveRows.map((row) => ({
+          marketId: row.market_id,
+          bestBid: row.best_bid,
+          bestAsk: row.best_ask,
+          mid: row.mid,
+          lastTradePrice: row.last_trade_price,
+          lastTradeSize: row.last_trade_size,
+          rolling24hVolume: row.rolling_24h_volume,
+          openInterest: row.open_interest,
+          sourceTs: row.source_ts,
+          sourceSeq: row.source_seq,
+        }))
+      );
+    }
+
+    if (tickRows.length > 0) {
+      await writeUpstashActivityTicks(
+        tickRows.map((row) => ({
+          id: row.dedupe_key,
+          marketId: row.market_id,
+          tradeId: row.trade_id ?? null,
+          side: row.side,
+          outcome: row.outcome ?? null,
+          price: row.price,
+          size: row.size,
+          notional: row.price * row.size,
+          sourceTs: row.source_ts,
+          createdAt: row.created_at,
+        }))
+      );
     }
 
     if (ENABLE_CANONICAL_REALTIME_MIRROR && (liveRows.length > 0 || candleRows.length > 0)) {
