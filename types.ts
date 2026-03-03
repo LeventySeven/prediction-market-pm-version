@@ -219,6 +219,19 @@ export interface PublicTrade {
   createdAt: string;
 }
 
+export interface LiveActivityTick {
+  id: string;
+  marketId: string;
+  tradeId: string | null;
+  side: "BUY" | "SELL" | "UNKNOWN";
+  outcome: string | null;
+  price: number;
+  size: number;
+  notional: number;
+  sourceTs: string;
+  createdAt: string;
+}
+
 /**
  * Wallet balance (multi-asset support)
  */

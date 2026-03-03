@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
 import { listPolymarketMarketsSnapshot, type PolymarketMarket } from "../../src/server/polymarket/client";
+import { parseLiveTick } from "../../src/server/polymarket/liveTickParser";
 import { upsertMirroredPolymarketMarkets } from "../../src/server/polymarket/mirror";
 import type { Database, Json } from "../../src/types/database";
 
@@ -104,8 +105,24 @@ type PendingCandle = {
   updated_at: string;
 };
 
+type PendingTick = {
+  market_id: string;
+  trade_id: string | null;
+  source_seq: number | null;
+  source_ts: string;
+  side: "BUY" | "SELL" | "UNKNOWN";
+  outcome: string | null;
+  price: number;
+  size: number;
+  dedupe_key: string;
+  payload: Json | null;
+  created_at: string;
+  ingested_at: string;
+};
+
 const pendingLive = new Map<string, PendingLive>();
 const pendingCandles = new Map<string, PendingCandle>();
+const pendingTicks = new Map<string, PendingTick>();
 const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
 const knownMarketFingerprints = new Map<string, string>();
 const missingOpenMarketMisses = new Map<string, number>();
@@ -675,6 +692,7 @@ const startHealthServer = () => {
       uptimeSec: Math.floor((now - startedAt) / 1000),
       pendingLive: pendingLive.size,
       pendingCandles: pendingCandles.size,
+      pendingTicks: pendingTicks.size,
       lastHeartbeatAt: lastHeartbeatAt > 0 ? new Date(lastHeartbeatAt).toISOString() : null,
       lastWsMessageAt: lastWsMessageAt > 0 ? new Date(lastWsMessageAt).toISOString() : null,
       lastFlushAt: lastFlushAt > 0 ? new Date(lastFlushAt).toISOString() : null,
@@ -795,7 +813,7 @@ const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
   const lastTradePrice =
     toNumber(payload.last_trade_price ?? payload.price ?? payload.lastPrice) ?? prev?.last_trade_price ?? 0;
   const lastTradeSize =
-    toNumber(payload.last_trade_size ?? payload.size ?? payload.trade_size ?? payload.amount) ?? prev?.last_trade_size ?? 0;
+    toNumber(payload.last_trade_size ?? payload.size ?? payload.trade_size ?? payload.amount) ?? 0;
   const rolling24hVolume =
     toNumber(payload.rolling_24h_volume ?? payload.volume ?? payload.volume_24h) ??
     prev?.rolling_24h_volume ??
@@ -827,6 +845,32 @@ const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
     source_seq: sourceSeq,
     source_ts: sourceTsIso,
     updated_at: nowIso,
+    ingested_at: nowIso,
+  };
+};
+
+const parseIncomingTick = (payload: JsonMap, live: PendingLive): PendingTick | null => {
+  const parsed = parseLiveTick(payload as Record<string, unknown>, {
+    marketId: live.market_id,
+    sourceSeq: live.source_seq,
+    sourceTs: live.source_ts,
+    lastTradePrice: live.last_trade_price,
+  });
+  if (!parsed) return null;
+  const nowIso = new Date().toISOString();
+
+  return {
+    market_id: parsed.marketId,
+    trade_id: parsed.tradeId,
+    source_seq: parsed.sourceSeq,
+    source_ts: parsed.sourceTs,
+    side: parsed.side,
+    outcome: parsed.outcome,
+    price: parsed.price,
+    size: parsed.size,
+    dedupe_key: parsed.dedupeKey,
+    payload,
+    created_at: parsed.sourceTs,
     ingested_at: nowIso,
   };
 };
@@ -870,11 +914,12 @@ const applyCandleFromLive = (live: PendingLive) => {
 
 const flushPending = async () => {
   if (flushing) return;
-  if (pendingLive.size === 0 && pendingCandles.size === 0) return;
+  if (pendingLive.size === 0 && pendingCandles.size === 0 && pendingTicks.size === 0) return;
 
   flushing = true;
   let liveRows: PendingLive[] = [];
   let candleRows: PendingCandle[] = [];
+  let tickRows: PendingTick[] = [];
   try {
     if (pendingLive.size > 0) {
       liveRows = Array.from(pendingLive.values());
@@ -905,6 +950,22 @@ const flushPending = async () => {
         );
       } catch (error) {
         console.error("[collector] candle upsert failed", error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    if (pendingTicks.size > 0) {
+      tickRows = Array.from(pendingTicks.values());
+      pendingTicks.clear();
+      try {
+        await upsertRowsInChunks(
+          "polymarket_market_ticks",
+          tickRows as unknown as Record<string, unknown>[],
+          "dedupe_key",
+          LIVE_UPSERT_CHUNK_SIZE,
+          "TICK_UPSERT_FAILED"
+        );
+      } catch (error) {
+        console.error("[collector] tick upsert failed", error instanceof Error ? error.message : String(error));
       }
     }
 
@@ -1158,6 +1219,10 @@ const runWsLoop = async () => {
               rememberLiveState(update);
               pendingLive.set(update.market_id, update);
               applyCandleFromLive(update);
+              const tick = parseIncomingTick(message, update);
+              if (tick) {
+                pendingTicks.set(tick.dedupe_key, tick);
+              }
             }
           } catch {
             logDeadLetter("invalid_json", raw);

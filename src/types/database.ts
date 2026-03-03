@@ -454,6 +454,65 @@ export type Database = {
           },
         ];
       };
+      polymarket_market_ticks: {
+        Row: {
+          id: number;
+          market_id: string;
+          trade_id: string | null;
+          source_seq: number | null;
+          source_ts: string;
+          side: "BUY" | "SELL" | "UNKNOWN";
+          outcome: string | null;
+          price: number;
+          size: number;
+          notional: number;
+          dedupe_key: string;
+          payload: Json | null;
+          created_at: string;
+          ingested_at: string;
+        };
+        Insert: {
+          id?: number;
+          market_id: string;
+          trade_id?: string | null;
+          source_seq?: number | null;
+          source_ts: string;
+          side?: "BUY" | "SELL" | "UNKNOWN";
+          outcome?: string | null;
+          price: number;
+          size: number;
+          notional?: number;
+          dedupe_key: string;
+          payload?: Json | null;
+          created_at?: string;
+          ingested_at?: string;
+        };
+        Update: {
+          id?: number;
+          market_id?: string;
+          trade_id?: string | null;
+          source_seq?: number | null;
+          source_ts?: string;
+          side?: "BUY" | "SELL" | "UNKNOWN";
+          outcome?: string | null;
+          price?: number;
+          size?: number;
+          notional?: number;
+          dedupe_key?: string;
+          payload?: Json | null;
+          created_at?: string;
+          ingested_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "polymarket_market_ticks_market_id_fkey";
+            columns: ["market_id"];
+            isOneToOne: false;
+            referencedRelation: "polymarket_market_cache";
+            referencedColumns: ["market_id"];
+          },
+        ];
+      };
       user_events: {
         Row: {
           id: number;

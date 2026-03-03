@@ -9,13 +9,24 @@ import BetConfirmModal from "@/components/BetConfirmModal";
 import ProfilePage from "@/components/ProfilePage";
 import PublicUserProfileModal from "@/components/PublicUserProfileModal";
 import Button from "@/components/Button";
-import type { Market, User, Bet, Position, Trade, PriceCandle, PublicTrade, LeaderboardUser, Comment as MarketComment } from "@/types";
+import type {
+  Market,
+  User,
+  Bet,
+  Position,
+  Trade,
+  PriceCandle,
+  PublicTrade,
+  LeaderboardUser,
+  Comment as MarketComment,
+  LiveActivityTick,
+} from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { Search, Filter, X } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
-import { priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
+import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
 import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
@@ -112,6 +123,22 @@ type MarketApiRow = {
 
 type MarketLiveRow = Database["public"]["Tables"]["polymarket_market_live"]["Row"];
 type CandleRow = Database["public"]["Tables"]["polymarket_candles_1m"]["Row"];
+type TickRow = Database["public"]["Tables"]["polymarket_market_ticks"]["Row"];
+type MarketLivePatch = {
+  bestBid: number | null;
+  bestAsk: number | null;
+  mid: number | null;
+  lastTradePrice: number | null;
+  lastTradeSize: number | null;
+  rolling24hVolume: number | null;
+  openInterest: number | null;
+  liveUpdatedAt: string | null;
+};
+type MergedMarketCacheEntry = {
+  base: Market;
+  patch: MarketLivePatch | undefined;
+  merged: Market;
+};
 type TelegramWindow = Window & {
   Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
 };
@@ -185,6 +212,115 @@ const formatUsdVolume = (value: number): string => `$${Number(value).toFixed(2)}
 const parseUsdVolume = (value: string): number => {
   const parsed = Number(String(value).replace(/[^0-9.-]+/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const MATERIAL_CHANGE_EPS = 0.0001;
+const hasMaterialNumberChange = (prev: number | null | undefined, next: number | null | undefined) => {
+  const a = typeof prev === "number" && Number.isFinite(prev) ? prev : null;
+  const b = typeof next === "number" && Number.isFinite(next) ? next : null;
+  if (a === null && b === null) return false;
+  if (a === null || b === null) return true;
+  return Math.abs(a - b) > MATERIAL_CHANGE_EPS;
+};
+
+const hasMaterialPatchChange = (prev: MarketLivePatch | undefined, next: MarketLivePatch) => {
+  if (!prev) return true;
+  return (
+    hasMaterialNumberChange(prev.bestBid, next.bestBid) ||
+    hasMaterialNumberChange(prev.bestAsk, next.bestAsk) ||
+    hasMaterialNumberChange(prev.mid, next.mid) ||
+    hasMaterialNumberChange(prev.lastTradePrice, next.lastTradePrice) ||
+    hasMaterialNumberChange(prev.lastTradeSize, next.lastTradeSize) ||
+    hasMaterialNumberChange(prev.rolling24hVolume, next.rolling24hVolume) ||
+    hasMaterialNumberChange(prev.openInterest, next.openInterest) ||
+    prev.liveUpdatedAt !== next.liveUpdatedAt
+  );
+};
+
+const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market => {
+  if (!patch) return market;
+  const isBinary = (market.marketType ?? "binary") === "binary";
+  const useMid = isBinary && typeof patch.mid === "number" && patch.mid >= 0 && patch.mid <= 1;
+  const yesPrice = useMid ? patch.mid : market.yesPrice;
+  const noPrice = useMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
+  const chance = useMid ? Math.round(yesPrice * 100) : market.chance;
+  const volumeRaw =
+    typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
+      ? Math.max(0, patch.rolling24hVolume)
+      : typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw)
+        ? market.volumeRaw
+        : parseUsdVolume(market.volume);
+
+  return {
+    ...market,
+    yesPrice,
+    noPrice,
+    chance,
+    volumeRaw,
+    volume: formatUsdVolume(volumeRaw),
+    bestBid: patch.bestBid,
+    bestAsk: patch.bestAsk,
+    mid: patch.mid,
+    lastTradePrice: patch.lastTradePrice,
+    lastTradeSize: patch.lastTradeSize,
+    rolling24hVolume: patch.rolling24hVolume,
+    openInterest: patch.openInterest,
+    liveUpdatedAt: patch.liveUpdatedAt,
+  };
+};
+
+type ClientMetricStore = {
+  counters: Record<string, number>;
+  timings: Record<string, number[]>;
+  marks: Record<string, number>;
+};
+
+type WindowWithRealtimeMetrics = Window & {
+  __realtimePerfMetrics?: ClientMetricStore;
+};
+
+const getClientMetricStore = (): ClientMetricStore | null => {
+  if (typeof window === "undefined") return null;
+  const target = window as WindowWithRealtimeMetrics;
+  if (!target.__realtimePerfMetrics) {
+    target.__realtimePerfMetrics = {
+      counters: {},
+      timings: {},
+      marks: {},
+    };
+  }
+  return target.__realtimePerfMetrics;
+};
+
+const incrementClientCounter = (name: string, by = 1) => {
+  const store = getClientMetricStore();
+  if (!store) return;
+  store.counters[name] = (store.counters[name] ?? 0) + by;
+};
+
+const observeClientTiming = (name: string, durationMs: number) => {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  const store = getClientMetricStore();
+  if (!store) return;
+  const rows = store.timings[name] ?? [];
+  rows.push(durationMs);
+  if (rows.length > 240) rows.splice(0, rows.length - 240);
+  store.timings[name] = rows;
+};
+
+const setClientMark = (name: string) => {
+  const store = getClientMetricStore();
+  if (!store) return;
+  store.marks[name] = Date.now();
+};
+
+const consumeClientMark = (name: string): number | null => {
+  const store = getClientMetricStore();
+  if (!store) return null;
+  const value = store.marks[name];
+  if (!Number.isFinite(value)) return null;
+  delete store.marks[name];
+  return value;
 };
 
 const createSessionId = (): string => {
@@ -335,9 +471,15 @@ export default function HomePage() {
   const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
   const sessionIdRef = useRef<string>(createSessionId());
   const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
+  const mergedMarketCacheRef = useRef<Map<string, MergedMarketCacheEntry>>(new Map());
+  const marketOpenStartedAtRef = useRef<number | null>(null);
+  const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
+  const [marketLivePatchById, setMarketLivePatchById] = useState<Record<string, MarketLivePatch>>({});
+  const [visibleCatalogMarketIds, setVisibleCatalogMarketIds] = useState<string[]>([]);
+  const [documentVisible, setDocumentVisible] = useState(true);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
 
@@ -398,6 +540,16 @@ export default function HomePage() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const syncVisibility = () => {
+      setDocumentVisible(!document.hidden);
+    };
+    syncVisibility();
+    document.addEventListener("visibilitychange", syncVisibility);
+    return () => document.removeEventListener("visibilitychange", syncVisibility);
+  }, []);
   const shellSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [myPositions, setMyPositions] = useState<Position[]>([]);
@@ -425,6 +577,7 @@ export default function HomePage() {
   const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
+  const [marketLiveActivityTicks, setMarketLiveActivityTicks] = useState<LiveActivityTick[]>([]);
   type MarketContextPayload = { context: string; sources: string[]; updatedAt: string };
   const [marketContextById, setMarketContextById] = useState<Record<string, MarketContextPayload>>({});
   const [marketContextLoadingId, setMarketContextLoadingId] = useState<string | null>(null);
@@ -518,6 +671,30 @@ export default function HomePage() {
       (upper.includes("JWT") && upper.includes("EXPIRED"))
     );
   };
+
+  const mergedMarkets = useMemo(() => {
+    const previousCache = mergedMarketCacheRef.current;
+    const nextCache = new Map<string, MergedMarketCacheEntry>();
+
+    const merged = markets.map((market) => {
+      const patch = marketLivePatchById[market.id];
+      const cached = previousCache.get(market.id);
+      if (cached && cached.base === market && cached.patch === patch) {
+        nextCache.set(market.id, cached);
+        return cached.merged;
+      }
+      const nextMerged = applyLivePatchToMarket(market, patch);
+      nextCache.set(market.id, {
+        base: market,
+        patch,
+        merged: nextMerged,
+      });
+      return nextMerged;
+    });
+
+    mergedMarketCacheRef.current = nextCache;
+    return merged;
+  }, [markets, marketLivePatchById]);
 
   const loadLeaderboard = useCallback(async (sortBy: LeaderboardSort = leaderboardSort) => {
     setLoadingLeaderboard(true);
@@ -761,7 +938,7 @@ export default function HomePage() {
   const deriveLegacyBets = useCallback(
     (positions: Position[]): Bet[] =>
       positions.map((p, idx) => {
-        const market = markets.find((m) => m.id === p.marketId);
+        const market = mergedMarkets.find((m) => m.id === p.marketId);
         const priceYes = market?.yesPrice ?? 0.5;
         const priceNo = market?.noPrice ?? 0.5;
         const selectedOutcomePrice = p.outcomeId
@@ -808,7 +985,7 @@ export default function HomePage() {
           shares: p.shares,
         };
       }),
-    [markets, lang]
+    [mergedMarkets, lang]
   );
 
   /**
@@ -882,6 +1059,8 @@ export default function HomePage() {
   }, [attemptSilentRefresh, privyAuthenticated, privyReady, refreshUser]);
 
   const loadMarkets = useCallback(async () => {
+    const startedAt = Date.now();
+    incrementClientCounter("catalog.loadMarkets.calls");
     setLoadingMarkets(true);
     setMarketsError(null);
     setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
@@ -906,6 +1085,7 @@ export default function HomePage() {
         .slice(0, CATALOG_PAGE_SIZE)
         .map((m) => mapMarketApiToMarket(m as MarketApiRow, lang));
       setMarkets(mapped);
+      setMarketLivePatchById({});
     } catch (err) {
       console.error("Failed to load markets", err);
       setMarketsError(
@@ -916,6 +1096,7 @@ export default function HomePage() {
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
+      observeClientTiming("catalog.loadMarkets.ms", Date.now() - startedAt);
     }
   }, [activeProviderFilter, catalogPage, catalogSort, lang]);
   const loadMarketsRef = useRef(loadMarkets);
@@ -1019,71 +1200,112 @@ export default function HomePage() {
   }, [loadMarkets, selectedMarketId, currentView]);
 
   useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) {
+      setVisibleCatalogMarketIds([]);
+      return;
+    }
+
+    const visible = new Set<string>();
+    const readFallbackIds = () =>
+      Array.from(document.querySelectorAll<HTMLElement>("[data-market-card-id]"))
+        .map((el) => (el.dataset.marketCardId ?? "").trim())
+        .filter(Boolean)
+        .slice(0, 40);
+
+    let rafId: number | null = null;
+    const syncVisibleIds = () => {
+      rafId = null;
+      const next = (visible.size > 0 ? Array.from(visible) : readFallbackIds()).slice(0, 80);
+      setVisibleCatalogMarketIds((prev) => {
+        if (prev.length === next.length && prev.every((value, idx) => value === next[idx])) return prev;
+        return next;
+      });
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const target = entry.target as HTMLElement;
+          const marketId = (target.dataset.marketCardId ?? "").trim();
+          if (!marketId) continue;
+          if (entry.isIntersecting) visible.add(marketId);
+          else visible.delete(marketId);
+        }
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(syncVisibleIds);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "240px 0px",
+        threshold: 0.01,
+      }
+    );
+
+    const elements = Array.from(document.querySelectorAll<HTMLElement>("[data-market-card-id]"));
+    for (const element of elements) observer.observe(element);
+    syncVisibleIds();
+
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+  }, [
+    currentView,
+    selectedMarketId,
+    documentVisible,
+    catalogPage,
+    searchQuery,
+    activeCategoryId,
+    activeProviderFilter,
+    catalogSort,
+    catalogStatus,
+    catalogTimeFilter,
+  ]);
+
+  useEffect(() => {
     const supabase = getBrowserSupabaseClient();
     if (!supabase) return;
+    if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) return;
+    const targetIds = Array.from(new Set(visibleCatalogMarketIds.filter(Boolean))).slice(0, 80);
+    if (targetIds.length === 0) return;
 
     const pendingRows = new Map<string, MarketLiveRow>();
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
-    let hasSubscribed = false;
+    let fallbackTriggered = false;
 
     const flushLiveRows = () => {
       flushTimer = null;
       if (pendingRows.size === 0) return;
       const batch = Array.from(pendingRows.values());
       pendingRows.clear();
+      incrementClientCounter("catalog.realtime.flushes");
+      incrementClientCounter("catalog.realtime.rowsApplied", batch.length);
 
-      setMarkets((prev) => {
-        if (prev.length === 0 || batch.length === 0) return prev;
-        const byMarketId = new Map(
-          batch
-            .map((row) => [row.market_id.trim(), row] as const)
-            .filter(([marketId]) => marketId.length > 0)
-        );
-        if (byMarketId.size === 0) return prev;
+      setMarketLivePatchById((prev) => {
+        let changed = false;
+        const next = { ...prev };
 
-        return prev.map((market) => {
-          const row = byMarketId.get(market.id);
-          if (!row) return market;
-          const mid = asNumber(row.mid);
-          const rolling24hVolume = asNumber(row.rolling_24h_volume);
-          const bestBid = asNumber(row.best_bid);
-          const bestAsk = asNumber(row.best_ask);
-          const lastTradePrice = asNumber(row.last_trade_price);
-          const lastTradeSize = asNumber(row.last_trade_size);
-          const openInterest = asNumber(row.open_interest);
-          const sourceTs = typeof row.source_ts === "string" ? row.source_ts : null;
-
-          const isBinary = (market.marketType ?? "binary") === "binary";
-          const canApplyMid = isBinary && typeof mid === "number" && mid >= 0 && mid <= 1;
-          const yesPrice = canApplyMid ? mid : market.yesPrice;
-          const noPrice = canApplyMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
-          const chance = canApplyMid ? Math.round(yesPrice * 100) : market.chance;
-          const volumeRaw =
-            typeof rolling24hVolume === "number" && Number.isFinite(rolling24hVolume)
-              ? Math.max(0, rolling24hVolume)
-              : typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw)
-                ? market.volumeRaw
-                : parseUsdVolume(market.volume);
-          const volume = formatUsdVolume(volumeRaw);
-
-          return {
-            ...market,
-            yesPrice,
-            noPrice,
-            chance,
-            volume,
-            volumeRaw,
-            bestBid,
-            bestAsk,
-            mid,
-            lastTradePrice,
-            lastTradeSize,
-            rolling24hVolume,
-            openInterest,
-            liveUpdatedAt: sourceTs,
+        for (const row of batch) {
+          const marketId = row.market_id.trim();
+          if (!marketId) continue;
+          const patch: MarketLivePatch = {
+            bestBid: asNumber(row.best_bid),
+            bestAsk: asNumber(row.best_ask),
+            mid: asNumber(row.mid),
+            lastTradePrice: asNumber(row.last_trade_price),
+            lastTradeSize: asNumber(row.last_trade_size),
+            rolling24hVolume: asNumber(row.rolling_24h_volume),
+            openInterest: asNumber(row.open_interest),
+            liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
           };
-        });
+          if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
+          next[marketId] = patch;
+          changed = true;
+        }
+
+        return changed ? next : prev;
       });
     };
 
@@ -1091,63 +1313,51 @@ export default function HomePage() {
       const marketId = row.market_id.trim();
       if (!marketId) return;
       pendingRows.set(marketId, row);
+      incrementClientCounter("catalog.realtime.rowsReceived");
       if (!flushTimer) {
-        flushTimer = setTimeout(flushLiveRows, 300);
+        flushTimer = setTimeout(flushLiveRows, 250);
       }
     };
 
-    const scheduleFallbackLoad = () => {
-      if (fallbackTimer) return;
-      fallbackTimer = setTimeout(() => {
-        fallbackTimer = null;
+    const channel = supabase.channel(`markets-live-visible-${targetIds.length}`);
+    for (const marketId of targetIds) {
+      channel.on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+        (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            queueLiveRow(payload.new as MarketLiveRow);
+          }
+        }
+      );
+      channel.on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+        (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            queueLiveRow(payload.new as MarketLiveRow);
+          }
+        }
+      );
+    }
+
+    channel.subscribe((status) => {
+      if (
+        !fallbackTriggered &&
+        (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED")
+      ) {
+        fallbackTriggered = true;
+        incrementClientCounter("catalog.realtime.channelRecovery");
         void loadMarketsRef.current();
-      }, 400);
-    };
-
-    const handleChannelStatus = (status: string) => {
-      if (status === "SUBSCRIBED") {
-        if (hasSubscribed) {
-          scheduleFallbackLoad();
-        }
-        hasSubscribed = true;
-        return;
       }
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        scheduleFallbackLoad();
-      }
-    };
-
-    const channel = supabase
-      .channel("markets-live")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "polymarket_market_live" },
-        (payload) => {
-          if (payload.new && typeof payload.new === "object") {
-            queueLiveRow(payload.new as MarketLiveRow);
-          }
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "polymarket_market_live" },
-        (payload) => {
-          if (payload.new && typeof payload.new === "object") {
-            queueLiveRow(payload.new as MarketLiveRow);
-          }
-        }
-      )
-      .subscribe((status) => {
-        handleChannelStatus(status);
-      });
+    });
 
     return () => {
       if (flushTimer) clearTimeout(flushTimer);
-      if (fallbackTimer) clearTimeout(fallbackTimer);
       pendingRows.clear();
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [currentView, selectedMarketId, documentVisible, visibleCatalogMarketIds]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -1301,7 +1511,7 @@ export default function HomePage() {
 
   useEffect(() => {
     if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
-    const existing = new Set(markets.map((m) => m.id));
+    const existing = new Set(mergedMarkets.map((m) => m.id));
     const missing = semanticSearchIds.filter((id) => !existing.has(id)).slice(0, 12);
     if (missing.length === 0) return;
     let cancelled = false;
@@ -1325,11 +1535,11 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [semanticSearchIds, searchQuery, markets, lang]);
+  }, [semanticSearchIds, searchQuery, mergedMarkets, lang]);
 
   useEffect(() => {
     if (!selectedMarketId) return;
-    if (markets.some((market) => market.id === selectedMarketId)) {
+    if (mergedMarkets.some((market) => market.id === selectedMarketId)) {
       ensuredMarketIdsRef.current.add(selectedMarketId);
       return;
     }
@@ -1350,11 +1560,11 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [lang, markets, selectedMarketId]);
+  }, [lang, mergedMarkets, selectedMarketId]);
 
   const filteredMarkets = useMemo(
     () =>
-      markets.filter((market) => {
+      mergedMarkets.filter((market) => {
         const matchesProvider =
           activeProviderFilter === "all" || (market.provider ?? "polymarket") === activeProviderFilter;
         const matchesCategory =
@@ -1366,7 +1576,7 @@ export default function HomePage() {
           .includes(searchQuery.toLowerCase());
         return matchesProvider && matchesCategory && matchesSearch;
       }),
-    [activeCategoryId, activeProviderFilter, searchQuery, markets, lang, semanticSearchScores]
+    [activeCategoryId, activeProviderFilter, searchQuery, mergedMarkets, lang, semanticSearchScores]
   );
 
   const catalogMarkets = useMemo(() => {
@@ -1480,7 +1690,7 @@ export default function HomePage() {
   const feedMarkets = useMemo(() => {
     if (!user) return [];
     const q = searchQuery.trim().toLowerCase();
-    const base = markets.filter((m) => myBetMarketIds.has(m.id));
+    const base = mergedMarkets.filter((m) => myBetMarketIds.has(m.id));
     const filtered = !q
       ? base
       : base.filter((market) => {
@@ -1503,15 +1713,15 @@ export default function HomePage() {
       const bt = sortTs(b.closesAt ?? b.expiresAt);
       return at - bt;
     });
-  }, [user, markets, myBetMarketIds, searchQuery, lang]);
+  }, [user, mergedMarkets, myBetMarketIds, searchQuery, lang]);
 
   const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
   const bookmarkedMarkets = useMemo(() => {
-    return markets.filter((m) => bookmarkedMarketIds.has(m.id));
-  }, [markets, bookmarkedMarketIds]);
+    return mergedMarkets.filter((m) => bookmarkedMarketIds.has(m.id));
+  }, [mergedMarkets, bookmarkedMarketIds]);
 
   useEffect(() => {
-    const knownIds = new Set(markets.map((market) => market.id));
+    const knownIds = new Set(mergedMarkets.map((market) => market.id));
     const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarkedMarketIds)]))
       .filter((marketId) => !knownIds.has(marketId))
       .filter((marketId) => !ensuredMarketIdsRef.current.has(marketId))
@@ -1541,11 +1751,11 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [bookmarkedMarketIds, lang, markets, myBetMarketIds]);
+  }, [bookmarkedMarketIds, lang, mergedMarkets, myBetMarketIds]);
 
   const selectedMarket = useMemo(
-    () => markets.find((market) => market.id === selectedMarketId),
-    [selectedMarketId, markets]
+    () => mergedMarkets.find((market) => market.id === selectedMarketId),
+    [selectedMarketId, mergedMarkets]
   );
   const selectedProvider = useMemo<"polymarket" | "limitless" | undefined>(() => {
     if (selectedMarket?.provider) return selectedMarket.provider;
@@ -1643,6 +1853,7 @@ export default function HomePage() {
     if (!selectedMarketId) {
       setMarketCandles([]);
       setMarketPublicTrades([]);
+      setMarketLiveActivityTicks([]);
       setMarketComments([]);
       setMarketInsightsLoading(false);
       setMarketInsightsError(null);
@@ -1652,10 +1863,11 @@ export default function HomePage() {
     }
 
     let cancelled = false;
+    const activeMarketId = selectedMarketId;
     void trpcClient.events.track
       .mutate({
         sessionId: sessionIdRef.current,
-        marketId: selectedMarketId,
+        marketId: activeMarketId,
         eventType: "view",
       })
       .catch(() => {
@@ -1663,9 +1875,10 @@ export default function HomePage() {
       });
 
     const pendingCandleRows = new Map<string, CandleRow>();
+    const pendingTickRows = new Map<string, TickRow>();
     let candleFlushTimer: ReturnType<typeof setTimeout> | null = null;
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
-    let hasCandleSubscription = false;
+    let tickFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let candleFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
     const flushPendingCandleRows = () => {
       candleFlushTimer = null;
@@ -1676,7 +1889,7 @@ export default function HomePage() {
       setMarketCandles((prev) => {
         const byBucket = new Map(prev.map((item) => [item.bucket, item]));
         for (const row of rows) {
-          if (row.market_id !== selectedMarketId) continue;
+          if (row.market_id !== activeMarketId) continue;
           const bucketMs = Date.parse(row.bucket_start);
           if (!Number.isFinite(bucketMs)) continue;
           const bucket = new Date(bucketMs).toISOString();
@@ -1700,25 +1913,72 @@ export default function HomePage() {
     };
 
     const queueCandleRow = (row: CandleRow) => {
-      if (row.market_id !== selectedMarketId) return;
+      if (row.market_id !== activeMarketId) return;
       const key = `${row.market_id}:${row.bucket_start}`;
       pendingCandleRows.set(key, row);
+      incrementClientCounter("market.candles.rowsReceived");
       if (!candleFlushTimer) {
-        candleFlushTimer = setTimeout(flushPendingCandleRows, 300);
+        candleFlushTimer = setTimeout(flushPendingCandleRows, 250);
+      }
+    };
+
+    const flushPendingTickRows = () => {
+      tickFlushTimer = null;
+      if (cancelled || pendingTickRows.size === 0) return;
+      const rows = Array.from(pendingTickRows.values());
+      pendingTickRows.clear();
+      incrementClientCounter("market.activity.rowsApplied", rows.length);
+      setMarketLiveActivityTicks((prev) => {
+        const byId = new Map(prev.map((item) => [item.id, item] as const));
+        for (const row of rows) {
+          if (row.market_id !== activeMarketId) continue;
+          const id = String(row.id);
+          const sideRaw = typeof row.side === "string" ? row.side.toUpperCase() : "UNKNOWN";
+          const side: LiveActivityTick["side"] =
+            sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : "UNKNOWN";
+          const price = Number(row.price ?? 0);
+          const size = Number(row.size ?? 0);
+          const notional = Number(row.notional ?? price * size);
+          if (!Number.isFinite(price) || !Number.isFinite(size) || !Number.isFinite(notional)) continue;
+          byId.set(id, {
+            id,
+            marketId: row.market_id,
+            tradeId: row.trade_id ?? null,
+            side,
+            outcome: row.outcome ?? null,
+            price,
+            size,
+            notional,
+            sourceTs: row.source_ts,
+            createdAt: row.created_at,
+          });
+        }
+        return Array.from(byId.values())
+          .sort((a, b) => Date.parse(b.sourceTs) - Date.parse(a.sourceTs))
+          .slice(0, 120);
+      });
+    };
+
+    const queueTickRow = (row: TickRow) => {
+      if (row.market_id !== activeMarketId) return;
+      pendingTickRows.set(String(row.id), row);
+      incrementClientCounter("market.activity.rowsReceived");
+      if (!tickFlushTimer) {
+        tickFlushTimer = setTimeout(flushPendingTickRows, 250);
       }
     };
 
     const supabase = getBrowserSupabaseClient();
     const candleChannel = supabase
       ? supabase
-          .channel(`market-candles-${selectedMarketId}`)
+          .channel(`market-candles-${activeMarketId}`)
           .on(
             "postgres_changes",
             {
               event: "INSERT",
               schema: "public",
               table: "polymarket_candles_1m",
-              filter: `market_id=eq.${selectedMarketId}`,
+              filter: `market_id=eq.${activeMarketId}`,
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
@@ -1732,7 +1992,7 @@ export default function HomePage() {
               event: "UPDATE",
               schema: "public",
               table: "polymarket_candles_1m",
-              filter: `market_id=eq.${selectedMarketId}`,
+              filter: `market_id=eq.${activeMarketId}`,
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
@@ -1741,74 +2001,115 @@ export default function HomePage() {
             }
           )
           .subscribe((status) => {
-            if (status === "SUBSCRIBED") {
-              if (hasCandleSubscription && !fallbackTimer) {
-                fallbackTimer = setTimeout(() => {
-                  fallbackTimer = null;
-                  if (!cancelled) {
-                    void fetchInsights();
-                  }
-                }, 400);
-              }
-              hasCandleSubscription = true;
-              return;
-            }
-            if ((status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") && !fallbackTimer) {
-              fallbackTimer = setTimeout(() => {
-                fallbackTimer = null;
+            if (
+              (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") &&
+              !candleFallbackTimer
+            ) {
+              candleFallbackTimer = setTimeout(() => {
+                candleFallbackTimer = null;
                 if (!cancelled) {
-                  void fetchInsights();
+                  void fetchCandles();
                 }
               }, 400);
             }
           })
       : null;
 
-    async function fetchInsights() {
+    const tickChannel = supabase
+      ? supabase
+          .channel(`market-ticks-${activeMarketId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "INSERT",
+              schema: "public",
+              table: "polymarket_market_ticks",
+              filter: `market_id=eq.${activeMarketId}`,
+            },
+            (payload) => {
+              if (payload.new && typeof payload.new === "object") {
+                queueTickRow(payload.new as TickRow);
+              }
+            }
+          )
+          .subscribe((status) => {
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+              incrementClientCounter("market.activity.channelRecovery");
+            }
+          })
+      : null;
+
+    async function fetchCandles() {
       setMarketInsightsLoading(true);
       setMarketInsightsError(null);
-      setMarketCommentsError(null);
+      try {
+        const candlesRaw = await trpcClient.market.getPriceCandles.query({
+          marketId: activeMarketId,
+          provider: selectedProvider,
+          limit: 200,
+        });
+        if (cancelled) return;
+        const candlesParsed = priceCandlesSchema.parse(candlesRaw);
+        const candles: PriceCandle[] = candlesParsed.map((c) => ({
+          bucket: requireValue(c.bucket, "CANDLE_BUCKET_MISSING"),
+          outcomeId: c.outcomeId ?? null,
+          outcomeTitle: c.outcomeTitle ?? null,
+          outcomeColor: c.outcomeColor ?? null,
+          open: requireValue(c.open, "CANDLE_OPEN_MISSING"),
+          high: requireValue(c.high, "CANDLE_HIGH_MISSING"),
+          low: requireValue(c.low, "CANDLE_LOW_MISSING"),
+          close: requireValue(c.close, "CANDLE_CLOSE_MISSING"),
+          volume: requireValue(c.volume, "CANDLE_VOLUME_MISSING"),
+          tradesCount: requireValue(c.tradesCount, "CANDLE_TRADES_COUNT_MISSING"),
+        }));
+        setMarketCandles(candles);
+        if (candles.length > 0 && chartFirstPaintRecordedForMarketRef.current !== activeMarketId) {
+          chartFirstPaintRecordedForMarketRef.current = activeMarketId;
+          const openedAt = consumeClientMark(`market-open:${activeMarketId}`) ?? marketOpenStartedAtRef.current;
+          if (openedAt) {
+            observeClientTiming("market.open.toChartMs", Date.now() - openedAt);
+          }
+          incrementClientCounter("market.chart.firstPaint");
+        }
+      } catch (err) {
+        console.error("Failed to load price candles", err);
+        if (!cancelled) {
+          maybeRequireRelogin(err);
+          setMarketInsightsError(getErrorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setMarketInsightsLoading(false);
+        }
+      }
+    }
+
+    async function fetchActivity() {
       setMarketActivityError(null);
       try {
-        // Fetch independently so one failing endpoint doesn't wipe the others.
-        const [candlesRes, tradesRes, commentsRes] = await Promise.allSettled([
-          trpcClient.market.getPriceCandles.query({
-            marketId: selectedMarketId,
+        const [ticksRes, tradesRes] = await Promise.allSettled([
+          trpcClient.market.getLiveActivity.query({
+            marketId: activeMarketId,
             provider: selectedProvider,
-            limit: 200,
+            limit: 80,
           }),
           trpcClient.market.getPublicTrades.query({
-            marketId: selectedMarketId,
+            marketId: activeMarketId,
             provider: selectedProvider,
             limit: 50,
           }),
-          trpcClient.market.getMarketComments.query({ marketId: selectedMarketId, limit: 50 }),
         ]);
-
         if (cancelled) return;
 
-        // Candles (chart)
-        if (candlesRes.status === "fulfilled") {
-          const candlesParsed = priceCandlesSchema.parse(candlesRes.value);
-          const candles: PriceCandle[] = candlesParsed.map((c) => ({
-            bucket: requireValue(c.bucket, "CANDLE_BUCKET_MISSING"),
-            outcomeId: c.outcomeId ?? null,
-            outcomeTitle: c.outcomeTitle ?? null,
-            outcomeColor: c.outcomeColor ?? null,
-            open: requireValue(c.open, "CANDLE_OPEN_MISSING"),
-            high: requireValue(c.high, "CANDLE_HIGH_MISSING"),
-            low: requireValue(c.low, "CANDLE_LOW_MISSING"),
-            close: requireValue(c.close, "CANDLE_CLOSE_MISSING"),
-            volume: requireValue(c.volume, "CANDLE_VOLUME_MISSING"),
-            tradesCount: requireValue(c.tradesCount, "CANDLE_TRADES_COUNT_MISSING"),
-          }));
-          setMarketCandles(candles);
+        if (ticksRes.status === "fulfilled") {
+          const ticks = liveActivityTicksSchema.parse(ticksRes.value) as LiveActivityTick[];
+          setMarketLiveActivityTicks(
+            [...ticks].sort((a, b) => Date.parse(b.sourceTs) - Date.parse(a.sourceTs)).slice(0, 120)
+          );
         } else {
-          console.error("Failed to load price candles", candlesRes.reason);
-          // keep previous candles for this market (or empty if first load)
+          maybeRequireRelogin(ticksRes.reason);
         }
 
-        // Trades (activity)
         if (tradesRes.status === "fulfilled") {
           const tradesParsed = publicTradesSchema.parse(tradesRes.value);
           const trades: PublicTrade[] = tradesParsed.map((t) => ({
@@ -1830,64 +2131,71 @@ export default function HomePage() {
           maybeRequireRelogin(tradesRes.reason);
           setMarketActivityError(getErrorMessage(tradesRes.reason));
         }
-
-        // Comments
-        if (commentsRes.status === "fulfilled") {
-          const commentsParsed = marketCommentsSchema.parse(commentsRes.value);
-          const uiComments: MarketComment[] = commentsParsed.map((c) => {
-            const userLabel = c.authorUsername ? `${c.authorName} (@${c.authorUsername})` : c.authorName;
-            const avatar = c.authorAvatarUrl || buildInitialsAvatarDataUrl(c.authorName, { bg: "#333333", fg: "#ffffff" });
-            const timestamp = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
-              day: "2-digit",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            return {
-              id: c.id,
-              userId: c.userId,
-              username: c.authorUsername ?? null,
-              user: userLabel,
-              avatar,
-              text: c.body,
-              createdAt: c.createdAt,
-              timestamp,
-              likes: c.likesCount ?? 0,
-              likedByMe: c.likedByMe ?? false,
-              parentId: c.parentId ?? null,
-            };
-          });
-          setMarketComments(uiComments);
-        } else {
-          console.error("Failed to load market comments", commentsRes.reason);
-          maybeRequireRelogin(commentsRes.reason);
-          setMarketCommentsError(getErrorMessage(commentsRes.reason));
-        }
       } catch (err) {
-        console.error("Failed to load market insights", err);
         if (!cancelled) {
           maybeRequireRelogin(err);
-          setMarketInsightsError(getErrorMessage(err));
-        }
-      } finally {
-        if (!cancelled) {
-          setMarketInsightsLoading(false);
+          setMarketActivityError(getErrorMessage(err));
         }
       }
     }
 
-    void fetchInsights();
+    async function fetchComments() {
+      setMarketCommentsError(null);
+      try {
+        const commentsRaw = await trpcClient.market.getMarketComments.query({ marketId: activeMarketId, limit: 50 });
+        if (cancelled) return;
+        const commentsParsed = marketCommentsSchema.parse(commentsRaw);
+        const uiComments: MarketComment[] = commentsParsed.map((c) => {
+          const userLabel = c.authorUsername ? `${c.authorName} (@${c.authorUsername})` : c.authorName;
+          const avatar = c.authorAvatarUrl || buildInitialsAvatarDataUrl(c.authorName, { bg: "#333333", fg: "#ffffff" });
+          const timestamp = new Date(c.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
+            day: "2-digit",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          return {
+            id: c.id,
+            userId: c.userId,
+            username: c.authorUsername ?? null,
+            user: userLabel,
+            avatar,
+            text: c.body,
+            createdAt: c.createdAt,
+            timestamp,
+            likes: c.likesCount ?? 0,
+            likedByMe: c.likedByMe ?? false,
+            parentId: c.parentId ?? null,
+          };
+        });
+        setMarketComments(uiComments);
+      } catch (err) {
+        if (!cancelled) {
+          maybeRequireRelogin(err);
+          setMarketCommentsError(getErrorMessage(err));
+        }
+      }
+    }
+
+    void fetchCandles();
+    void fetchActivity();
+    void fetchComments();
 
     return () => {
       cancelled = true;
       if (candleFlushTimer) clearTimeout(candleFlushTimer);
-      if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (tickFlushTimer) clearTimeout(tickFlushTimer);
+      if (candleFallbackTimer) clearTimeout(candleFallbackTimer);
       pendingCandleRows.clear();
+      pendingTickRows.clear();
       if (supabase && candleChannel) {
         void supabase.removeChannel(candleChannel);
       }
+      if (supabase && tickChannel) {
+        void supabase.removeChannel(tickChannel);
+      }
     };
-  }, [selectedMarketId, selectedProvider]);
+  }, [selectedMarketId, selectedProvider, lang, maybeRequireRelogin]);
 
   useEffect(() => {
     if (!HAS_PRIVY_PROVIDER || !selectedMarketId) {
@@ -1958,7 +2266,7 @@ export default function HomePage() {
     const market =
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
-        : markets.find((m) => m.id === marketId) ?? null;
+        : mergedMarkets.find((m) => m.id === marketId) ?? null;
 
     if (!HAS_PRIVY_PROVIDER) {
       setBetConfirm({
@@ -2189,6 +2497,9 @@ export default function HomePage() {
         const refreshed = await attemptSilentRefresh();
         if (!refreshed) return;
       }
+      marketOpenStartedAtRef.current = Date.now();
+      setClientMark(`market-open:${market.id}`);
+      incrementClientCounter("market.open.calls");
       setMarketBetIntent({ marketId: market.id, side, nonce: Date.now() });
       setSelectedMarketId(market.id);
       navigateToMarketUrl(market.id, market.titleEn ?? market.titleRu ?? market.title);
@@ -2199,32 +2510,25 @@ export default function HomePage() {
   const openMarketWithAuthCheck = useCallback(
     async (market: Market) => {
       const marketId = market.id;
-      if (!user) {
-        setSelectedMarketId(marketId);
-        navigateToMarketUrl(marketId, market.titleEn ?? market.titleRu ?? market.title);
-        return;
-      }
-      if (reloginRequired) {
-        try {
-          localStorage.setItem("pending_market_id", marketId);
-        } catch {
-          // ignore
-        }
-        const refreshed = await attemptSilentRefresh();
-        if (!refreshed) return;
-      }
-      const me = await refreshUser();
-      if (!me) {
-        try {
-          localStorage.setItem("pending_market_id", marketId);
-        } catch {
-          // ignore
-        }
-        const refreshed = await attemptSilentRefresh();
-        if (!refreshed) return;
-      }
+      marketOpenStartedAtRef.current = Date.now();
+      setClientMark(`market-open:${marketId}`);
+      incrementClientCounter("market.open.calls");
       setSelectedMarketId(marketId);
       navigateToMarketUrl(marketId, market.titleEn ?? market.titleRu ?? market.title);
+
+      if (!user) return;
+
+      void (async () => {
+        if (reloginRequired) {
+          try {
+            localStorage.setItem("pending_market_id", marketId);
+          } catch {
+            // ignore
+          }
+          await attemptSilentRefresh();
+        }
+        await refreshUser();
+      })();
     },
     [user, reloginRequired, refreshUser, attemptSilentRefresh, navigateToMarketUrl]
   );
@@ -2263,7 +2567,7 @@ export default function HomePage() {
 
       try {
         const marketProvider =
-          markets.find((market) => market.id === marketId)?.provider ??
+          mergedMarkets.find((market) => market.id === marketId)?.provider ??
           (marketId.startsWith("limitless:") ? "limitless" : undefined);
         await trpcClient.market.setBookmark.mutate({
           marketId,
@@ -2287,7 +2591,7 @@ export default function HomePage() {
         throw err;
       }
     },
-    [markets, openAuth, user]
+    [mergedMarkets, openAuth, user]
   );
 
   const openPublicProfile = useCallback(
@@ -2359,8 +2663,11 @@ export default function HomePage() {
     if (postAuthAction.type === "OPEN_MARKET_BET") {
       const action = postAuthAction;
       setPostAuthAction(null);
+      marketOpenStartedAtRef.current = Date.now();
+      setClientMark(`market-open:${action.marketId}`);
+      incrementClientCounter("market.open.calls");
       setSelectedMarketId(action.marketId);
-      const market = markets.find((m) => m.id === action.marketId);
+      const market = mergedMarkets.find((m) => m.id === action.marketId);
       navigateToMarketUrl(action.marketId, market?.titleEn ?? market?.titleRu ?? market?.title);
       setMarketBetIntent({ marketId: action.marketId, side: action.side, nonce: Date.now() });
       return;
@@ -2378,7 +2685,7 @@ export default function HomePage() {
         marketTitle: action.marketTitle,
       });
     }
-  }, [user, postAuthAction, markets, navigateToMarketUrl]);
+  }, [user, postAuthAction, mergedMarkets, navigateToMarketUrl]);
 
   /**
    * Handle selling a position (cash out)
@@ -2394,7 +2701,7 @@ export default function HomePage() {
     const market =
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
-        : markets.find((m) => m.id === marketId) ?? null;
+        : mergedMarkets.find((m) => m.id === marketId) ?? null;
     const target = getExternalMarketUrl(market);
     if (typeof window !== "undefined") {
       window.open(target, "_blank", "noopener,noreferrer");
@@ -2410,7 +2717,7 @@ export default function HomePage() {
     const market =
       selectedMarket && selectedMarket.id === marketId
         ? selectedMarket
-        : markets.find((m) => m.id === marketId) ?? null;
+        : mergedMarkets.find((m) => m.id === marketId) ?? null;
     const target = getExternalMarketUrl(market);
     if (typeof window !== "undefined") {
       window.open(target, "_blank", "noopener,noreferrer");
@@ -2589,6 +2896,7 @@ export default function HomePage() {
               userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
               priceCandles={marketCandles}
               publicTrades={marketPublicTrades}
+              liveActivityTicks={marketLiveActivityTicks}
               insightsLoading={marketInsightsLoading}
               insightsError={marketInsightsError}
               commentsError={marketCommentsError}
@@ -2601,7 +2909,7 @@ export default function HomePage() {
               creatorHasBets={creatorHasBets}
               tradeBlockedMessage={tradeBlockedMessage}
               onOpenExternalTrade={(marketId) => {
-                const market = markets.find((m) => m.id === marketId) ?? null;
+                const market = mergedMarkets.find((m) => m.id === marketId) ?? null;
                 const target = getExternalMarketUrl(market);
                 if (typeof window !== "undefined") {
                   window.open(target, "_blank", "noopener,noreferrer");
@@ -2789,17 +3097,18 @@ export default function HomePage() {
                         <>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
                             {catalogMarkets.map((market) => (
-                              <MarketCard
-                                key={market.id}
-                                market={market}
-                                bookmarked={bookmarkedMarketIds.has(market.id)}
-                                onClick={() => {
-                                  setMarketBetIntent(null);
-                                  void openMarketWithAuthCheck(market);
-                                }}
-                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                                lang={lang}
-                              />
+                              <div key={market.id} data-market-card-id={market.id}>
+                                <MarketCard
+                                  market={market}
+                                  bookmarked={bookmarkedMarketIds.has(market.id)}
+                                  onClick={() => {
+                                    setMarketBetIntent(null);
+                                    void openMarketWithAuthCheck(market);
+                                  }}
+                                  onQuickBet={(side) => handleOpenMarketBet(market, side)}
+                                  lang={lang}
+                                />
+                              </div>
                             ))}
                           </div>
                           <div className="pb-8 flex items-center justify-center gap-2">
@@ -2944,7 +3253,7 @@ export default function HomePage() {
                     onLoadComments={() => void loadMyComments()}
                     onMarketClick={(marketId) => {
                       setMarketBetIntent(null); // Clear bet intent when clicking from profile
-                      const market = markets.find((m) => m.id === marketId);
+                      const market = mergedMarkets.find((m) => m.id === marketId);
                       if (market) {
                         void openMarketWithAuthCheck(market);
                         return;
@@ -3181,11 +3490,11 @@ export default function HomePage() {
         pnlMajor={publicProfilePnl}
         bets={publicProfileBets}
         comments={publicProfileComments}
-        markets={markets}
+        markets={mergedMarkets}
         onMarketClick={(marketId) => {
           closePublicProfile();
           setMarketBetIntent(null);
-          const market = markets.find((m) => m.id === marketId);
+          const market = mergedMarkets.find((m) => m.id === marketId);
           if (market) {
             void openMarketWithAuthCheck(market);
           } else {

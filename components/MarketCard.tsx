@@ -11,7 +11,7 @@ interface MarketCardProps {
   lang?: 'RU' | 'EN';
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, lang = 'EN' }) => {
+const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, lang = 'EN' }) => {
   const localizedTitle =
     lang === 'RU'
       ? market.titleRu ?? market.titleEn ?? market.title
@@ -174,5 +174,13 @@ const MarketCard: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bo
     </div>
   );
 };
+
+const MarketCard = React.memo(
+  MarketCardBase,
+  (prev, next) =>
+    prev.market === next.market &&
+    prev.bookmarked === next.bookmarked &&
+    prev.lang === next.lang
+);
 
 export default MarketCard;

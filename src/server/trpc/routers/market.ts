@@ -33,6 +33,10 @@ import {
 import { upsertVenueMarketsToCatalog } from "../../venues/catalogStore";
 import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { consumeDurableRateLimit } from "../../security/rateLimit";
+import {
+  incrementRealtimeMetricCounter,
+  recordRealtimeMetricTiming,
+} from "../../observability/realtimeMetrics";
 
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
@@ -137,6 +141,19 @@ const publicTradeOutput = z.object({
   sharesDelta: z.number(),
   priceBefore: z.number(),
   priceAfter: z.number(),
+  createdAt: z.string(),
+});
+
+const liveActivityTickOutput = z.object({
+  id: z.string(),
+  marketId: z.string(),
+  tradeId: z.string().nullable(),
+  side: z.enum(["BUY", "SELL", "UNKNOWN"]),
+  outcome: z.string().nullable(),
+  price: z.number(),
+  size: z.number(),
+  notional: z.number(),
+  sourceTs: z.string(),
   createdAt: z.string(),
 });
 
@@ -605,6 +622,10 @@ type Candle1mRow = Pick<
   Database["public"]["Tables"]["polymarket_candles_1m"]["Row"],
   "bucket_start" | "open" | "high" | "low" | "close" | "volume" | "trades_count"
 >;
+type MarketTickRow = Pick<
+  Database["public"]["Tables"]["polymarket_market_ticks"]["Row"],
+  "id" | "market_id" | "trade_id" | "side" | "outcome" | "price" | "size" | "notional" | "source_ts" | "created_at"
+>;
 type MarketEmbeddingRow = Pick<
   Database["public"]["Tables"]["market_embeddings"]["Row"],
   "market_id" | "embedding"
@@ -1066,6 +1087,53 @@ const listCanonicalCandles = async (
         Number.isFinite(row.low) &&
         Number.isFinite(row.close)
     );
+};
+
+const listLocalLiveActivityTicks = async (
+  supabaseService: SupabaseServiceClient,
+  marketId: string,
+  limit: number
+): Promise<Array<z.output<typeof liveActivityTickOutput>>> => {
+  if (!marketId) return [];
+  const safeLimit = Math.max(1, Math.min(limit, 200));
+  const { data, error } = await supabaseService
+    .from("polymarket_market_ticks")
+    .select("id, market_id, trade_id, side, outcome, price, size, notional, source_ts, created_at")
+    .eq("market_id", marketId)
+    .order("source_ts", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(safeLimit);
+
+  if (error || !Array.isArray(data) || data.length === 0) return [];
+
+  const out: Array<z.output<typeof liveActivityTickOutput>> = [];
+  for (const row of data as MarketTickRow[]) {
+    const sideRaw = typeof row.side === "string" ? row.side.toUpperCase() : "UNKNOWN";
+    const side: "BUY" | "SELL" | "UNKNOWN" =
+      sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : "UNKNOWN";
+    const price = Number(row.price ?? 0);
+    const size = Number(row.size ?? 0);
+    const notional = Number(row.notional ?? price * size);
+    if (!Number.isFinite(price) || !Number.isFinite(size) || !Number.isFinite(notional)) continue;
+
+    const parsed = liveActivityTickOutput.safeParse({
+      id: String(row.id),
+      marketId: row.market_id,
+      tradeId: row.trade_id ?? null,
+      side,
+      outcome: row.outcome ?? null,
+      price,
+      size,
+      notional,
+      sourceTs: row.source_ts,
+      createdAt: row.created_at,
+    });
+    if (parsed.success) {
+      out.push(parsed.data);
+    }
+  }
+
+  return out;
 };
 
 const embeddingCache = new Map<string, { expiresAt: number; vector: number[] }>();
@@ -1640,6 +1708,8 @@ export const marketRouter = router({
     )
     .output(z.array(marketOutput))
     .query(async ({ ctx, input }) => {
+      const startedAt = Date.now();
+      incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
       const onlyOpen = input?.onlyOpen ?? false;
       const page = Math.max(1, Number(input?.page ?? 1));
       const pageSize = Math.max(1, Math.min(100, Number(input?.pageSize ?? 50)));
@@ -1710,13 +1780,17 @@ export const marketRouter = router({
       }
 
       const sorted = sortMarketRows(Array.from(deduped.values()), sortBy);
-      return sorted.slice(offset, offset + pageSize);
+      const out = sorted.slice(offset, offset + pageSize);
+      recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
+      return out;
     }),
 
   getMarket: publicProcedure
     .input(z.object({ marketId: z.string().min(1), provider: z.enum(["polymarket", "limitless"]).optional() }))
     .output(marketOutput)
     .query(async ({ ctx, input }) => {
+      const startedAt = Date.now();
+      incrementRealtimeMetricCounter("trpc.market.getMarket.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
 
       if (ref.provider === "polymarket") {
@@ -1726,7 +1800,9 @@ export const marketRouter = router({
         }
         const mapped = mapPolymarketMarket(row);
         const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
-        return mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+        const out = mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+        recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
+        return out;
       }
 
       const adapter = getVenueAdapter(ref.provider);
@@ -1743,7 +1819,9 @@ export const marketRouter = router({
           // Canonical table sync is best effort.
         });
       }
-      return mapVenueMarketToMarketOutput(row);
+      const out = mapVenueMarketToMarketOutput(row);
+      recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
+      return out;
     }),
 
   searchSemantic: publicProcedure
@@ -2231,11 +2309,96 @@ export const marketRouter = router({
     )
     .output(z.array(priceCandleOutput))
     .query(async ({ ctx, input }) => {
-      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-      const limit = input.limit ?? 200;
+      const startedAt = Date.now();
+      incrementRealtimeMetricCounter("trpc.market.getPriceCandles.calls");
+      try {
+        const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+        const limit = input.limit ?? 200;
 
-      if (ref.provider === "polymarket") {
-        const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+        if (ref.provider === "polymarket") {
+          const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+          if (!market) return [];
+
+          const marketRefId = await resolveMarketCatalogRefId(
+            ctx.supabaseService,
+            ref.provider,
+            ref.providerMarketId
+          );
+          if (marketRefId) {
+            const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
+            if (canonical.length > 0) return canonical;
+          }
+
+          const localCandles = await listLocalCandles(ctx.supabaseService, market.id, limit);
+          if (localCandles.length > 0) return localCandles;
+
+          const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
+          if (withToken.length === 0) {
+            const fallback = market.outcomes[0]?.price ?? 0.5;
+            return [
+              {
+                bucket: new Date().toISOString(),
+                outcomeId: market.outcomes[0]?.id ?? null,
+                outcomeTitle: market.outcomes[0]?.title ?? null,
+                outcomeColor: null,
+                open: fallback,
+                high: fallback,
+                low: fallback,
+                close: fallback,
+                volume: market.volume,
+                tradesCount: 0,
+              },
+            ];
+          }
+
+          const isBinary = market.outcomes.length <= 2;
+          const yesOutcome =
+            market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
+            market.outcomes.find((o) => o.sortOrder === 0) ??
+            market.outcomes[0] ??
+            null;
+          const targetOutcomes = isBinary ? withToken.filter((o) => o.id === yesOutcome?.id) : withToken;
+
+          const histories = await Promise.all(
+            targetOutcomes.map(async (o) => ({
+              outcome: o,
+              history: await getPolymarketPriceHistory(String(o.tokenId)),
+            }))
+          );
+
+          const candles = histories
+            .flatMap(({ outcome, history }) => {
+              const deduped = history
+                .slice()
+                .sort((a, b) => a.ts - b.ts)
+                .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
+
+              return deduped.map((point, idx) => {
+                const prev = deduped[idx - 1] ?? point;
+                const open = prev.price;
+                const close = point.price;
+                return {
+                  bucket: new Date(point.ts * 1000).toISOString(),
+                  outcomeId: outcome.id,
+                  outcomeTitle: outcome.title,
+                  outcomeColor: null,
+                  open,
+                  high: Math.max(open, close),
+                  low: Math.min(open, close),
+                  close,
+                  volume: 0,
+                  tradesCount: 0,
+                };
+              });
+            })
+            .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
+          if (candles.length === 0) return [];
+          return candles.slice(Math.max(0, candles.length - limit));
+        }
+
+        const adapter = getVenueAdapter(ref.provider);
+        if (!adapter.isEnabled()) return [];
+        const market = await adapter.getMarketById(ref.providerMarketId);
         if (!market) return [];
 
         const marketRefId = await resolveMarketCatalogRefId(
@@ -2248,11 +2411,8 @@ export const marketRouter = router({
           if (canonical.length > 0) return canonical;
         }
 
-        const localCandles = await listLocalCandles(ctx.supabaseService, market.id, limit);
-        if (localCandles.length > 0) return localCandles;
-
-        const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
-        if (withToken.length === 0) {
+        const history = await adapter.getPriceHistory(market, limit * 3);
+        if (history.length === 0) {
           const fallback = market.outcomes[0]?.price ?? 0.5;
           return [
             {
@@ -2270,108 +2430,63 @@ export const marketRouter = router({
           ];
         }
 
-        const isBinary = market.outcomes.length <= 2;
-        const yesOutcome =
-          market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
-          market.outcomes.find((o) => o.sortOrder === 0) ??
-          market.outcomes[0] ??
-          null;
-        const targetOutcomes = isBinary ? withToken.filter((o) => o.id === yesOutcome?.id) : withToken;
-
-        const histories = await Promise.all(
-          targetOutcomes.map(async (o) => ({
-            outcome: o,
-            history: await getPolymarketPriceHistory(String(o.tokenId)),
-          }))
-        );
-
-        const candles = histories
-          .flatMap(({ outcome, history }) => {
-            const deduped = history
-              .slice()
-              .sort((a, b) => a.ts - b.ts)
-              .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
-
-            return deduped.map((point, idx) => {
-              const prev = deduped[idx - 1] ?? point;
-              const open = prev.price;
-              const close = point.price;
-              return {
-                bucket: new Date(point.ts * 1000).toISOString(),
-                outcomeId: outcome.id,
-                outcomeTitle: outcome.title,
-                outcomeColor: null,
-                open,
-                high: Math.max(open, close),
-                low: Math.min(open, close),
-                close,
-                volume: 0,
-                tradesCount: 0,
-              };
-            });
-          })
-          .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
-        if (candles.length === 0) return [];
-        return candles.slice(Math.max(0, candles.length - limit));
-      }
-
-      const adapter = getVenueAdapter(ref.provider);
-      if (!adapter.isEnabled()) return [];
-      const market = await adapter.getMarketById(ref.providerMarketId);
-      if (!market) return [];
-
-      const marketRefId = await resolveMarketCatalogRefId(
-        ctx.supabaseService,
-        ref.provider,
-        ref.providerMarketId
-      );
-      if (marketRefId) {
-        const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
-        if (canonical.length > 0) return canonical;
-      }
-
-      const history = await adapter.getPriceHistory(market, limit * 3);
-      if (history.length === 0) {
-        const fallback = market.outcomes[0]?.price ?? 0.5;
-        return [
-          {
-            bucket: new Date().toISOString(),
-            outcomeId: market.outcomes[0]?.id ?? null,
-            outcomeTitle: market.outcomes[0]?.title ?? null,
+        const deduped = history
+          .slice()
+          .sort((a, b) => a.ts - b.ts)
+          .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
+        const outcome = market.outcomes[0] ?? null;
+        const candles = deduped.map((point, idx) => {
+          const prev = deduped[idx - 1] ?? point;
+          const open = prev.price;
+          const close = point.price;
+          return {
+            bucket: new Date(point.ts * 1000).toISOString(),
+            outcomeId: outcome?.id ?? null,
+            outcomeTitle: outcome?.title ?? null,
             outcomeColor: null,
-            open: fallback,
-            high: fallback,
-            low: fallback,
-            close: fallback,
-            volume: market.volume,
+            open,
+            high: Math.max(open, close),
+            low: Math.min(open, close),
+            close,
+            volume: 0,
             tradesCount: 0,
-          },
-        ];
+          };
+        });
+        return candles.slice(Math.max(0, candles.length - limit));
+      } finally {
+        recordRealtimeMetricTiming("trpc.market.getPriceCandles.ms", Date.now() - startedAt);
+      }
+    }),
+
+  getLiveActivity: publicProcedure
+    .input(
+      z.object({
+        marketId: z.string().min(1),
+        provider: z.enum(["polymarket", "limitless"]).optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      })
+    )
+    .output(z.array(liveActivityTickOutput))
+    .query(async ({ ctx, input }) => {
+      const startedAt = Date.now();
+      incrementRealtimeMetricCounter("trpc.market.getLiveActivity.calls");
+      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const limit = Math.max(1, Math.min(input.limit ?? 80, 200));
+
+      if (ref.provider !== "polymarket") {
+        recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
+        return [];
       }
 
-      const deduped = history
-        .slice()
-        .sort((a, b) => a.ts - b.ts)
-        .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
-      const outcome = market.outcomes[0] ?? null;
-      const candles = deduped.map((point, idx) => {
-        const prev = deduped[idx - 1] ?? point;
-        const open = prev.price;
-        const close = point.price;
-        return {
-          bucket: new Date(point.ts * 1000).toISOString(),
-          outcomeId: outcome?.id ?? null,
-          outcomeTitle: outcome?.title ?? null,
-          outcomeColor: null,
-          open,
-          high: Math.max(open, close),
-          low: Math.min(open, close),
-          close,
-          volume: 0,
-          tradesCount: 0,
-        };
-      });
-      return candles.slice(Math.max(0, candles.length - limit));
+      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+      if (!market) {
+        recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
+        return [];
+      }
+
+      const rows = await listLocalLiveActivityTicks(ctx.supabaseService, market.id, limit);
+      recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
+      return rows;
     }),
 
   getPublicTrades: publicProcedure
@@ -2384,19 +2499,24 @@ export const marketRouter = router({
     )
     .output(z.array(publicTradeOutput))
     .query(async ({ ctx, input }) => {
+      const startedAt = Date.now();
+      incrementRealtimeMetricCounter("trpc.market.getPublicTrades.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
 
       if (ref.provider === "polymarket") {
         const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-        if (!market) return [];
+        if (!market) {
+          recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+          return [];
+        }
         const rows = await getPolymarketPublicTrades(market.conditionId, input.limit ?? 50);
         const outcomesByTitle = new Map(
           market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
         );
-        return rows.map((t) => {
+        const out: Array<z.output<typeof publicTradeOutput>> = rows.map((t) => {
           const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
           const outcome = outcomesByTitle.get(normalizedOutcome);
-          const action = t.side === "SELL" ? "sell" : "buy";
+          const action: "buy" | "sell" = t.side === "SELL" ? "sell" : "buy";
           const yn =
             normalizedOutcome === "yes"
               ? ("YES" as const)
@@ -2417,20 +2537,28 @@ export const marketRouter = router({
             createdAt: new Date(t.timestamp * 1000).toISOString(),
           };
         });
+        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+        return out;
       }
 
       const adapter = getVenueAdapter(ref.provider);
-      if (!adapter.isEnabled()) return [];
+      if (!adapter.isEnabled()) {
+        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+        return [];
+      }
       const market = await adapter.getMarketById(ref.providerMarketId);
-      if (!market) return [];
+      if (!market) {
+        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+        return [];
+      }
       const rows = await adapter.getPublicTrades(market, input.limit ?? 50);
       const outcomesByTitle = new Map(
         market.outcomes.map((outcome) => [outcome.title.trim().toLowerCase(), outcome] as const)
       );
-      return rows.map((trade) => {
+      const out: Array<z.output<typeof publicTradeOutput>> = rows.map((trade) => {
         const normalizedOutcome = (trade.outcome ?? "").trim().toLowerCase();
         const outcome = outcomesByTitle.get(normalizedOutcome);
-        const action = trade.side === "SELL" ? "sell" : "buy";
+        const action: "buy" | "sell" = trade.side === "SELL" ? "sell" : "buy";
         const yn =
           normalizedOutcome === "yes"
             ? ("YES" as const)
@@ -2451,6 +2579,8 @@ export const marketRouter = router({
           createdAt: new Date(trade.timestamp * 1000).toISOString(),
         };
       });
+      recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+      return out;
     }),
 
   getMarketComments: publicProcedure

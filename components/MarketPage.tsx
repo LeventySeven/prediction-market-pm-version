@@ -1,8 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Market, User, Position, PriceCandle, PublicTrade, Comment } from '../types';
+import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick } from '../types';
 import Button from './Button';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
-import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart as RechartsLineChart, Line } from 'recharts';
 import { formatTimeRemaining } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
 
@@ -96,6 +95,7 @@ interface MarketPageProps {
   lang?: 'RU' | 'EN';
   priceCandles?: PriceCandle[];
   publicTrades?: PublicTrade[];
+  liveActivityTicks?: LiveActivityTick[];
   insightsLoading?: boolean;
   insightsError?: string | null;
   commentsError?: string | null;
@@ -133,6 +133,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   lang = 'EN',
   priceCandles = [],
   publicTrades = [],
+  liveActivityTicks = [],
   insightsLoading = false,
   insightsError = null,
   commentsError = null,
@@ -258,7 +259,37 @@ const MarketPage: React.FC<MarketPageProps> = ({
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
   };
 
-  const chartSeries = useMemo(() => {
+  type MultiChartRow = {
+    ts: number;
+    label: string;
+    spansMultipleDays: boolean;
+    values: Record<string, number>;
+  };
+
+  type BinaryChartRow = {
+    ts: number;
+    label: string;
+    value: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    spansMultipleDays: boolean;
+  };
+
+  type ChartSeries =
+    | {
+        mode: 'multi';
+        data: MultiChartRow[];
+        lines: Array<{ id: string; title: string; color: string; sortOrder: number }>;
+      }
+    | {
+        mode: 'binary';
+        data: BinaryChartRow[];
+        lines: [];
+      };
+
+  const chartSeries = useMemo<ChartSeries>(() => {
     const nowTs = Date.now();
     const createdTsRaw = Date.parse(String(market.createdAt));
     const createdTs = Number.isFinite(createdTsRaw) ? createdTsRaw : nowTs;
@@ -351,8 +382,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
         });
       }
 
-      const data = normalizedRows.map((row) => ({ ...row, ...row.values }));
-      return { mode: 'multi' as const, data, lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder) };
+      return { mode: 'multi', data: normalizedRows, lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder) };
     }
 
     const fallbackChance = Number.isFinite(market.chance)
@@ -399,12 +429,56 @@ const MarketPage: React.FC<MarketPageProps> = ({
       });
     }
 
-    return { mode: 'binary' as const, data: rows, lines: [] };
+    return { mode: 'binary', data: rows, lines: [] };
   }, [priceCandles, lang, market.chance, market.yesPrice, isMulti, market.outcomes, market.id]);
 
   const displayedChance = isMulti
     ? Math.round(Number((selectedOutcome?.price ?? 0) * 100))
     : (Number.isFinite(market.chance) ? market.chance : Math.round(Number(market.yesPrice ?? 0.5) * 100));
+
+  const activityItems = useMemo(() => {
+    const items: Array<
+      | ({
+          kind: "trade";
+        } & PublicTrade)
+      | {
+          kind: "tick";
+          id: string;
+          createdAt: string;
+          side: LiveActivityTick["side"];
+          outcome: string | null;
+          size: number;
+          price: number;
+          notional: number;
+        }
+    > = [];
+
+    for (const trade of publicTrades) {
+      items.push({ kind: "trade", ...trade });
+    }
+
+    for (const tick of liveActivityTicks) {
+      items.push({
+        kind: "tick",
+        id: `tick:${tick.id}`,
+        createdAt: tick.sourceTs || tick.createdAt,
+        side: tick.side,
+        outcome: tick.outcome,
+        size: tick.size,
+        price: tick.price,
+        notional: tick.notional,
+      });
+    }
+
+    const byId = new Map<string, (typeof items)[number]>();
+    for (const item of items) {
+      byId.set(item.id, item);
+    }
+
+    return Array.from(byId.values()).sort(
+      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+    );
+  }, [publicTrades, liveActivityTicks]);
 
   useEffect(() => {
     const update = () => {
@@ -1303,60 +1377,32 @@ const MarketPage: React.FC<MarketPageProps> = ({
             )}
             {chartSeries.data.length > 0 ? (
               chartSeries.mode === 'multi' ? (
-                <ResponsiveContainer width="100%" height="84%">
-                  <RechartsLineChart data={chartSeries.data}>
-                    <XAxis
-                      dataKey="label"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: '#52525b', fontSize: 10 }}
-                      tickFormatter={(value) => String(value)}
-                      minTickGap={40}
-                      dy={10}
-                    />
-                    <YAxis hide domain={[0, 100]} />
-                    <CartesianGrid vertical={false} stroke="#18181b" strokeDasharray="3 3" />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#000000', borderColor: '#27272a', borderRadius: '10px' }}
-                      itemStyle={{ color: '#ffffff', fontSize: '12px' }}
-                      labelStyle={{ color: '#71717a', fontSize: '10px', textTransform: 'uppercase' }}
-                      labelFormatter={(_, payload) => {
-                        const p = Array.isArray(payload) ? payload[0]?.payload : null;
-                        const ts = p && typeof p.ts === "number" ? p.ts : null;
-                        if (!ts) return "";
-                        return new Date(ts).toLocaleString(lang === 'RU' ? 'ru-RU' : 'en-US', {
-                          month: 'short',
-                          day: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        });
-                      }}
-                      formatter={(value: number, name: string) => [`${Number(value).toFixed(2)}%`, name]}
-                    />
-                    {chartSeries.lines.map((line) => (
-                      <Line
-                        key={line.id}
-                        type="monotone"
-                        dataKey={line.id}
-                        name={line.title}
-                        stroke={line.color}
-                        strokeWidth={2}
-                        dot={false}
-                        isAnimationActive={false}
-                        connectNulls
-                      />
-                    ))}
-                  </RechartsLineChart>
-                </ResponsiveContainer>
+                <div className="h-[84%]">
+                  <TradingViewCandles
+                    mode="lines"
+                    lines={chartSeries.lines.map((line) => ({
+                      id: line.id,
+                      title: line.title,
+                      color: line.color,
+                      points: chartSeries.data
+                        .map((row) => ({
+                          ts: row.ts,
+                          value: Number(row.values[line.id] ?? Number.NaN),
+                        }))
+                        .filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.value)),
+                    }))}
+                  />
+                </div>
               ) : (
                 <div className="h-[84%]">
                   <TradingViewCandles
+                    mode="candles"
                     data={chartSeries.data.slice(-300).map((row) => ({
                       ts: row.ts,
-                      open: Number((row as { open?: number }).open ?? row.value ?? 0),
-                      high: Number((row as { high?: number }).high ?? row.value ?? 0),
-                      low: Number((row as { low?: number }).low ?? row.value ?? 0),
-                      close: Number((row as { close?: number }).close ?? row.value ?? 0),
+                      open: Number(row.open ?? row.value ?? 0),
+                      high: Number(row.high ?? row.value ?? 0),
+                      low: Number(row.low ?? row.value ?? 0),
+                      close: Number(row.close ?? row.value ?? 0),
                     }))}
                   />
                 </div>
@@ -1694,35 +1740,46 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     )}
                   </div>
                 ) : null}
-                {!insightsLoading && publicTrades.length === 0 && (
+                {!insightsLoading && activityItems.length === 0 && (
                   <p className="text-sm text-neutral-500">
                     {lang === 'RU' ? 'Сделок пока нет' : 'No trades yet'}
                   </p>
                 )}
-                {publicTrades.map((trade) => {
-                  const isBuy = trade.action === 'buy';
-                  const label =
-                    isBuy
-                      ? lang === 'RU'
-                        ? 'Покупка'
-                        : 'Buy'
-                      : lang === 'RU'
-                      ? 'Продажа'
-                      : 'Sell';
-                  const formattedTime = new Date(trade.createdAt).toLocaleString(lang === 'RU' ? 'ru-RU' : 'en-US', {
+                {activityItems.map((item) => {
+                  const formattedTime = new Date(item.createdAt).toLocaleString(lang === 'RU' ? 'ru-RU' : 'en-US', {
                     hour: '2-digit',
                     minute: '2-digit',
                     day: '2-digit',
                     month: 'short',
                   });
+                  const isBuy = item.kind === "trade"
+                    ? item.action === "buy"
+                    : item.side === "BUY";
+                  const label =
+                    item.kind === "tick" && item.side === "UNKNOWN"
+                      ? (lang === "RU" ? "Сделка" : "Trade")
+                      : isBuy
+                        ? lang === 'RU'
+                          ? 'Покупка'
+                          : 'Buy'
+                        : lang === 'RU'
+                        ? 'Продажа'
+                        : 'Sell';
+                  const outcome =
+                    item.kind === "trade"
+                      ? (item.outcomeTitle ?? item.outcome ?? (lang === 'RU' ? 'Опция' : 'Option'))
+                      : (item.outcome ?? (lang === 'RU' ? 'Опция' : 'Option'));
+                  const notional = item.kind === "trade" ? item.collateralGross : item.notional;
+                  const shares = item.kind === "trade" ? Math.abs(item.sharesDelta) : Math.abs(item.size);
+                  const price = item.kind === "trade" ? item.priceAfter : item.price;
                   return (
                     <div
-                      key={trade.id}
+                      key={item.id}
                       className="flex items-center justify-between border border-zinc-900 rounded-2xl p-3 text-sm text-neutral-300"
                     >
                       <div>
                         <p className="font-semibold text-white">
-                          {label} • {trade.outcomeTitle ?? trade.outcome ?? (lang === 'RU' ? 'Опция' : 'Option')}
+                          {label} • {outcome}
                         </p>
                         <p className="text-[11px] text-neutral-500 uppercase tracking-wider">
                           {formattedTime}
@@ -1730,10 +1787,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       </div>
                       <div className="text-right font-mono">
                         <p className="text-zinc-100">
-                          ${trade.collateralGross.toFixed(2)}
+                          ${notional.toFixed(2)}
                         </p>
                         <p className="text-[11px] text-neutral-500">
-                          {Math.abs(trade.sharesDelta).toFixed(2)} sh @ {(trade.priceAfter * 100).toFixed(1)}%
+                          {shares.toFixed(2)} sh @ {(price * 100).toFixed(1)}%
                         </p>
                       </div>
                     </div>

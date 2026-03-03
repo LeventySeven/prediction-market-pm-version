@@ -33,4 +33,19 @@ const publicTradeBase = z.object({
 export const publicTradeSchema = publicTradeBase;
 export const publicTradesSchema = z.array(publicTradeSchema);
 
+const liveActivityTickBase = z.object({
+  id: z.string(),
+  marketId: z.string(),
+  tradeId: z.string().nullable(),
+  side: z.enum(["BUY", "SELL", "UNKNOWN"]),
+  outcome: z.string().nullable(),
+  price: z.number(),
+  size: z.number(),
+  notional: z.number(),
+  sourceTs: z.string(),
+  createdAt: z.string(),
+});
+
+export const liveActivityTickSchema = liveActivityTickBase;
+export const liveActivityTicksSchema = z.array(liveActivityTickSchema);
 
