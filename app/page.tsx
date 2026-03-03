@@ -123,6 +123,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
       ? m.rolling24hVolume
       : m.volume;
+  const volumeRaw = Number.isFinite(Number(displayVolume)) ? Math.max(0, Number(displayVolume)) : 0;
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
@@ -145,7 +146,8 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     categoryLabelRu: m.categoryLabelRu ?? null,
     categoryLabelEn: m.categoryLabelEn ?? null,
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
-    volume: `$${Number(displayVolume).toFixed(2)}`,
+    volume: `$${volumeRaw.toFixed(2)}`,
+    volumeRaw,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
     yesPrice: Number(m.priceYes),
@@ -180,6 +182,10 @@ const asNumber = (value: number | string | null | undefined): number | null => {
 };
 
 const formatUsdVolume = (value: number): string => `$${Number(value).toFixed(2)}`;
+const parseUsdVolume = (value: string): number => {
+  const parsed = Number(String(value).replace(/[^0-9.-]+/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const createSessionId = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -881,11 +887,12 @@ export default function HomePage() {
     setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
     try {
       const fetchSize = CATALOG_PAGE_SIZE + 1;
+      const backendSortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
         page: catalogPage,
         pageSize: fetchSize,
-        sortBy: "newest",
+        sortBy: backendSortBy,
         providerFilter: activeProviderFilter,
         providers:
           activeProviderFilter === "all"
@@ -910,7 +917,7 @@ export default function HomePage() {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
     }
-  }, [activeProviderFilter, catalogPage, lang]);
+  }, [activeProviderFilter, catalogPage, catalogSort, lang]);
   const loadMarketsRef = useRef(loadMarkets);
   useEffect(() => {
     loadMarketsRef.current = loadMarkets;
@@ -1052,10 +1059,13 @@ export default function HomePage() {
           const yesPrice = canApplyMid ? mid : market.yesPrice;
           const noPrice = canApplyMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
           const chance = canApplyMid ? Math.round(yesPrice * 100) : market.chance;
-          const volume =
+          const volumeRaw =
             typeof rolling24hVolume === "number" && Number.isFinite(rolling24hVolume)
-              ? formatUsdVolume(Math.max(0, rolling24hVolume))
-              : market.volume;
+              ? Math.max(0, rolling24hVolume)
+              : typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw)
+                ? market.volumeRaw
+                : parseUsdVolume(market.volume);
+          const volume = formatUsdVolume(volumeRaw);
 
           return {
             ...market,
@@ -1063,6 +1073,7 @@ export default function HomePage() {
             noPrice,
             chance,
             volume,
+            volumeRaw,
             bestBid,
             bestAsk,
             mid,
@@ -1359,10 +1370,10 @@ export default function HomePage() {
   );
 
   const catalogMarkets = useMemo(() => {
-    const parseVol = (v: string) => {
-      const n = Number(String(v).replace(/[^0-9.-]+/g, ""));
-      return Number.isFinite(n) ? n : 0;
-    };
+    const parseVol = (m: Market) =>
+      typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
+        ? m.volumeRaw
+        : parseUsdVolume(m.volume);
     const ts = (iso?: string | null) => {
       if (!iso) return Number.POSITIVE_INFINITY;
       const t = Date.parse(iso);
@@ -1429,10 +1440,10 @@ export default function HomePage() {
           sorted.sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
           break;
         case "VOLUME_ASC":
-          sorted.sort((a, b) => parseVol(a.volume) - parseVol(b.volume));
+          sorted.sort((a, b) => parseVol(a) - parseVol(b));
           break;
         case "VOLUME_DESC":
-          sorted.sort((a, b) => parseVol(b.volume) - parseVol(a.volume));
+          sorted.sort((a, b) => parseVol(b) - parseVol(a));
           break;
         default:
           break;
@@ -3061,7 +3072,10 @@ export default function HomePage() {
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    onClick={() => setCatalogSort(opt.id)}
+                    onClick={() => {
+                      setCatalogPage(1);
+                      setCatalogSort(opt.id);
+                    }}
                     className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
                       selected
                         ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"

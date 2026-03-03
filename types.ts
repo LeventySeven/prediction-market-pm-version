@@ -70,6 +70,7 @@ export interface Market {
   categoryLabelEn: string | null;
   imageUrl: string;
   volume: string;
+  volumeRaw?: number | null;
   closesAt: string; // Trading stops
   expiresAt: string; // Event end
   yesPrice: number;

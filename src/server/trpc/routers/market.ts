@@ -235,22 +235,62 @@ const relaySignedOrderOutput = z.object({
   error: z.string().optional(),
 });
 
-const DEFAULT_CATEGORIES = [
-  { id: "all", labelRu: "Все", labelEn: "All" },
-  { id: "politics", labelRu: "Политика", labelEn: "Politics" },
-  { id: "crypto", labelRu: "Крипто", labelEn: "Crypto" },
-  { id: "sports", labelRu: "Спорт", labelEn: "Sports" },
-  { id: "culture", labelRu: "Культура", labelEn: "Culture" },
-] as const;
+const CATEGORY_ROWS_CACHE_TTL_MS = Math.max(10_000, Number(process.env.MARKET_CATEGORIES_CACHE_TTL_MS ?? 60_000));
+let cachedCategoryRows: { expiresAt: number; rows: Array<z.infer<typeof marketCategoryOutput>> } | null = null;
 
-const t = (ru: string, en: string) => ({ ru, en });
-const categoryLabelMap = new Map([
-  ["politics", t("Политика", "Politics")],
-  ["crypto", t("Крипто", "Crypto")],
-  ["sports", t("Спорт", "Sports")],
-  ["culture", t("Культура", "Culture")],
-  ["business", t("Бизнес", "Business")],
-]);
+const normalizeCategoryLabel = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const normalizeCategoryId = (value: unknown): string | null => {
+  const label = normalizeCategoryLabel(value);
+  if (!label) return null;
+
+  const ascii = label
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const fallback = label.toLowerCase().replace(/\s+/g, "_");
+  const normalized = (ascii || fallback || "").trim().slice(0, 96);
+  if (!normalized) return null;
+  return normalized === "all" ? "all_markets" : normalized;
+};
+
+const categoryMetaFromRaw = (
+  value: unknown
+): { id: string; labelRu: string; labelEn: string } | null => {
+  const label = normalizeCategoryLabel(value);
+  const id = normalizeCategoryId(value);
+  if (!label || !id) return null;
+  return {
+    id,
+    labelRu: label,
+    labelEn: label,
+  };
+};
+
+const addCategoryValue = (
+  categories: Map<string, string>,
+  value: unknown
+) => {
+  const category = categoryMetaFromRaw(value);
+  if (!category) return;
+  if (!categories.has(category.id)) {
+    categories.set(category.id, category.labelEn);
+  }
+};
+
+const sortCategoryRows = (categories: Map<string, string>): Array<z.infer<typeof marketCategoryOutput>> =>
+  Array.from(categories.entries())
+    .sort((a, b) => a[1].localeCompare(b[1], "en", { sensitivity: "base" }))
+    .map(([id, label]) => ({
+      id,
+      labelRu: label,
+      labelEn: label,
+    }));
 
 const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMarketById>> extends infer T ? Exclude<T, null> : never) => {
   const outcomes = market.outcomes.map((o) => ({
@@ -270,8 +310,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
   }));
   const yes = outcomes[0];
   const no = outcomes[1];
-  const categoryKey = (market.category || "all").toLowerCase();
-  const labels = categoryLabelMap.get(categoryKey) ?? t("Разное", "General");
+  const category = categoryMetaFromRaw(market.category);
 
   let resolved: "YES" | "NO" | null = null;
   let resolvedOutcomeId: string | null = null;
@@ -302,9 +341,9 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     outcomes,
     outcome: resolved,
     createdBy: null,
-    categoryId: categoryKey,
-    categoryLabelRu: labels.ru,
-    categoryLabelEn: labels.en,
+    categoryId: category?.id ?? null,
+    categoryLabelRu: category?.labelRu ?? null,
+    categoryLabelEn: category?.labelEn ?? null,
     settlementAsset: "USD",
     feeBps: null,
     liquidityB: null,
@@ -364,8 +403,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
   const sortedOutcomes = [...market.outcomes].sort((a, b) => a.sortOrder - b.sortOrder);
   const yes = sortedOutcomes[0];
   const no = sortedOutcomes[1];
-  const categoryKey = (market.category || "all").toLowerCase();
-  const labels = categoryLabelMap.get(categoryKey) ?? t("Разное", "General");
+  const category = categoryMetaFromRaw(market.category);
   const resolved = market.state === "resolved" ? market.resolvedOutcomeTitle : null;
   const resolvedMatch = resolved
     ? sortedOutcomes.find((outcome) => outcome.title.toLowerCase() === resolved.toLowerCase()) ?? null
@@ -404,9 +442,9 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     })),
     outcome: null,
     createdBy: null,
-    categoryId: categoryKey,
-    categoryLabelRu: labels.ru,
-    categoryLabelEn: labels.en,
+    categoryId: category?.id ?? null,
+    categoryLabelRu: category?.labelRu ?? null,
+    categoryLabelEn: category?.labelEn ?? null,
     settlementAsset: "USD",
     feeBps: null,
     liquidityB: null,
@@ -610,6 +648,12 @@ const sortMarketRows = (
   });
   return sorted;
 };
+
+export const __marketRouterTestUtils = {
+  normalizeCategoryId,
+  categoryMetaFromRaw,
+  sortMarketRows,
+};
 type UserProfileRow = Pick<
   Database["public"]["Tables"]["users"]["Row"],
   "id" | "display_name" | "username" | "avatar_url" | "telegram_photo_url"
@@ -722,6 +766,23 @@ const readIsoFromPayload = (
   return fallbackIso;
 };
 
+const readCategoryFromPayload = (payload: Record<string, unknown> | null): string | null => {
+  if (!payload) return null;
+  const directKeys = ["category", "group", "tag", "topic"];
+  for (const key of directKeys) {
+    const value = normalizeCategoryLabel(payload[key]);
+    if (value) return value;
+  }
+  const categories = payload.categories;
+  if (Array.isArray(categories)) {
+    for (const value of categories) {
+      const normalized = normalizeCategoryLabel(value);
+      if (normalized) return normalized;
+    }
+  }
+  return null;
+};
+
 const readCapabilitiesFromPayload = (
   payload: Record<string, unknown> | null,
   provider: VenueProvider
@@ -822,9 +883,9 @@ const listCanonicalProviderMarkets = async (
     const marketRefId = String(row.id ?? "").trim();
     const provider = String(row.provider ?? params.provider).trim() as VenueProvider;
     const providerMarketId = String(row.provider_market_id ?? "").trim();
-    const categoryKey = String(row.category ?? "all").trim().toLowerCase() || "all";
-    const labels = categoryLabelMap.get(categoryKey) ?? t("Разное", "General");
     const payload = asObject(row.provider_payload);
+    const categorySource = normalizeCategoryLabel(row.category) ?? readCategoryFromPayload(payload);
+    const category = categoryMetaFromRaw(categorySource);
     const fallbackTs = Date.parse(String(row.source_updated_at ?? row.last_synced_at ?? ""));
     const fallbackIso = Number.isFinite(fallbackTs)
       ? new Date(fallbackTs).toISOString()
@@ -904,9 +965,9 @@ const listCanonicalProviderMarkets = async (
       outcomes,
       outcome: null,
       createdBy: null,
-      categoryId: categoryKey,
-      categoryLabelRu: labels.ru,
-      categoryLabelEn: labels.en,
+      categoryId: category?.id ?? null,
+      categoryLabelRu: category?.labelRu ?? null,
+      categoryLabelEn: category?.labelEn ?? null,
       settlementAsset: "USD",
       feeBps: null,
       liquidityB: null,
@@ -1351,6 +1412,83 @@ const buildL2Signature = (
     .replace(/\//g, "_");
 };
 
+const loadDynamicPolymarketCategoryRows = async (
+  supabaseService: unknown
+): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
+  const categories = new Map<string, string>();
+  const collectFromRows = (rows: unknown[] | null | undefined, column: string) => {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      const rec = asObject(row);
+      if (!rec) continue;
+      addCategoryValue(categories, rec[column]);
+    }
+  };
+
+  if (supabaseService) {
+    try {
+      const { data, error } = await (supabaseService as any)
+        .from("market_catalog")
+        .select("category")
+        .eq("provider", "polymarket")
+        .eq("state", "open")
+        .not("category", "is", null)
+        .order("source_updated_at", { ascending: false })
+        .limit(5000);
+      if (!error) {
+        collectFromRows(data, "category");
+      }
+    } catch {
+      // Continue with fallback sources.
+    }
+
+    if (categories.size === 0) {
+      try {
+        const { data, error } = await (supabaseService as any)
+          .from("polymarket_market_cache")
+          .select("category")
+          .eq("state", "open")
+          .not("category", "is", null)
+          .order("source_updated_at", { ascending: false })
+          .limit(5000);
+        if (!error) {
+          collectFromRows(data, "category");
+        }
+      } catch {
+        // Continue with API fallback.
+      }
+    }
+  }
+
+  if (categories.size === 0) {
+    try {
+      const liveMarkets = await listPolymarketMarkets(500, { hydrateMidpoints: false });
+      for (const market of liveMarkets) {
+        addCategoryValue(categories, market.category);
+      }
+    } catch {
+      // Best-effort fallback.
+    }
+  }
+
+  return sortCategoryRows(categories);
+};
+
+const getCachedDynamicPolymarketCategoryRows = async (
+  supabaseService: unknown
+): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
+  const now = Date.now();
+  if (cachedCategoryRows && cachedCategoryRows.expiresAt > now) {
+    return cachedCategoryRows.rows;
+  }
+  const rows = await loadDynamicPolymarketCategoryRows(supabaseService);
+  cachedCategoryRows = {
+    rows,
+    expiresAt: now + CATEGORY_ROWS_CACHE_TTL_MS,
+  };
+  return rows;
+};
+
 const parseProviderSelection = (input?: {
   providers?: Array<VenueProvider> | undefined;
   providerFilter?: "all" | VenueProvider | undefined;
@@ -1482,8 +1620,9 @@ const finalizeRelayAudit = async (
 };
 
 export const marketRouter = router({
-  listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async () => {
-    return DEFAULT_CATEGORIES.map((c) => ({ id: c.id, labelRu: c.labelRu, labelEn: c.labelEn }));
+  listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async ({ ctx }) => {
+    const rows = await getCachedDynamicPolymarketCategoryRows(ctx.supabaseService);
+    return rows;
   }),
 
   listMarkets: publicProcedure

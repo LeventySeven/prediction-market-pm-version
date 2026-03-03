@@ -25,6 +25,11 @@ const LIMITLESS_ACTIVE_PAGE_LIMIT = Math.max(
   Math.min(25, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 25))
 );
 const LIMITLESS_DEBUG = (process.env.LIMITLESS_DEBUG || "").trim().toLowerCase() === "true";
+const LIMITLESS_HTTP_TIMEOUT_MS = Math.max(2_000, Number(process.env.LIMITLESS_HTTP_TIMEOUT_MS ?? 10_000));
+const LIMITLESS_PAGED_FETCH_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, Number(process.env.LIMITLESS_PAGED_FETCH_CONCURRENCY ?? 4))
+);
 
 const normalizeBase = (base: string): string => base.trim().replace(/\/+$/, "");
 
@@ -306,13 +311,16 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
 };
 
 const fetchJson = async (url: string): Promise<unknown> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LIMITLESS_HTTP_TIMEOUT_MS);
   const response = await fetch(url, {
     cache: "no-store",
+    signal: controller.signal,
     headers: {
       accept: "application/json",
       "user-agent": "prediction-market-worker/1.0 (+https://prediction-market.local)",
     },
-  });
+  }).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
     if (LIMITLESS_DEBUG) {
@@ -368,24 +376,60 @@ const fetchMarketRows = async (params: {
     extraQuery?: string
   ): Promise<Record<string, unknown>[]> => {
     const collected: Record<string, unknown>[] = [];
-    for (let page = 1; page <= maxPages && collected.length < limit; page += 1) {
-      const limitForPage = Math.min(pageSize, limit - collected.length);
-      const queryParts = [`page=${page}`, `limit=${limitForPage}`];
-      if (extraQuery && extraQuery.trim().length > 0) queryParts.push(extraQuery.trim());
-      const url = `${base}${route}?${queryParts.join("&")}`;
-      try {
-        const payload = await fetchJson(url);
-        const rows = parseRows(payload);
-        if (rows.length === 0) break;
-        collected.push(...rows);
-        if (rows.length < limitForPage) break;
-      } catch {
-        if (LIMITLESS_DEBUG) {
-          console.warn(`[limitless-adapter] paged request failed ${url}`);
+    let shouldStop = false;
+
+    for (
+      let pageStart = 1;
+      pageStart <= maxPages && collected.length < limit && !shouldStop;
+      pageStart += LIMITLESS_PAGED_FETCH_CONCURRENCY
+    ) {
+      const pages: Array<{ page: number; pageLimit: number }> = [];
+      for (
+        let page = pageStart;
+        page < pageStart + LIMITLESS_PAGED_FETCH_CONCURRENCY && page <= maxPages;
+        page += 1
+      ) {
+        const remaining = limit - (collected.length + pages.reduce((acc, p) => acc + p.pageLimit, 0));
+        if (remaining <= 0) break;
+        pages.push({ page, pageLimit: Math.min(pageSize, remaining) });
+      }
+      if (pages.length === 0) break;
+
+      const batch = await Promise.all(
+        pages.map(async ({ page, pageLimit }) => {
+          const queryParts = [`page=${page}`, `limit=${pageLimit}`];
+          if (extraQuery && extraQuery.trim().length > 0) queryParts.push(extraQuery.trim());
+          const url = `${base}${route}?${queryParts.join("&")}`;
+          try {
+            const payload = await fetchJson(url);
+            return { page, pageLimit, url, rows: parseRows(payload), ok: true as const };
+          } catch {
+            if (LIMITLESS_DEBUG) {
+              console.warn(`[limitless-adapter] paged request failed ${url}`);
+            }
+            return { page, pageLimit, url, rows: [] as Record<string, unknown>[], ok: false as const };
+          }
+        })
+      );
+
+      batch.sort((a, b) => a.page - b.page);
+      for (const result of batch) {
+        if (!result.ok) {
+          shouldStop = true;
+          break;
         }
-        break;
+        if (result.rows.length === 0) {
+          shouldStop = true;
+          break;
+        }
+        collected.push(...result.rows);
+        if (result.rows.length < result.pageLimit || collected.length >= limit) {
+          shouldStop = true;
+          break;
+        }
       }
     }
+
     return collected.slice(0, limit);
   };
 

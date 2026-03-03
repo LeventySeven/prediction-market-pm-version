@@ -12,7 +12,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 const POLL_INTERVAL_MS = Math.max(10_000, Number(process.env.LIMITLESS_COLLECTOR_POLL_INTERVAL_MS ?? 45_000));
-const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 2_000));
+const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 5_000));
 const RECONCILE_INTERVAL_MS = Math.max(
   60_000,
   Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300000)
@@ -41,10 +41,14 @@ const MISSING_MARKET_MISS_THRESHOLD = Math.max(
 const PROBE_THROTTLE_MS = Math.max(30_000, Number(process.env.LIMITLESS_COLLECTOR_PROBE_THROTTLE_MS ?? 300_000));
 const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
 const LIMITLESS_BASE_URL = (process.env.LIMITLESS_API_BASE_URL || "https://api.limitless.exchange").trim();
-const COLLECTOR_VERSION = "limitless-collector-v2026-03-03b";
+const COLLECTOR_VERSION = "limitless-collector-v2026-03-03c";
 const WS_MAX_1002_BEFORE_DISABLE = Math.max(
   1,
   Number(process.env.LIMITLESS_COLLECTOR_WS_MAX_1002_BEFORE_DISABLE ?? 5)
+);
+const CATALOG_ID_CACHE_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.LIMITLESS_COLLECTOR_CATALOG_ID_CACHE_TTL_MS ?? 30 * 60_000)
 );
 const SEED_REALTIME_FROM_SNAPSHOT =
   (
@@ -91,10 +95,28 @@ type PendingCandle = {
 };
 
 const pendingLiveByProviderMarketId = new Map<string, Omit<PendingLive, "market_id">>();
-const pendingCandlesByProviderMarketId = new Map<string, Omit<PendingCandle, "market_id">>();
+const pendingCandlesByProviderMarketAndBucket = new Map<
+  string,
+  { providerMarketId: string; payload: Omit<PendingCandle, "market_id"> }
+>();
 const lastSnapshotSeedByProviderMarketId = new Map<string, { mid: number; volume: number }>();
 const knownMarketFingerprints = new Map<string, string>();
 const missingOpenMarketMisses = new Map<string, number>();
+const latestLiveStateByProviderMarketId = new Map<
+  string,
+  {
+    sourceSeq: number | null;
+    sourceTsMs: number;
+    mid: number;
+    bestBid: number;
+    bestAsk: number;
+    lastTradePrice: number;
+    lastTradeSize: number;
+    rolling24hVolume: number;
+    openInterest: number | null;
+  }
+>();
+const catalogIdCache = new Map<string, { id: string; expiresAt: number }>();
 
 let lastPollAt = 0;
 let lastFlushAt = 0;
@@ -140,6 +162,144 @@ const parseTsMs = (value: unknown): number | null => {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+};
+
+const normalizeSourceSeq = (value: number | null): number | null => {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.floor(value);
+};
+
+const isStaleLiveUpdate = (
+  providerMarketId: string,
+  payload: Omit<PendingLive, "market_id">
+): boolean => {
+  const current = latestLiveStateByProviderMarketId.get(providerMarketId);
+  if (!current) return false;
+
+  const incomingSeq = normalizeSourceSeq(payload.source_seq);
+  if (incomingSeq !== null && current.sourceSeq !== null && incomingSeq < current.sourceSeq) {
+    return true;
+  }
+
+  const incomingTs = Date.parse(payload.source_ts);
+  if (!Number.isFinite(incomingTs)) return false;
+  return incomingTs < current.sourceTsMs;
+};
+
+const hasMeaningfulLiveDelta = (
+  previous:
+    | {
+        mid: number;
+        bestBid: number;
+        bestAsk: number;
+        lastTradePrice: number;
+        lastTradeSize: number;
+        rolling24hVolume: number;
+        openInterest: number | null;
+      }
+    | undefined,
+  next: Omit<PendingLive, "market_id">
+): boolean => {
+  if (!previous) return true;
+  if (Math.abs(previous.mid - next.mid) >= 0.0005) return true;
+  if (Math.abs(previous.bestBid - next.best_bid) >= 0.0005) return true;
+  if (Math.abs(previous.bestAsk - next.best_ask) >= 0.0005) return true;
+  if (Math.abs(previous.lastTradePrice - next.last_trade_price) >= 0.0005) return true;
+  if (Math.abs(previous.lastTradeSize - next.last_trade_size) >= 0.01) return true;
+  if (Math.abs(previous.rolling24hVolume - next.rolling_24h_volume) >= 0.5) return true;
+
+  const prevOi = previous.openInterest;
+  const nextOi = next.open_interest;
+  if (prevOi === null && nextOi === null) return false;
+  if (prevOi === null || nextOi === null) return true;
+  return Math.abs(prevOi - nextOi) >= 0.5;
+};
+
+const rememberLiveState = (
+  providerMarketId: string,
+  payload: Omit<PendingLive, "market_id">
+) => {
+  const sourceTsMs = Date.parse(payload.source_ts);
+  const previous = latestLiveStateByProviderMarketId.get(providerMarketId);
+  const sourceSeq = normalizeSourceSeq(payload.source_seq);
+  latestLiveStateByProviderMarketId.set(providerMarketId, {
+    sourceSeq:
+      sourceSeq === null
+        ? previous?.sourceSeq ?? null
+        : previous?.sourceSeq === null || previous?.sourceSeq === undefined
+          ? sourceSeq
+          : Math.max(previous.sourceSeq, sourceSeq),
+    sourceTsMs: Number.isFinite(sourceTsMs)
+      ? Math.max(previous?.sourceTsMs ?? sourceTsMs, sourceTsMs)
+      : previous?.sourceTsMs ?? Date.now(),
+    mid: payload.mid,
+    bestBid: payload.best_bid,
+    bestAsk: payload.best_ask,
+    lastTradePrice: payload.last_trade_price,
+    lastTradeSize: payload.last_trade_size,
+    rolling24hVolume: payload.rolling_24h_volume,
+    openInterest: payload.open_interest,
+  });
+};
+
+const queueLiveUpdate = (
+  providerMarketId: string,
+  payload: Omit<PendingLive, "market_id">
+): boolean => {
+  if (!providerMarketId) return false;
+  if (isStaleLiveUpdate(providerMarketId, payload)) return false;
+  const previous = latestLiveStateByProviderMarketId.get(providerMarketId);
+  if (!hasMeaningfulLiveDelta(previous, payload)) {
+    rememberLiveState(providerMarketId, payload);
+    return false;
+  }
+
+  pendingLiveByProviderMarketId.set(providerMarketId, payload);
+  rememberLiveState(providerMarketId, payload);
+  return true;
+};
+
+const queueCandleUpdate = (
+  providerMarketId: string,
+  params: {
+    price: number;
+    size: number;
+    sourceTsMs: number;
+    sourceTsIso: string;
+    nowIso: string;
+  }
+) => {
+  if (!providerMarketId) return;
+  const bucketStart = minuteBucketIso(params.sourceTsMs);
+  const key = `${providerMarketId}:${bucketStart}`;
+  const existing = pendingCandlesByProviderMarketAndBucket.get(key);
+  if (!existing) {
+    pendingCandlesByProviderMarketAndBucket.set(key, {
+      providerMarketId,
+      payload: {
+        outcome_key: "__market__",
+        bucket_start: bucketStart,
+        open: params.price,
+        high: params.price,
+        low: params.price,
+        close: params.price,
+        volume: Math.max(0, params.size),
+        trades_count: params.size > 0 ? 1 : 0,
+        source_ts_max: params.sourceTsIso,
+        updated_at: params.nowIso,
+      },
+    });
+    return;
+  }
+
+  existing.payload.high = Math.max(existing.payload.high, params.price);
+  existing.payload.low = Math.min(existing.payload.low, params.price);
+  existing.payload.close = params.price;
+  existing.payload.volume = Math.max(0, existing.payload.volume + Math.max(0, params.size));
+  existing.payload.trades_count = existing.payload.trades_count + (params.size > 0 ? 1 : 0);
+  existing.payload.source_ts_max = params.sourceTsIso;
+  existing.payload.updated_at = params.nowIso;
+  pendingCandlesByProviderMarketAndBucket.set(key, existing);
 };
 
 const fingerprintMarket = (market: VenueMarket): string => {
@@ -263,6 +423,11 @@ const deleteCanonicalLimitlessRowsByProviderIds = async (providerMarketIds: stri
       .eq("provider", "limitless")
       .in("provider_market_id", chunk);
   }
+  for (const providerMarketId of providerMarketIds) {
+    catalogIdCache.delete(providerMarketId);
+    latestLiveStateByProviderMarketId.delete(providerMarketId);
+    lastSnapshotSeedByProviderMarketId.delete(providerMarketId);
+  }
 };
 
 const pruneExpiredMarkets = async () => {
@@ -293,6 +458,9 @@ const pruneExpiredMarkets = async () => {
   for (const marketId of idsToDelete) {
     knownMarketFingerprints.delete(marketId);
     missingOpenMarketMisses.delete(marketId);
+    latestLiveStateByProviderMarketId.delete(marketId);
+    lastSnapshotSeedByProviderMarketId.delete(marketId);
+    catalogIdCache.delete(marketId);
   }
   console.log(`[limitless-collector] prune expired removed=${idsToDelete.length} cutoff=${cutoffIso}`);
 };
@@ -351,6 +519,9 @@ const pruneMissingOpenMarkets = async () => {
   for (const marketId of staleIds) {
     knownMarketFingerprints.delete(marketId);
     missingOpenMarketMisses.delete(marketId);
+    latestLiveStateByProviderMarketId.delete(marketId);
+    lastSnapshotSeedByProviderMarketId.delete(marketId);
+    catalogIdCache.delete(marketId);
   }
   console.log(
     `[limitless-collector] prune missing-open removed=${staleIds.length} threshold=${MISSING_MARKET_MISS_THRESHOLD}`
@@ -376,8 +547,20 @@ const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<strin
   if (providerMarketIds.length === 0) return out;
 
   const uniqueIds = Array.from(new Set(providerMarketIds.filter(Boolean)));
-  for (let i = 0; i < uniqueIds.length; i += 200) {
-    const chunk = uniqueIds.slice(i, i + 200);
+  const now = Date.now();
+  const misses: string[] = [];
+
+  for (const providerMarketId of uniqueIds) {
+    const cached = catalogIdCache.get(providerMarketId);
+    if (cached && cached.expiresAt > now) {
+      out.set(providerMarketId, cached.id);
+    } else {
+      misses.push(providerMarketId);
+    }
+  }
+
+  for (let i = 0; i < misses.length; i += 200) {
+    const chunk = misses.slice(i, i + 200);
     const { data, error } = await (supabase as any)
       .from("market_catalog")
       .select("id, provider_market_id")
@@ -392,7 +575,13 @@ const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<strin
     for (const row of data ?? []) {
       const providerMarketId = String((row as Record<string, unknown>).provider_market_id ?? "").trim();
       const id = String((row as Record<string, unknown>).id ?? "").trim();
-      if (providerMarketId && id) out.set(providerMarketId, id);
+      if (providerMarketId && id) {
+        out.set(providerMarketId, id);
+        catalogIdCache.set(providerMarketId, {
+          id,
+          expiresAt: now + CATALOG_ID_CACHE_TTL_MS,
+        });
+      }
     }
   }
 
@@ -401,12 +590,15 @@ const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<strin
 
 const flushPending = async () => {
   if (flushing) return;
-  if (pendingLiveByProviderMarketId.size === 0 && pendingCandlesByProviderMarketId.size === 0) return;
+  if (pendingLiveByProviderMarketId.size === 0 && pendingCandlesByProviderMarketAndBucket.size === 0) return;
 
   flushing = true;
   try {
     const providerMarketIds = Array.from(
-      new Set([...pendingLiveByProviderMarketId.keys(), ...pendingCandlesByProviderMarketId.keys()])
+      new Set([
+        ...pendingLiveByProviderMarketId.keys(),
+        ...Array.from(pendingCandlesByProviderMarketAndBucket.values()).map((entry) => entry.providerMarketId),
+      ])
     );
     const catalogIds = await resolveCatalogIds(providerMarketIds);
 
@@ -429,14 +621,14 @@ const flushPending = async () => {
       }
     }
 
-    if (pendingCandlesByProviderMarketId.size > 0) {
+    if (pendingCandlesByProviderMarketAndBucket.size > 0) {
       const rows: PendingCandle[] = [];
-      for (const [providerMarketId, payload] of pendingCandlesByProviderMarketId.entries()) {
+      for (const { providerMarketId, payload } of pendingCandlesByProviderMarketAndBucket.values()) {
         const marketId = catalogIds.get(providerMarketId);
         if (!marketId) continue;
         rows.push({ market_id: marketId, ...payload });
       }
-      pendingCandlesByProviderMarketId.clear();
+      pendingCandlesByProviderMarketAndBucket.clear();
 
       if (rows.length > 0) {
         const { error } = await (supabase as any)
@@ -494,7 +686,8 @@ const snapshotSync = async (mode: "head" | "full") => {
 
       if (SEED_REALTIME_FROM_SNAPSHOT) {
         const nowIso = new Date().toISOString();
-        const bucket = minuteBucketIso(Date.now());
+        const sourceTsMs = Date.now();
+        const sourceTsIso = new Date(sourceTsMs).toISOString();
         let seededCount = 0;
         for (const market of markets) {
           const primary = market.outcomes[0] ?? null;
@@ -514,7 +707,7 @@ const snapshotSync = async (mode: "head" | "full") => {
 
           const fallbackAsk = clamp01(primaryPrice + 0.01);
           const fallbackBid = clamp01(primaryPrice - 0.01);
-          pendingLiveByProviderMarketId.set(market.providerMarketId, {
+          const queued = queueLiveUpdate(market.providerMarketId, {
             best_bid: Math.min(fallbackBid, primaryPrice),
             best_ask: Math.max(fallbackAsk, primaryPrice),
             mid: primaryPrice,
@@ -523,27 +716,23 @@ const snapshotSync = async (mode: "head" | "full") => {
             rolling_24h_volume: rolling24hVolume,
             open_interest: null,
             source_seq: null,
-            source_ts: nowIso,
+            source_ts: sourceTsIso,
             updated_at: nowIso,
             ingested_at: nowIso,
           });
+          if (!queued) continue;
 
-          pendingCandlesByProviderMarketId.set(market.providerMarketId, {
-            outcome_key: "__market__",
-            bucket_start: bucket,
-            open: primaryPrice,
-            high: primaryPrice,
-            low: primaryPrice,
-            close: primaryPrice,
-            volume: 0,
-            trades_count: 0,
-            source_ts_max: nowIso,
-            updated_at: nowIso,
+          queueCandleUpdate(market.providerMarketId, {
+            price: primaryPrice,
+            size: 0,
+            sourceTsMs,
+            sourceTsIso,
+            nowIso,
           });
           seededCount += 1;
         }
 
-        if (seededCount > 0) {
+        if (seededCount > 0 && mode === "full") {
           await flushPending();
         }
         console.log(`[limitless-collector] ${mode} snapshot realtime seeds queued=${seededCount}`);
@@ -638,7 +827,7 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
     parseNumber(payload.rolling_24h_volume) ?? parseNumber(payload.volume) ?? parseNumber(payload.volume_24h) ?? 0
   );
 
-  pendingLiveByProviderMarketId.set(providerMarketId, {
+  const queued = queueLiveUpdate(providerMarketId, {
     best_bid: bestBid,
     best_ask: bestAsk,
     mid,
@@ -651,19 +840,14 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
     updated_at: nowIso,
     ingested_at: nowIso,
   });
+  if (!queued) return;
 
-  const bucket = minuteBucketIso(Date.now());
-  pendingCandlesByProviderMarketId.set(providerMarketId, {
-    outcome_key: "__market__",
-    bucket_start: bucket,
-    open: lastTradePrice,
-    high: lastTradePrice,
-    low: lastTradePrice,
-    close: lastTradePrice,
-    volume: Math.max(0, lastTradeSize),
-    trades_count: lastTradeSize > 0 ? 1 : 0,
-    source_ts_max: sourceTsIso,
-    updated_at: nowIso,
+  queueCandleUpdate(providerMarketId, {
+    price: lastTradePrice,
+    size: Math.max(0, lastTradeSize),
+    sourceTsMs,
+    sourceTsIso,
+    nowIso,
   });
 };
 
@@ -805,7 +989,7 @@ const startHealthServer = () => {
       ok: path === "/health" ? true : ready,
       ready,
       pendingLive: pendingLiveByProviderMarketId.size,
-      pendingCandles: pendingCandlesByProviderMarketId.size,
+      pendingCandles: pendingCandlesByProviderMarketAndBucket.size,
       lastPollAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
       lastFlushAt: lastFlushAt > 0 ? new Date(lastFlushAt).toISOString() : null,
       lastReconcileAt: lastReconcileAt > 0 ? new Date(lastReconcileAt).toISOString() : null,
