@@ -79,11 +79,13 @@ describe("buildMarketChartSeries", () => {
       priceCandles: candles,
       market: baseMarket({ chance: 61, yesPrice: 0.61 }),
       lang: "EN",
+      interval: "1h",
     });
     const second = buildMarketChartSeries({
       priceCandles: candles,
       market: baseMarket({ chance: 75, yesPrice: 0.75 }),
       lang: "EN",
+      interval: "1h",
     });
 
     expect(first.mode).toBe("binary");
@@ -92,6 +94,21 @@ describe("buildMarketChartSeries", () => {
 
     expect(first.data.length).toBe(second.data.length);
     expect(first.data.map((row) => row.ts)).toEqual(second.data.map((row) => row.ts));
+  });
+
+  test("binary series preserves minute points in 1m interval", () => {
+    const series = buildMarketChartSeries({
+      priceCandles: candles,
+      market: baseMarket({ chance: 61, yesPrice: 0.61 }),
+      lang: "EN",
+      interval: "1m",
+    });
+
+    expect(series.mode).toBe("binary");
+    if (series.mode !== "binary") return;
+    expect(series.data).toHaveLength(2);
+    expect(series.data[0]?.ts).toBe(Date.parse("2026-03-03T10:01:00.000Z"));
+    expect(series.data[1]?.ts).toBe(Date.parse("2026-03-03T10:02:00.000Z"));
   });
 
   test("multi series stays stable on probability changes without synthetic trailing points", () => {
@@ -182,6 +199,7 @@ describe("buildMarketChartSeries", () => {
         outcomes: outcomes.map((o) => ({ ...o })),
       }),
       lang: "EN",
+      interval: "1h",
     });
 
     const second = buildMarketChartSeries({
@@ -195,6 +213,7 @@ describe("buildMarketChartSeries", () => {
         })),
       }),
       lang: "EN",
+      interval: "1h",
     });
 
     expect(first.mode).toBe("multi");
@@ -214,6 +233,7 @@ describe("buildMarketChartSeries", () => {
         createdAt: "2026-03-03T10:00:00.000Z",
       }),
       lang: "EN",
+      interval: "1h",
     });
 
     expect(series.mode).toBe("binary");
@@ -274,6 +294,7 @@ describe("buildMarketChartSeries", () => {
         outcomes: outcomes.map((o) => ({ ...o })),
       }),
       lang: "EN",
+      interval: "1h",
     });
 
     expect(series.mode).toBe("multi");

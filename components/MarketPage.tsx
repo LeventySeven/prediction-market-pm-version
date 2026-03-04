@@ -1256,7 +1256,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     }`}
                     aria-pressed={active}
                   >
-                    {intervalOption}
+                    {intervalOption.toUpperCase()}
                   </button>
                 );
               })}
