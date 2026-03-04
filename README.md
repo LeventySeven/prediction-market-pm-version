@@ -84,6 +84,12 @@ It performs:
 - batched upserts to `polymarket_market_live` and `polymarket_candles_1m`,
 - mirror cache sync safety updates.
 
+## Market Runtime Architecture (Reference)
+
+For the current production approach to market loading, realtime, cache/fallback strategy, workers, and operational health checks, see:
+
+- `MARKET_RUNTIME_ARCHITECTURE.md`
+
 ## Upstash Redis (Cache + Stream)
 
 This repo supports Upstash as a Phase-2 acceleration layer for:
