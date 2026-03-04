@@ -59,6 +59,43 @@ const formatDate = (iso?: string, lang: 'RU' | 'EN' = 'RU') => {
   });
 };
 
+const mapProfileSaveError = (error: unknown, lang: 'RU' | 'EN') => {
+  const raw =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message ?? '')
+      : '';
+  const code = raw.toUpperCase();
+
+  if (code.includes('UNAUTHORIZED')) {
+    return lang === 'RU' ? 'Требуется повторная авторизация.' : 'Re-authentication required.';
+  }
+  if (code.includes('INVALID_FILE_TYPE')) {
+    return lang === 'RU' ? 'Неверный формат аватара.' : 'Invalid avatar file type.';
+  }
+  if (code.includes('FILE_TOO_LARGE')) {
+    return lang === 'RU' ? 'Файл аватара слишком большой.' : 'Avatar file is too large.';
+  }
+  if (code.includes('BUCKET_NOT_FOUND')) {
+    return lang === 'RU'
+      ? 'Хранилище аватаров не настроено (bucket avatars).'
+      : 'Avatar storage bucket is not configured (avatars).';
+  }
+  if (code.includes('NO_TELEGRAM_AVATAR')) {
+    return lang === 'RU' ? 'В Telegram нет аватара.' : 'No Telegram avatar found.';
+  }
+  if (code.includes('SERVICE_ROLE_UNAVAILABLE')) {
+    return lang === 'RU'
+      ? 'Сервис временно недоступен (service role не настроен).'
+      : 'Service temporarily unavailable (service role is not configured).';
+  }
+
+  return lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save';
+};
+
 const buildSparklinePath = (values: number[]) => {
   // viewBox: 0 0 100 40
   const W = 100;
@@ -421,7 +458,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                           sanitizeAvatarPalette(extractedPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
                         const fd = new FormData();
                         fd.append('file', avatarFile);
-                        const resp = await fetch('/api/avatar/upload', { method: 'POST', body: fd });
+                        const resp = await fetch('/api/avatar/upload', {
+                          method: 'POST',
+                          body: fd,
+                          credentials: 'include',
+                        });
                         const data = (await resp.json()) as { avatarUrl?: string; error?: string };
                         if (!resp.ok || !data.avatarUrl) {
                           throw new Error(data.error || 'UPLOAD_FAILED');
@@ -445,8 +486,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                       setIsEditing(false);
                       setAvatarFile(null);
                       setAvatarMode('unchanged');
-                    } catch {
-                      setEditError(lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save');
+                    } catch (error) {
+                      setEditError(mapProfileSaveError(error, lang));
                     } finally {
                       setSaving(false);
                     }

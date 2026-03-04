@@ -699,11 +699,6 @@ const sortMarketRows = (
   return sorted;
 };
 
-export const __marketRouterTestUtils = {
-  normalizeCategoryId,
-  categoryMetaFromRaw,
-  sortMarketRows,
-};
 type UserProfileRow = Pick<
   Database["public"]["Tables"]["users"]["Row"],
   "id" | "display_name" | "username" | "avatar_url" | "telegram_photo_url"
@@ -984,7 +979,6 @@ const readVolumeFromPayload = (payload: Record<string, unknown> | null): number 
   ].filter((row): row is Record<string, unknown> => Boolean(row));
 
   const keys = [
-    "volume",
     "totalVolume",
     "total_volume",
     "volumeUsd",
@@ -992,15 +986,13 @@ const readVolumeFromPayload = (payload: Record<string, unknown> | null): number 
     "volumeUSD",
     "usdVolume",
     "usd_volume",
+    "highValue",
+    "high_value",
     "volume24h",
     "volume_24h",
     "dailyVolume",
     "daily_volume",
-    "liquidity",
-    "liquidityUsd",
-    "liquidity_usd",
-    "totalLiquidity",
-    "total_liquidity",
+    "volume",
   ];
 
   for (const row of candidates) {
@@ -1313,6 +1305,10 @@ const CANDLE_MIN_SPAN_MS_FOR_COVERAGE = Math.max(
   60 * 60 * 1000,
   Number(process.env.CANDLE_MIN_SPAN_MS_FOR_COVERAGE ?? 12 * 60 * 60 * 1000)
 );
+const CANDLE_DAILY_RESOLUTION_SPAN_MS = Math.max(
+  24 * 60 * 60 * 1000,
+  Number(process.env.CANDLE_DAILY_RESOLUTION_SPAN_MS ?? 7 * 24 * 60 * 60 * 1000)
+);
 
 const candleTs = (row: PriceCandleRow): number => Date.parse(String(row.bucket));
 
@@ -1333,7 +1329,7 @@ const isSparseCandleCoverage = (rows: PriceCandleRow[]): boolean =>
 
 const selectCandleResolutionMs = (rows: PriceCandleRow[]): number => {
   const span = candleSpanMs(rows);
-  if (span >= 45 * 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
+  if (span >= CANDLE_DAILY_RESOLUTION_SPAN_MS) return 24 * 60 * 60 * 1000;
   return 60 * 60 * 1000;
 };
 
@@ -1412,6 +1408,15 @@ const pickBetterCandleSet = (a: PriceCandleRow[], b: PriceCandleRow[]): PriceCan
   if (bSpan > aSpan) return b;
   if (aSpan > bSpan) return a;
   return b.length > a.length ? b : a;
+};
+
+export const __marketRouterTestUtils = {
+  normalizeCategoryId,
+  categoryMetaFromRaw,
+  sortMarketRows,
+  readVolumeFromPayload,
+  selectCandleResolutionMs,
+  normalizeCandlesForChart,
 };
 
 const listLocalLiveActivityTicks = async (
@@ -2820,22 +2825,7 @@ export const marketRouter = router({
 
           const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
           if (withToken.length === 0) {
-            if (cachedCandles.length > 0) return cachedCandles;
-            const fallback = market.outcomes[0]?.price ?? 0.5;
-            return [
-              {
-                bucket: new Date().toISOString(),
-                outcomeId: market.outcomes[0]?.id ?? null,
-                outcomeTitle: market.outcomes[0]?.title ?? null,
-                outcomeColor: null,
-                open: fallback,
-                high: fallback,
-                low: fallback,
-                close: fallback,
-                volume: market.volume,
-                tradesCount: 0,
-              },
-            ];
+            return cachedCandles;
           }
 
           const isBinary = market.outcomes.length <= 2;
@@ -2908,22 +2898,7 @@ export const marketRouter = router({
 
         const history = await adapter.getPriceHistory(market, Math.max(limit * 6, 720));
         if (history.length === 0) {
-          if (cachedCandles.length > 0) return cachedCandles;
-          const fallback = market.outcomes[0]?.price ?? 0.5;
-          return [
-            {
-              bucket: new Date().toISOString(),
-              outcomeId: market.outcomes[0]?.id ?? null,
-              outcomeTitle: market.outcomes[0]?.title ?? null,
-              outcomeColor: null,
-              open: fallback,
-              high: fallback,
-              low: fallback,
-              close: fallback,
-              volume: market.volume,
-              tradesCount: 0,
-            },
-          ];
+          return cachedCandles;
         }
 
         const deduped = history

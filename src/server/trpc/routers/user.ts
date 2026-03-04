@@ -63,6 +63,14 @@ const mapUser = (row: any) => ({
   isAdmin: Boolean(row.is_admin),
 });
 
+const requireServiceRoleForUserWrite = (hasServiceRole: boolean) => {
+  if (hasServiceRole) return;
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "SERVICE_ROLE_UNAVAILABLE",
+  });
+};
+
 export const userRouter = router({
   publicUser: publicProcedure
     .input(z.object({ userId: z.string() }))
@@ -171,6 +179,7 @@ export const userRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
       const displayName = normalizeDisplayName(input.displayName);
       const updated = await (supabaseService as any)
         .from("users")
@@ -188,6 +197,7 @@ export const userRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
       const updatePayload: Record<string, unknown> = {
         avatar_url: input.avatarUrl,
       };
@@ -220,6 +230,7 @@ export const userRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
 
       const displayName = normalizeDisplayName(input.displayName);
       const nextEmail = normalizeEmail(input.email);
@@ -291,6 +302,7 @@ export const userRouter = router({
     .mutation(async ({ ctx }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
       const user = await (supabaseService as any)
         .from("users")
         .select("id, referral_code")

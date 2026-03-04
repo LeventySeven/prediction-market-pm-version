@@ -71,6 +71,8 @@ export interface Market {
   imageUrl: string;
   volume: string;
   volumeRaw?: number | null;
+  volume24h?: string | null;
+  volume24hRaw?: number | null;
   closesAt: string; // Trading stops
   expiresAt: string; // Event end
   yesPrice: number;

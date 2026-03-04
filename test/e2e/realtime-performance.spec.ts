@@ -18,7 +18,7 @@ test.describe("Realtime-first frontend performance", () => {
     });
 
     // Warm-up load (Next.js dev compilation is noisy and not user-flow representative).
-    await page.goto("/catalog");
+    await page.goto("/");
     await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
       timeout: 12_000,
     });
@@ -47,20 +47,26 @@ test.describe("Realtime-first frontend performance", () => {
       listMarketsDelayMs: 140,
     });
 
-    await page.goto("/catalog");
+    await page.goto("/");
     await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
       timeout: 7_000,
     });
 
     const baselineCalls = trpc.getRequests("market.listMarkets");
     const providerClickedAt = Date.now();
-    await page.getByRole("button", { name: "Limitless" }).first().click({ force: true });
+    await page
+      .locator("button")
+      .filter({ hasText: /^Limitless$/ })
+      .last()
+      .click({ force: true });
 
     await expect
       .poll(() => trpc.getRequests("market.listMarkets"), {
         timeout: 5_000,
       })
       .toBeGreaterThan(baselineCalls);
+
+    await expect(page).toHaveURL(/\/markets\/limitless(\?|$)/);
 
     const afterProviderInput = trpc.getLastInput("market.listMarkets") as
       | { sortBy?: string; providerFilter?: string }
@@ -74,6 +80,32 @@ test.describe("Realtime-first frontend performance", () => {
     expect(trpc.getRequests("market.listMarkets")).toBe(callsBeforeSearch);
   });
 
+  test("provider routes load with independent backend provider filter", async ({
+    page,
+  }) => {
+    const trpc = await installTrpcMock(page, {
+      listMarketsDelayMs: 120,
+    });
+
+    await page.goto("/markets/polymarket");
+    await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+      timeout: 7_000,
+    });
+    const polyInput = trpc.getLastInput("market.listMarkets") as
+      | { providerFilter?: string }
+      | undefined;
+    expect(polyInput?.providerFilter).toBe("polymarket");
+
+    await page.goto("/markets/limitless");
+    await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+      timeout: 7_000,
+    });
+    const limitlessInput = trpc.getLastInput("market.listMarkets") as
+      | { providerFilter?: string }
+      | undefined;
+    expect(limitlessInput?.providerFilter).toBe("limitless");
+  });
+
   test("market open reaches chart first paint before slow comments complete", async ({
     page,
   }) => {
@@ -84,7 +116,7 @@ test.describe("Realtime-first frontend performance", () => {
       getMarketCommentsDelayMs: 1_600,
     });
 
-    await page.goto("/catalog");
+    await page.goto("/");
     const firstCard = page.locator("[data-market-card-id]").first();
     await expect(firstCard).toBeVisible({ timeout: 7_000 });
 

@@ -1,12 +1,30 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { getPolymarketMarketById } from "@/src/server/polymarket/client";
+import { limitlessAdapter } from "@/src/server/venues/limitlessAdapter";
 
 type PageProps = {
   params: Promise<{ marketId: string }>;
 };
 
 const isMarketId = (v: string) => /^[A-Za-z0-9:_-]{6,}$/.test(v);
+
+const parseMarketRef = (marketId: string): { provider: "polymarket" | "limitless"; providerMarketId: string } => {
+  const clean = marketId.trim();
+  if (clean.startsWith("limitless:")) {
+    return {
+      provider: "limitless",
+      providerMarketId: clean.slice("limitless:".length),
+    };
+  }
+  if (clean.startsWith("polymarket:")) {
+    return {
+      provider: "polymarket",
+      providerMarketId: clean.slice("polymarket:".length),
+    };
+  }
+  return { provider: "polymarket", providerMarketId: clean };
+};
 
 const getBaseUrl = async () => {
   const h = await headers();
@@ -16,11 +34,22 @@ const getBaseUrl = async () => {
 };
 
 const fetchMarketPreview = async (marketId: string) => {
-  const market = await getPolymarketMarketById(marketId);
+  const ref = parseMarketRef(marketId);
+  if (ref.provider === "limitless") {
+    const market = await limitlessAdapter.getMarketById(ref.providerMarketId);
+    if (!market) return null;
+    return {
+      title: market.title.trim() || "Yalla Market",
+      imageUrl: market.imageUrl?.trim() || null,
+    };
+  }
+
+  const market = await getPolymarketMarketById(ref.providerMarketId);
   if (!market) return null;
-  const title = market.title.trim() || "Yalla Market";
-  const imageUrl = market.imageUrl?.trim() || null;
-  return { title, imageUrl };
+  return {
+    title: market.title.trim() || "Yalla Market",
+    imageUrl: market.imageUrl?.trim() || null,
+  };
 };
 
 export const generateMetadata = async ({ params }: PageProps): Promise<Metadata> => {
@@ -160,4 +189,3 @@ export default async function ShareMarketPage({ params }: PageProps) {
     </html>
   );
 }
-

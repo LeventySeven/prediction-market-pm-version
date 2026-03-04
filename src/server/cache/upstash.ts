@@ -35,7 +35,7 @@ export const upstashMarketListTtlSec = clampInt(process.env.UPSTASH_MARKETS_LIST
 export const upstashMarketDetailTtlSec = clampInt(process.env.UPSTASH_MARKET_DETAIL_TTL_SEC, 7, 1, 60);
 export const upstashMarketTradesTtlSec = clampInt(process.env.UPSTASH_MARKET_TRADES_TTL_SEC, 3, 1, 30);
 
-const upstashLiveStateTtlSec = clampInt(process.env.UPSTASH_LIVE_STATE_TTL_SEC, 20, 5, 300);
+const upstashLiveStateTtlSec = clampInt(process.env.UPSTASH_LIVE_STATE_TTL_SEC, 60, 10, 900);
 const upstashActivityListTtlSec = clampInt(process.env.UPSTASH_ACTIVITY_TTL_SEC, 120, 10, 900);
 const upstashActivityListMaxItems = clampInt(process.env.UPSTASH_ACTIVITY_MAX_ITEMS, 200, 50, 500);
 

@@ -687,6 +687,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 </span>
                 <span className="flex items-center gap-2"><ShieldCheck size={14}/> 
                   {lang === 'RU' ? 'Объем' : 'Vol'}: {market.volume}
+                  {' • '}
+                  24h: {market.volume24h ?? '—'}
                 </span>
                 <span className="flex items-center gap-2 text-zinc-400">
                   <CalendarDays size={14} />
@@ -738,7 +740,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     : 'Trading closed. Outcome will be published after resolution.'}
                 </p>
                 <div className="bg-neutral-800 border border-neutral-700 rounded-lg p-3 text-sm text-neutral-400">
-                  {lang === 'RU' ? 'Итог' : 'Summary'}: {market.chance}% {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume}
+                  {lang === 'RU' ? 'Итог' : 'Summary'}: {market.chance}% {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume} • 24h: {market.volume24h ?? '—'}
                   {isResolved && (
                     <div className="text-xs text-neutral-500 mt-2">
                       {lang === 'RU'

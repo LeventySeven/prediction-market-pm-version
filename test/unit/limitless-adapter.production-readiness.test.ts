@@ -186,4 +186,47 @@ describe("limitlessAdapter production readiness", () => {
     expect(rows.map((row) => row.providerMarketId)).toEqual(["2", "3", "1"]);
     expect(observedSortBy[0]).toBe("high_value");
   });
+
+  it("prefers explicit total volume fields over ambiguous values", async () => {
+    globalThis.fetch = (async () => {
+      const rows = [
+        {
+          ...makeMarketRow(11),
+          total_volume: 1234,
+          volume: 77,
+          liquidity: 99_999,
+        },
+      ];
+      return new Response(JSON.stringify({ data: rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 17, sortBy: "volume" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.volume).toBe(1234);
+  });
+
+  it("does not use liquidity as a volume fallback", async () => {
+    globalThis.fetch = (async () => {
+      const rows = [
+        {
+          ...makeMarketRow(12),
+          total_volume: undefined,
+          volume: undefined,
+          volume24h: undefined,
+          liquidity: 54_321,
+        },
+      ];
+      return new Response(JSON.stringify({ data: rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 18, sortBy: "volume" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.volume).toBe(0);
+  });
 });

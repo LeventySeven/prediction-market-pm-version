@@ -124,6 +124,27 @@ const sameCandle = (
 const sameLinePoint = (a: LineData<UTCTimestamp>, b: LineData<UTCTimestamp>): boolean =>
   a.time === b.time && a.value === b.value;
 
+const MIN_VISIBLE_RANGE_PERCENT = 2;
+
+const withMinVisiblePriceRange = <T extends { priceRange?: { minValue: number; maxValue: number } }>(
+  autoScaleInfo: T | null
+): T | null => {
+  if (!autoScaleInfo?.priceRange) return autoScaleInfo;
+  const minValue = Number(autoScaleInfo.priceRange.minValue);
+  const maxValue = Number(autoScaleInfo.priceRange.maxValue);
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) return autoScaleInfo;
+  const span = maxValue - minValue;
+  if (span >= MIN_VISIBLE_RANGE_PERCENT) return autoScaleInfo;
+  const center = (maxValue + minValue) / 2;
+  return {
+    ...autoScaleInfo,
+    priceRange: {
+      minValue: center - MIN_VISIBLE_RANGE_PERCENT / 2,
+      maxValue: center + MIN_VISIBLE_RANGE_PERCENT / 2,
+    },
+  };
+};
+
 const shouldResetCandles = (
   prev: CandlestickData<UTCTimestamp>[],
   next: CandlestickData<UTCTimestamp>[]
@@ -178,7 +199,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
 
   const candleDataRef = useRef<CandlestickData<UTCTimestamp>[]>([]);
   const lineDataRef = useRef<Map<string, LineData<UTCTimestamp>[]>>(new Map());
-  const didInitialFitRef = useRef(false);
+  const lastFitSignatureRef = useRef("");
 
   useEffect(() => {
     const container = containerRef.current;
@@ -224,7 +245,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       lineSeriesRef.current.clear();
       candleDataRef.current = [];
       lineDataRef.current.clear();
-      didInitialFitRef.current = false;
+      lastFitSignatureRef.current = "";
       chart.remove();
     };
   }, []);
@@ -253,10 +274,14 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
         lastValueVisible: true,
         priceLineVisible: true,
         priceLineColor: 'rgba(244,63,164,0.9)',
+        autoscaleInfoProvider: (baseImplementation: (() => unknown) | undefined) =>
+          withMinVisiblePriceRange(
+            typeof baseImplementation === "function" ? (baseImplementation() as any) : null
+          ),
       });
       candleSeriesRef.current = series;
       candleDataRef.current = [];
-      didInitialFitRef.current = false;
+      lastFitSignatureRef.current = "";
     }
 
     const prev = candleDataRef.current;
@@ -279,9 +304,13 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       candleDataRef.current = next;
     }
 
-    if (!didInitialFitRef.current && next.length > 0) {
+    const nextSignature =
+      next.length > 0
+        ? `${String(next[0]?.time)}:${String(next[next.length - 1]?.time)}:${next.length}`
+        : "";
+    if (next.length > 0 && nextSignature !== lastFitSignatureRef.current) {
       chart.timeScale().fitContent();
-      didInitialFitRef.current = true;
+      lastFitSignatureRef.current = nextSignature;
     }
   }, [mode, normalizedCandles]);
 
@@ -293,7 +322,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       chart.removeSeries(candleSeriesRef.current);
       candleSeriesRef.current = null;
       candleDataRef.current = [];
-      didInitialFitRef.current = false;
+      lastFitSignatureRef.current = "";
     }
 
     const activeIds = new Set(normalizedLines.map((line) => line.id));
@@ -318,6 +347,10 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
           crosshairMarkerVisible: true,
           priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
           lastPriceAnimation: LastPriceAnimationMode.OnDataUpdate,
+          autoscaleInfoProvider: (baseImplementation: (() => unknown) | undefined) =>
+            withMinVisiblePriceRange(
+              typeof baseImplementation === "function" ? (baseImplementation() as any) : null
+            ),
         });
         lineSeriesRef.current.set(line.id, series);
         lineDataRef.current.set(line.id, []);
@@ -353,9 +386,17 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       }
     }
 
-    if (!didInitialFitRef.current && hasAnyData) {
+    const allTimes = Array.from(lineDataRef.current.values())
+      .flatMap((rows) => rows.map((row) => Number(row.time)))
+      .filter((time) => Number.isFinite(time))
+      .sort((a, b) => a - b);
+    const nextSignature =
+      allTimes.length > 0
+        ? `${allTimes[0]}:${allTimes[allTimes.length - 1]}:${allTimes.length}`
+        : "";
+    if (hasAnyData && nextSignature !== lastFitSignatureRef.current) {
       chart.timeScale().fitContent();
-      didInitialFitRef.current = true;
+      lastFitSignatureRef.current = nextSignature;
     }
   }, [mode, normalizedLines]);
 

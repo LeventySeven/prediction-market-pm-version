@@ -9,6 +9,7 @@ import {
   parseSocketIoEventPacket,
   resolveSocketIoConnection,
 } from "../../src/server/venues/limitlessSocketIo";
+import { resolveRolling24hVolumeFromWsPayload } from "../../src/server/venues/limitlessCollectorUtils";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
 import { venueToCanonicalId, type VenueMarket } from "../../src/server/venues/types";
 
@@ -19,17 +20,17 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
 }
 
-const POLL_INTERVAL_MS = Math.max(10_000, Number(process.env.LIMITLESS_COLLECTOR_POLL_INTERVAL_MS ?? 45_000));
-const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 5_000));
+const POLL_INTERVAL_MS = Math.max(10_000, Number(process.env.LIMITLESS_COLLECTOR_POLL_INTERVAL_MS ?? 10_000));
+const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.LIMITLESS_COLLECTOR_FLUSH_INTERVAL_MS ?? 2_000));
 const RECONCILE_INTERVAL_MS = Math.max(
   60_000,
-  Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300000)
+  Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300_000)
 );
 const HEALTH_PORT = Math.max(0, Number(process.env.LIMITLESS_COLLECTOR_HEALTH_PORT ?? 8081));
-const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 200)));
+const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 450)));
 const HEAD_SNAPSHOT_LIMIT = Math.max(
   20,
-  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 80))
+  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 200))
 );
 const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.LIMITLESS_COLLECTOR_PRUNE_INTERVAL_MS ?? 3_600_000));
 const PRUNE_EXPIRED_AFTER_DAYS = Math.max(
@@ -49,7 +50,7 @@ const MISSING_MARKET_MISS_THRESHOLD = Math.max(
 const PROBE_THROTTLE_MS = Math.max(30_000, Number(process.env.LIMITLESS_COLLECTOR_PROBE_THROTTLE_MS ?? 300_000));
 const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
 const LIMITLESS_BASE_URL = (process.env.LIMITLESS_API_BASE_URL || "https://api.limitless.exchange").trim();
-const COLLECTOR_VERSION = "limitless-collector-v2026-03-03c";
+const COLLECTOR_VERSION = "limitless-collector-v2026-03-04a";
 const WS_MAX_1002_BEFORE_DISABLE = Math.max(
   1,
   Number(process.env.LIMITLESS_COLLECTOR_WS_MAX_1002_BEFORE_DISABLE ?? 5)
@@ -792,8 +793,7 @@ const snapshotSync = async (mode: "head" | "full") => {
 
       if (SEED_REALTIME_FROM_SNAPSHOT) {
         const nowIso = new Date().toISOString();
-        const sourceTsMs = Date.now();
-        const sourceTsIso = new Date(sourceTsMs).toISOString();
+        const sourceTsIso = new Date().toISOString();
         let seededCount = 0;
         for (const market of markets) {
           const primary = market.outcomes[0] ?? null;
@@ -827,14 +827,6 @@ const snapshotSync = async (mode: "head" | "full") => {
             ingested_at: nowIso,
           });
           if (!queued) continue;
-
-          queueCandleUpdate(market.providerMarketId, {
-            price: primaryPrice,
-            size: 0,
-            sourceTsMs,
-            sourceTsIso,
-            nowIso,
-          });
           seededCount += 1;
         }
 
@@ -980,10 +972,11 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
   const lastTradePrice =
     toPriceProb(payload.last_trade_price) ?? toPriceProb(payload.price) ?? toPriceProb(payload.lastPrice) ?? mid;
   const lastTradeSize = Math.max(0, parseNumber(payload.last_trade_size) ?? parseNumber(payload.size) ?? 0);
-  const rolling24h = Math.max(
-    0,
-    parseNumber(payload.rolling_24h_volume) ?? parseNumber(payload.volume) ?? parseNumber(payload.volume_24h) ?? 0
-  );
+  const previousRolling24h =
+    pendingLiveByProviderMarketId.get(providerMarketId)?.rolling_24h_volume ??
+    latestLiveStateByProviderMarketId.get(providerMarketId)?.rolling24hVolume ??
+    0;
+  const rolling24h = resolveRolling24hVolumeFromWsPayload(payload, previousRolling24h);
 
   const queued = queueLiveUpdate(providerMarketId, {
     best_bid: bestBid,
@@ -1226,7 +1219,7 @@ const start = async () => {
   }
 
   console.log(
-    `[limitless-collector] starting version=${COLLECTOR_VERSION} base=${LIMITLESS_BASE_URL} ws=${LIMITLESS_WS_CONFIG?.url ?? "none"} poll=${POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
+    `[limitless-collector] starting version=${COLLECTOR_VERSION} base=${LIMITLESS_BASE_URL} ws=${LIMITLESS_WS_CONFIG?.url ?? "none"} poll=${POLL_INTERVAL_MS}ms flush=${FLUSH_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
   );
   startHealthServer();
   await snapshotSync("full");

@@ -169,14 +169,36 @@ const parseRows = (payload: unknown): Record<string, unknown>[] => {
   const obj = asRecord(payload);
   if (!obj) return [];
 
-  const candidates = [obj.items, obj.data, obj.markets, obj.results, obj.rows, obj.payload, obj.response];
+  const candidates = [
+    obj.items,
+    obj.data,
+    obj.markets,
+    obj.results,
+    obj.rows,
+    obj.candles,
+    obj.history,
+    obj.prices,
+    obj.trades,
+    obj.payload,
+    obj.response,
+  ];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
       return candidate.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
     }
     const rec = asRecord(candidate);
     if (rec) {
-      const nestedCandidates = [rec.items, rec.data, rec.markets, rec.results, rec.rows];
+      const nestedCandidates = [
+        rec.items,
+        rec.data,
+        rec.markets,
+        rec.results,
+        rec.rows,
+        rec.candles,
+        rec.history,
+        rec.prices,
+        rec.trades,
+      ];
       for (const nested of nestedCandidates) {
         if (Array.isArray(nested)) {
           return nested.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
@@ -294,7 +316,6 @@ const parseLimitlessVolume = (row: Record<string, unknown>): number => {
   const aggregates = asRecord(row.aggregates);
 
   const candidates: unknown[] = [
-    row.volume,
     row.totalVolume,
     row.total_volume,
     row.volumeUsd,
@@ -302,22 +323,18 @@ const parseLimitlessVolume = (row: Record<string, unknown>): number => {
     row.volumeUSD,
     row.usdVolume,
     row.usd_volume,
+    row.highValue,
+    row.high_value,
     row.volume24h,
     row.volume_24h,
     row.dailyVolume,
     row.daily_volume,
-    row.liquidity,
-    row.liquidityUsd,
-    row.liquidity_usd,
-    row.totalLiquidity,
-    row.total_liquidity,
+    row.volume,
     stats?.volume,
     stats?.totalVolume,
     stats?.total_volume,
     stats?.volume24h,
     stats?.volume_24h,
-    stats?.liquidity,
-    stats?.liquidityUsd,
     marketStats?.volume,
     marketStats?.totalVolume,
     marketStats?.total_volume,
@@ -326,7 +343,6 @@ const parseLimitlessVolume = (row: Record<string, unknown>): number => {
     metrics?.volume,
     metrics?.totalVolume,
     metrics?.volumeUsd,
-    metrics?.liquidity,
     aggregates?.volume,
     aggregates?.totalVolume,
     aggregates?.volumeUsd,
@@ -846,19 +862,42 @@ const mapHistoryRowsToPoints = (
   rows: Record<string, unknown>[],
   limit: number
 ): Array<{ ts: number; price: number }> => {
+  const parseUnixTs = (value: unknown): number | null => {
+    const numeric = toNumber(value);
+    if (numeric !== null) {
+      return numeric > 10_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+    }
+    const text = toString(value);
+    if (!text) return null;
+    const parsed = Date.parse(text);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.floor(parsed / 1000);
+  };
+
   const points = rows
     .map((row) => {
       const ts =
-        toNumber(row.ts) ??
-        toNumber(row.timestamp) ??
-        toNumber(row.t) ??
-        toNumber(row.time) ??
+        parseUnixTs(row.ts) ??
+        parseUnixTs(row.timestamp) ??
+        parseUnixTs(row.t) ??
+        parseUnixTs(row.time) ??
+        parseUnixTs(row.bucket_start) ??
+        parseUnixTs(row.bucketStart) ??
+        parseUnixTs(row.open_time) ??
+        parseUnixTs(row.openTime) ??
+        parseUnixTs(row.start) ??
+        parseUnixTs(row.date) ??
         null;
       const price =
-        toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
+        toNumber(row.price) ??
+        toNumber(row.close) ??
+        toNumber(row.closePrice) ??
+        toNumber(row.mid) ??
+        toNumber(row.p) ??
+        toNumber(row.value) ??
+        null;
       if (ts === null || price === null) return null;
-      const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-      return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
+      return { ts, price: clamp01(price > 1 ? price / 100 : price) };
     })
     .filter((item): item is { ts: number; price: number } => Boolean(item))
     .sort((a, b) => a.ts - b.ts);

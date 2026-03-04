@@ -55,7 +55,7 @@ const selectResolutionMs = (candles: PriceCandle[]): number => {
   const first = times[0] ?? 0;
   const last = times[times.length - 1] ?? first;
   const span = Math.max(0, last - first);
-  if (span >= 45 * 24 * 60 * 60 * 1000) {
+  if (span >= 7 * 24 * 60 * 60 * 1000) {
     return 24 * 60 * 60 * 1000;
   }
   return 60 * 60 * 1000;
@@ -115,11 +115,7 @@ export const buildMarketChartSeries = ({
   const candleTimes = chartCandles
     .map((c) => Date.parse(String(c.bucket)))
     .filter((t) => Number.isFinite(t));
-  const createdTsRaw = Date.parse(String(market.createdAt));
-  const createdTs = Number.isFinite(createdTsRaw)
-    ? createdTsRaw
-    : (candleTimes[0] ?? Date.now());
-  const times = [...candleTimes, createdTs];
+  const times = [...candleTimes];
 
   const spansMultipleDays = (() => {
     if (times.length === 0) return false;
@@ -178,25 +174,6 @@ export const buildMarketChartSeries = ({
       byTs.set(ts, row);
     });
 
-    if (!byTs.has(createdTs)) {
-      const initValues: Record<string, number> = {};
-      outcomeLines.forEach((o) => {
-        const liveProb = Number(
-          (market.outcomes ?? []).find((mo) => mo.id === o.id)?.probability ??
-            Number.NaN
-        );
-        initValues[o.id] = Number.isFinite(liveProb)
-          ? Number((liveProb * 100).toFixed(2))
-          : initialProb;
-      });
-      byTs.set(createdTs, {
-        ts: createdTs,
-        label: labelFor(createdTs),
-        spansMultipleDays,
-        values: initValues,
-      });
-    }
-
     const sortedRows = Array.from(byTs.values()).sort((a, b) => a.ts - b.ts);
     const lastValues: Record<string, number> = {};
     outcomeLines.forEach((o) => {
@@ -222,10 +199,6 @@ export const buildMarketChartSeries = ({
       lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder),
     };
   }
-
-  const fallbackChance = Number.isFinite(market.chance)
-    ? market.chance
-    : Math.round(Number(market.yesPrice ?? 0.5) * 100);
 
   const rows = chartCandles
     .map((c) => {
@@ -261,20 +234,6 @@ export const buildMarketChartSeries = ({
       } => Boolean(v)
     )
     .sort((a, b) => a.ts - b.ts);
-
-  if (rows.length === 0 || rows[0].ts > createdTs) {
-    const seed = Number(fallbackChance.toFixed(2));
-    rows.unshift({
-      ts: createdTs,
-      label: labelFor(createdTs),
-      value: seed,
-      open: seed,
-      high: seed,
-      low: seed,
-      close: seed,
-      spansMultipleDays,
-    });
-  }
 
   return { mode: "binary", data: rows, lines: [] };
 };

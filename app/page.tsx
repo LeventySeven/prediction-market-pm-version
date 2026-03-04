@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
@@ -43,6 +43,7 @@ import {
   extractAvatarPaletteFromImageSource,
   sanitizeAvatarPalette,
 } from "@/src/lib/avatarPalette";
+import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -165,12 +166,12 @@ const parseUsdVolume = (value: string): number => {
 };
 
 const detectCandleResolutionMs = (candles: PriceCandle[]): number => {
-  if (candles.length < 2) return 60_000;
+  if (candles.length < 2) return 60 * 60 * 1000;
   const times = candles
     .map((c) => Date.parse(c.bucket))
     .filter((ts) => Number.isFinite(ts))
     .sort((a, b) => a - b);
-  if (times.length < 2) return 60_000;
+  if (times.length < 2) return 60 * 60 * 1000;
   const deltas: number[] = [];
   for (let i = 1; i < times.length; i += 1) {
     const prev = times[i - 1];
@@ -179,11 +180,10 @@ const detectCandleResolutionMs = (candles: PriceCandle[]): number => {
     const delta = next - prev;
     if (delta > 0) deltas.push(delta);
   }
-  if (deltas.length === 0) return 60_000;
+  if (deltas.length === 0) return 60 * 60 * 1000;
   const minDelta = Math.min(...deltas);
   if (minDelta >= 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
-  if (minDelta >= 60 * 60 * 1000) return 60 * 60 * 1000;
-  return 60_000;
+  return 60 * 60 * 1000;
 };
 
 const alignBucketToResolution = (bucketMs: number, resolutionMs: number): number => {
@@ -197,6 +197,10 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
   const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
   const volumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
+  const volume24hRaw =
+    typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
+      ? Math.max(0, m.rolling24hVolume)
+      : null;
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
@@ -221,6 +225,8 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
     volume: formatUsdVolume(volumeRaw),
     volumeRaw,
+    volume24h: volume24hRaw === null ? null : formatUsdVolume(volume24hRaw),
+    volume24hRaw,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
     yesPrice: Number(m.priceYes),
@@ -284,6 +290,10 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
   const yesPrice = useMid ? patch.mid : market.yesPrice;
   const noPrice = useMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
   const chance = useMid ? Math.round(yesPrice * 100) : market.chance;
+  const nextRolling24h =
+    typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
+      ? Math.max(0, patch.rolling24hVolume)
+      : null;
 
   return {
     ...market,
@@ -295,7 +305,9 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     mid: patch.mid,
     lastTradePrice: patch.lastTradePrice,
     lastTradeSize: patch.lastTradeSize,
-    rolling24hVolume: patch.rolling24hVolume,
+    rolling24hVolume: nextRolling24h,
+    volume24hRaw: nextRolling24h,
+    volume24h: nextRolling24h === null ? market.volume24h ?? null : formatUsdVolume(nextRolling24h),
     openInterest: patch.openInterest,
     liveUpdatedAt: patch.liveUpdatedAt,
   };
@@ -366,9 +378,6 @@ const MARKET_ID_REGEX = /^[A-Za-z0-9:_-]{6,}$/;
 const HAS_PRIVY_PROVIDER = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const POLYMARKET_CLOB_URL = (process.env.NEXT_PUBLIC_POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
 const POLYMARKET_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || "137");
-const POLYMARKET_SITE_URL = "https://polymarket.com";
-const LIMITLESS_SITE_URL = "https://limitless.exchange";
-
 const usePrivySession = HAS_PRIVY_PROVIDER
   ? () => usePrivy()
   : () => ({
@@ -392,29 +401,6 @@ const slugifyTitle = (raw: string) =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-const defaultExternalMarketUrl = (provider?: Market["provider"]): string =>
-  provider === "limitless" ? LIMITLESS_SITE_URL : POLYMARKET_SITE_URL;
-
-const normalizeExternalMarketUrl = (
-  raw: string | null | undefined,
-  provider?: Market["provider"]
-): string | null => {
-  const value = (raw ?? "").trim();
-  const fallbackBase = defaultExternalMarketUrl(provider);
-  if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
-  if (/^\/\//.test(value)) return `https:${value}`;
-  if (value.startsWith("/")) return `${fallbackBase}${value}`;
-  if (/^event\//i.test(value)) return `${fallbackBase}/${value}`;
-  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/|$)/i.test(value)) return `https://${value}`;
-  return null;
-};
-
-const getExternalMarketUrl = (market: Market | null | undefined): string => {
-  const normalized = normalizeExternalMarketUrl(market?.source, market?.provider);
-  return normalized ?? defaultExternalMarketUrl(market?.provider);
-};
-
 const buildMarketPath = (marketId: string, title?: string | null) => {
   const query = title ? `?title=${encodeURIComponent(slugifyTitle(title))}` : "";
   return `/market/${encodeURIComponent(marketId)}${query}`;
@@ -434,10 +420,24 @@ const getPathForView = (view: ViewType) => {
   }
 };
 
+const getCatalogProviderFromLocation = (): "all" | "polymarket" | "limitless" => {
+  if (typeof window === "undefined") return "all";
+  const path = window.location.pathname.toLowerCase();
+  if (path.startsWith("/markets/polymarket")) return "polymarket";
+  if (path.startsWith("/markets/limitless")) return "limitless";
+  return "all";
+};
+
+const getCatalogPathForProvider = (provider: "all" | "polymarket" | "limitless"): string => {
+  if (provider === "polymarket") return "/markets/polymarket";
+  if (provider === "limitless") return "/markets/limitless";
+  return "/";
+};
+
 const getViewFromLocation = (): ViewType => {
   if (typeof window === "undefined") return "CATALOG";
   const path = window.location.pathname.toLowerCase();
-  if (path === "/" || path.startsWith("/catalog")) return "CATALOG";
+  if (path === "/" || path.startsWith("/catalog") || path.startsWith("/markets")) return "CATALOG";
   if (path.startsWith("/leaderboard") || path.startsWith("/friends")) return "FRIENDS";
   if (path.startsWith("/mybets") || path.startsWith("/feed")) return "FEED";
   if (path.startsWith("/profile")) return "PROFILE";
@@ -486,7 +486,9 @@ export default function HomePage() {
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
   type ProviderFilter = "all" | "polymarket" | "limitless";
-  const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>("all");
+  const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>(() =>
+    getCatalogProviderFromLocation()
+  );
   const [catalogPage, setCatalogPage] = useState(1);
   const [hasNextCatalogPage, setHasNextCatalogPage] = useState(false);
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
@@ -568,15 +570,57 @@ export default function HomePage() {
   }, []);
   const navigateToCatalogUrl = useCallback(() => {
     if (typeof window === "undefined") return;
-    if (window.location.pathname === "/" && !window.location.search) return;
-    window.history.pushState({}, "", "/");
-  }, []);
+    const nextPath = getCatalogPathForProvider(activeProviderFilter);
+    if (window.location.pathname === nextPath) return;
+    window.history.pushState({}, "", nextPath + window.location.search);
+  }, [activeProviderFilter]);
   const navigateToViewUrl = useCallback((view: ViewType) => {
     if (typeof window === "undefined") return;
-    const next = getPathForView(view);
+    const next = view === "CATALOG" ? getCatalogPathForProvider(activeProviderFilter) : getPathForView(view);
     if (window.location.pathname === next && !window.location.search) return;
     window.history.pushState({ view }, "", next);
+  }, [activeProviderFilter]);
+
+  const applyCatalogStateFromUrl = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const providerFromPath = getCatalogProviderFromLocation();
+    setActiveProviderFilter(providerFromPath);
+
+    const url = new URL(window.location.href);
+    const q = (url.searchParams.get("q") ?? "").trim();
+    const category = (url.searchParams.get("category") ?? "").trim();
+    const sort = (url.searchParams.get("sort") ?? "").trim().toUpperCase();
+    const status = (url.searchParams.get("status") ?? "").trim().toUpperCase();
+    const time = (url.searchParams.get("time") ?? "").trim().toUpperCase();
+    const page = Number(url.searchParams.get("page") ?? "1");
+
+    setSearchQuery(q);
+    setActiveCategoryId(category || "all");
+
+    const isSort =
+      sort === "ENDING_SOON" ||
+      sort === "CREATED_DESC" ||
+      sort === "CREATED_ASC" ||
+      sort === "VOLUME_DESC" ||
+      sort === "VOLUME_ASC" ||
+      sort === "CATEGORY_ASC" ||
+      sort === "CATEGORY_DESC";
+    setCatalogSort(isSort ? sort : "CREATED_DESC");
+
+    const isStatus = status === "ALL" || status === "ONGOING" || status === "ENDED";
+    setCatalogStatus(isStatus ? status : "ALL");
+
+    const isTime = time === "ANY" || time === "HOUR" || time === "DAY" || time === "WEEK";
+    setCatalogTimeFilter(isTime ? time : "ANY");
+    setCatalogPage(Number.isFinite(page) && page > 0 ? Math.floor(page) : 1);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (selectedMarketId) return;
+    if (getViewFromLocation() !== "CATALOG") return;
+    applyCatalogStateFromUrl();
+  }, [applyCatalogStateFromUrl, selectedMarketId]);
 
   // Keep UI synced with browser back/forward when market URL is in history.
   useEffect(() => {
@@ -584,12 +628,16 @@ export default function HomePage() {
     const onPopState = () => {
       const marketId = getMarketIdFromLocation();
       setSelectedMarketId(marketId);
-      setCurrentView(getViewFromLocation());
+      const nextView = getViewFromLocation();
+      setCurrentView(nextView);
+      if (nextView === "CATALOG") {
+        applyCatalogStateFromUrl();
+      }
       if (marketId) setCurrentView("CATALOG");
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [applyCatalogStateFromUrl]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -600,8 +648,36 @@ export default function HomePage() {
     document.addEventListener("visibilitychange", syncVisibility);
     return () => document.removeEventListener("visibilitychange", syncVisibility);
   }, []);
-  const shellSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (selectedMarketId) return;
+    if (currentView !== "CATALOG") return;
+
+    const nextPath = getCatalogPathForProvider(activeProviderFilter);
+    const params = new URLSearchParams();
+    if (searchQuery.trim()) params.set("q", searchQuery.trim());
+    if (activeCategoryId !== "all") params.set("category", activeCategoryId);
+    if (catalogSort !== "CREATED_DESC") params.set("sort", catalogSort);
+    if (catalogStatus !== "ALL") params.set("status", catalogStatus);
+    if (catalogTimeFilter !== "ANY") params.set("time", catalogTimeFilter);
+    if (catalogPage > 1) params.set("page", String(catalogPage));
+    const nextUrl = params.toString().length > 0 ? `${nextPath}?${params.toString()}` : nextPath;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== nextUrl) {
+      window.history.replaceState({ view: "CATALOG" }, "", nextUrl);
+    }
+  }, [
+    activeCategoryId,
+    activeProviderFilter,
+    catalogPage,
+    catalogSort,
+    catalogStatus,
+    catalogTimeFilter,
+    currentView,
+    searchQuery,
+    selectedMarketId,
+  ]);
   const [myPositions, setMyPositions] = useState<Position[]>([]);
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
   const [myBetsLoading, setMyBetsLoading] = useState(false);
@@ -988,7 +1064,11 @@ export default function HomePage() {
           avatarPalette = await extractAvatarPaletteFromFile(payload.avatarFile, paletteSeed);
           const formData = new FormData();
           formData.append("file", payload.avatarFile);
-          const uploadResponse = await fetch("/api/avatar/upload", { method: "POST", body: formData });
+          const uploadResponse = await fetch("/api/avatar/upload", {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+          });
           const uploadPayload = (await uploadResponse.json()) as { avatarUrl?: string; error?: string };
           if (!uploadResponse.ok || !uploadPayload.avatarUrl) {
             throw new Error(uploadPayload.error || "UPLOAD_FAILED");
@@ -1051,6 +1131,20 @@ export default function HomePage() {
           setProfileSetupError(lang === "RU" ? "Неверный формат аватара." : "Invalid avatar file type.");
         } else if (msg.includes("FILE_TOO_LARGE")) {
           setProfileSetupError(lang === "RU" ? "Файл аватара слишком большой." : "Avatar file is too large.");
+        } else if (msg.includes("BUCKET_NOT_FOUND")) {
+          setProfileSetupError(
+            lang === "RU"
+              ? "Хранилище аватаров не настроено (bucket avatars)."
+              : "Avatar storage bucket is not configured (avatars)."
+          );
+        } else if (msg.includes("SERVICE_ROLE_UNAVAILABLE")) {
+          setProfileSetupError(
+            lang === "RU"
+              ? "Сервис временно недоступен (service role не настроен)."
+              : "Service temporarily unavailable (service role is not configured)."
+          );
+        } else if (msg.includes("UNAUTHORIZED")) {
+          setProfileSetupError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
         } else if (msg.includes("NO_TELEGRAM_AVATAR")) {
           setProfileSetupError(lang === "RU" ? "В Telegram нет аватара." : "No Telegram avatar found.");
         } else {
@@ -1855,9 +1949,14 @@ export default function HomePage() {
 
   const catalogMarkets = useMemo(() => {
     const parseVol = (m: Market) =>
-      typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
-        ? m.volumeRaw
-        : parseUsdVolume(m.volume);
+      Math.max(
+        typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
+          ? m.volumeRaw
+          : parseUsdVolume(m.volume),
+        typeof m.volume24hRaw === "number" && Number.isFinite(m.volume24hRaw)
+          ? m.volume24hRaw
+          : parseUsdVolume(m.volume24h ?? "")
+      );
     const categoryLabel = (m: Market) => {
       const raw =
         lang === "RU"
@@ -2192,6 +2291,50 @@ export default function HomePage() {
       };
     };
 
+    const startSelectedMarketFallback = () => {
+      if (selectedProvider === "polymarket") {
+        return startPolymarketSupabaseFallback();
+      }
+
+      let stopped = false;
+      let timer: ReturnType<typeof setInterval> | null = null;
+
+      const refreshFromApi = async () => {
+        try {
+          const row = await trpcClient.market.getMarket.query({
+            marketId: streamMarketId,
+            provider: selectedProvider,
+          });
+          if (stopped || !row) return;
+          queuePatch(streamMarketId, {
+            bestBid: asNumber((row as { bestBid?: number | null }).bestBid),
+            bestAsk: asNumber((row as { bestAsk?: number | null }).bestAsk),
+            mid: asNumber((row as { mid?: number | null }).mid),
+            lastTradePrice: asNumber((row as { lastTradePrice?: number | null }).lastTradePrice),
+            lastTradeSize: asNumber((row as { lastTradeSize?: number | null }).lastTradeSize),
+            rolling24hVolume: asNumber((row as { rolling24hVolume?: number | null }).rolling24hVolume),
+            openInterest: asNumber((row as { openInterest?: number | null }).openInterest),
+            liveUpdatedAt:
+              typeof (row as { liveUpdatedAt?: string | null }).liveUpdatedAt === "string"
+                ? (row as { liveUpdatedAt?: string | null }).liveUpdatedAt
+                : null,
+          });
+        } catch {
+          // Best-effort fallback refresh only.
+        }
+      };
+
+      void refreshFromApi();
+      timer = setInterval(() => {
+        void refreshFromApi();
+      }, 2_000);
+
+      return () => {
+        stopped = true;
+        if (timer) clearInterval(timer);
+      };
+    };
+
     if (ENABLE_UPSTASH_STREAM) {
       let fallbackActive = false;
       let stopSupabaseFallback: (() => void) | null = null;
@@ -2238,7 +2381,7 @@ export default function HomePage() {
         if (fallbackActive) return;
         fallbackActive = true;
         incrementClientCounter("market.realtime.selected.channelRecovery");
-        stopSupabaseFallback = startPolymarketSupabaseFallback();
+        stopSupabaseFallback = startSelectedMarketFallback();
       };
 
       return () => {
@@ -2249,7 +2392,7 @@ export default function HomePage() {
       };
     }
 
-    const stopSupabaseFallback = startPolymarketSupabaseFallback();
+    const stopSupabaseFallback = startSelectedMarketFallback();
     return () => {
       if (flushTimer) clearTimeout(flushTimer);
       pendingPatches.clear();
@@ -2259,7 +2402,7 @@ export default function HomePage() {
 
   const goToView = useCallback(
     (view: ViewType) => {
-      // UX: when switching tabs (bottom nav or swipe), always start at the top.
+      // UX: when switching tabs (bottom nav), always start at the top.
       if (typeof window !== "undefined") {
         const scrollToTop = () => {
           // Body is non-scrollable in Telegram; our scroll container is `.tg-scroll`.
@@ -2287,41 +2430,6 @@ export default function HomePage() {
     },
     [loadLeaderboard, loadMarkets, navigateToViewUrl]
   );
-
-  const handleShellTouchStart = useCallback((e: TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length !== 1) return;
-    const rawTarget = e.target;
-    if (rawTarget instanceof HTMLElement && rawTarget.closest('[data-swipe-ignore="true"]')) {
-      return;
-    }
-    const t = e.touches[0];
-    if (!t) return;
-    shellSwipeStartRef.current = { x: t.clientX, y: t.clientY };
-  }, []);
-
-  const handleShellTouchEnd = useCallback((e: TouchEvent<HTMLDivElement>) => {
-    const start = shellSwipeStartRef.current;
-    shellSwipeStartRef.current = null;
-    if (!start) return;
-    const t = e.changedTouches[0];
-    if (!t) return;
-
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-
-    // Only treat as page swipe if mostly horizontal and large enough.
-    if (absX < 60 || absX < absY * 1.2) return;
-
-    const order: ViewType[] = ["FRIENDS", "CATALOG", "FEED", "PROFILE"];
-    const idx = Math.max(0, order.indexOf(currentView));
-    const nextIdx = dx < 0 ? Math.min(order.length - 1, idx + 1) : Math.max(0, idx - 1);
-    const next = order[nextIdx] ?? currentView;
-    if (next !== currentView) {
-      goToView(next);
-    }
-  }, [currentView, goToView]);
 
   useEffect(() => {
     if (!selectedMarketId) {
@@ -3319,22 +3427,6 @@ export default function HomePage() {
     }
   }, [marketContextLoadingId]);
 
-  const shellViewIndex = (() => {
-    switch (currentView) {
-      case "FRIENDS":
-        return 0;
-      case "CATALOG":
-        return 1;
-      case "FEED":
-        return 2;
-      case "PROFILE":
-        return 3;
-      default:
-        return 1;
-    }
-  })();
-
-
   return (
     <div className="tg-scroll bg-black text-zinc-100 font-sans">
       {selectedMarket ? (
@@ -3449,18 +3541,11 @@ export default function HomePage() {
             onToggleLang={handleToggleLang}
           />
 
-          <main
-            className="mx-auto w-full max-w-7xl pb-32 pb-safe"
-            onTouchStart={handleShellTouchStart}
-            onTouchEnd={handleShellTouchEnd}
-          >
+          <main className="mx-auto w-full max-w-7xl pb-32 pb-safe">
             <div className="overflow-x-hidden">
-              <div
-                className="flex w-[400%] transition-transform duration-200 ease-out will-change-transform"
-                style={{ transform: `translateX(-${shellViewIndex * 25}%)` }}
-              >
+              <div className="w-full">
                 {/* FRIENDS */}
-                <div className="w-1/4">
+                <div className={currentView === "FRIENDS" ? "w-full" : "hidden"}>
                   <FriendsPage
                     lang={lang}
                     user={user}
@@ -3480,7 +3565,7 @@ export default function HomePage() {
                 </div>
 
                 {/* CATALOG */}
-                <div className="w-1/4">
+                <div className={currentView === "CATALOG" ? "w-full" : "hidden"}>
                   <div>
                     {/* Mobile search (desktop search is in Header) */}
                     <div className="px-4 pt-2 pb-3 md:hidden">
@@ -3548,6 +3633,12 @@ export default function HomePage() {
                               onClick={() => {
                                 setCatalogPage(1);
                                 setActiveProviderFilter(provider.id);
+                                if (typeof window !== "undefined" && currentView === "CATALOG") {
+                                  const nextPath = getCatalogPathForProvider(provider.id);
+                                  if (window.location.pathname !== nextPath) {
+                                    window.history.pushState({ view: "CATALOG" }, "", `${nextPath}${window.location.search}`);
+                                  }
+                                }
                               }}
                               className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
@@ -3644,7 +3735,7 @@ export default function HomePage() {
                 </div>
 
                 {/* MY BETS (formerly FEED) */}
-                <div className="w-1/4">
+                <div className={currentView === "FEED" ? "w-full" : "hidden"}>
                   <div>
                     {user && bookmarkedMarkets.length > 0 && (
                       <>
@@ -3724,7 +3815,7 @@ export default function HomePage() {
                 </div>
 
                 {/* PROFILE */}
-                <div className="w-1/4">
+                <div className={currentView === "PROFILE" ? "w-full" : "hidden"}>
                   <ProfilePage
                     key={`profile-${user?.id ?? "anon"}`}
                     user={user}

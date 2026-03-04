@@ -30,6 +30,9 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
   const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
   const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
+  const vol24Label = '24h';
+  const volumeBase = market.volume;
+  const volume24h = market.volume24h ?? '—';
   const categoryLabel =
     lang === "RU"
       ? market.categoryLabelRu ?? market.categoryLabelEn
@@ -96,7 +99,10 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
               </>
             )}
             <span className="uppercase tracking-wider">{volLabel}</span>
-            <span className="text-zinc-400">{market.volume}</span>
+            <span className="text-zinc-400">{volumeBase}</span>
+            <span className="text-zinc-700">•</span>
+            <span className="uppercase tracking-wider">{vol24Label}</span>
+            <span className="text-zinc-400">{volume24h}</span>
             <span className="ml-auto flex items-center gap-1">
               {isUrgentCountdown ? (
                 <span className="relative inline-flex h-2.5 w-2.5">

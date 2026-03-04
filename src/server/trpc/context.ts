@@ -29,8 +29,10 @@ export const createContext = async (opts: { req: Request }) => {
   // We fall back to the user client in that case. Procedures that truly require service-role
   // privileges will still fail with a clear DB/RLS error, but the app stays usable for public pages.
   let supabaseService: SupabaseClient<Database, "public"> = supabase;
+  let hasServiceRole = false;
   try {
     supabaseService = getSupabaseServiceClient();
+    hasServiceRole = true;
   } catch (err) {
     console.warn("Supabase service client unavailable; falling back to anon/user client.", err);
   }
@@ -82,6 +84,7 @@ export const createContext = async (opts: { req: Request }) => {
   return {
     supabase,
     supabaseService,
+    hasServiceRole,
     req: opts.req,
     cookies,
     responseHeaders,

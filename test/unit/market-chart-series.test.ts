@@ -205,7 +205,7 @@ describe("buildMarketChartSeries", () => {
     expect(first.data.map((row) => row.ts)).toEqual(second.data.map((row) => row.ts));
   });
 
-  test("binary series seeds from creation timestamp when candle history is empty", () => {
+  test("binary series stays empty when candle history is empty", () => {
     const series = buildMarketChartSeries({
       priceCandles: [],
       market: baseMarket({
@@ -218,8 +218,6 @@ describe("buildMarketChartSeries", () => {
 
     expect(series.mode).toBe("binary");
     if (series.mode !== "binary") return;
-    expect(series.data.length).toBe(1);
-    expect(series.data[0]?.ts).toBe(Date.parse("2026-03-03T10:00:00.000Z"));
-    expect(series.data[0]?.close).toBe(67);
+    expect(series.data.length).toBe(0);
   });
 });
