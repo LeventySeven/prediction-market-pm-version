@@ -141,6 +141,9 @@ const priceCandleOutput = z.object({
   tradesCount: z.number(),
 });
 
+const candleIntervalSchema = z.enum(["1m", "1h"]);
+type CandleInterval = z.infer<typeof candleIntervalSchema>;
+
 const publicTradeOutput = z.object({
   id: z.string(),
   marketId: z.string(),
@@ -264,7 +267,10 @@ const relaySignedOrderOutput = z.object({
 });
 
 const CATEGORY_ROWS_CACHE_TTL_MS = Math.max(10_000, Number(process.env.MARKET_CATEGORIES_CACHE_TTL_MS ?? 60_000));
-let cachedCategoryRows: { expiresAt: number; rows: Array<z.infer<typeof marketCategoryOutput>> } | null = null;
+const cachedCategoryRowsByProviderKey = new Map<
+  string,
+  { expiresAt: number; rows: Array<z.infer<typeof marketCategoryOutput>> }
+>();
 
 const normalizeCategoryLabel = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -831,6 +837,23 @@ const isPolymarketWorkerFresh = async (
   }
 
   try {
+    const providerState = await (supabaseService as any)
+      .from("provider_sync_state")
+      .select("last_success_at")
+      .eq("provider", "polymarket")
+      .eq("scope", "open")
+      .maybeSingle();
+
+    const syncIso = String(providerState.data?.last_success_at ?? "").trim() || null;
+    if (isTimestampFresh(syncIso, POLYMARKET_WORKER_STALE_AFTER_MS, now)) {
+      polymarketWorkerFreshnessSnapshot = { checkedAt: now, isFresh: true };
+      return true;
+    }
+  } catch {
+    // Continue to table-based fallbacks.
+  }
+
+  try {
     const liveHead = await supabaseService
       .from("polymarket_market_live")
       .select("source_ts")
@@ -1258,25 +1281,33 @@ const listCanonicalCandles = async (
   supabaseService: SupabaseServiceClient,
   marketRefId: string,
   limit: number,
-  outcomeKey = "__market__"
+  outcomeKey: string | null = "__market__"
 ): Promise<Array<z.infer<typeof priceCandleOutput>>> => {
   if (!marketRefId) return [];
 
-  const { data, error } = await (supabaseService as any)
+  let query = (supabaseService as any)
     .from("market_candles_1m")
-    .select("bucket_start, open, high, low, close, volume, trades_count")
+    .select("bucket_start, outcome_key, open, high, low, close, volume, trades_count")
     .eq("market_id", marketRefId)
-    .eq("outcome_key", outcomeKey)
     .order("bucket_start", { ascending: false })
     .limit(limit);
+
+  if (typeof outcomeKey === "string" && outcomeKey.trim().length > 0) {
+    query = query.eq("outcome_key", outcomeKey.trim());
+  }
+
+  const { data, error } = await query;
 
   if (error || !Array.isArray(data) || data.length === 0) return [];
 
   return [...data]
     .reverse()
-    .map((row: Record<string, unknown>) => ({
+    .map((row: Record<string, unknown>) => {
+      const candleOutcomeKey = String(row.outcome_key ?? "").trim();
+      const outcomeId = candleOutcomeKey.length > 0 && candleOutcomeKey !== "__market__" ? candleOutcomeKey : null;
+      return {
       bucket: new Date(String(row.bucket_start ?? new Date().toISOString())).toISOString(),
-      outcomeId: null,
+      outcomeId,
       outcomeTitle: null,
       outcomeColor: null,
       open: Number(row.open ?? 0),
@@ -1285,7 +1316,8 @@ const listCanonicalCandles = async (
       close: Number(row.close ?? 0),
       volume: Number(row.volume ?? 0),
       tradesCount: Number(row.trades_count ?? 0),
-    }))
+      };
+    })
     .filter(
       (row) =>
         Number.isFinite(row.open) &&
@@ -1305,10 +1337,19 @@ const CANDLE_MIN_SPAN_MS_FOR_COVERAGE = Math.max(
   60 * 60 * 1000,
   Number(process.env.CANDLE_MIN_SPAN_MS_FOR_COVERAGE ?? 12 * 60 * 60 * 1000)
 );
-const CANDLE_DAILY_RESOLUTION_SPAN_MS = Math.max(
-  24 * 60 * 60 * 1000,
-  Number(process.env.CANDLE_DAILY_RESOLUTION_SPAN_MS ?? 7 * 24 * 60 * 60 * 1000)
+const CANDLE_MIN_POINTS_FOR_1M_COVERAGE = Math.max(
+  10,
+  Number(process.env.CANDLE_MIN_POINTS_FOR_1M_COVERAGE ?? 60)
 );
+const CANDLE_MIN_SPAN_MS_FOR_1M_COVERAGE = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.CANDLE_MIN_SPAN_MS_FOR_1M_COVERAGE ?? 30 * 60 * 1000)
+);
+
+const CANDLE_RESOLUTION_MS: Record<CandleInterval, number> = {
+  "1m": 60 * 1000,
+  "1h": 60 * 60 * 1000,
+};
 
 const candleTs = (row: PriceCandleRow): number => Date.parse(String(row.bucket));
 
@@ -1324,14 +1365,18 @@ const candleSpanMs = (rows: PriceCandleRow[]): number => {
   return Math.max(0, last - first);
 };
 
-const isSparseCandleCoverage = (rows: PriceCandleRow[]): boolean =>
-  rows.length < CANDLE_MIN_POINTS_FOR_COVERAGE || candleSpanMs(rows) < CANDLE_MIN_SPAN_MS_FOR_COVERAGE;
-
-const selectCandleResolutionMs = (rows: PriceCandleRow[]): number => {
-  const span = candleSpanMs(rows);
-  if (span >= CANDLE_DAILY_RESOLUTION_SPAN_MS) return 24 * 60 * 60 * 1000;
-  return 60 * 60 * 1000;
+const isSparseCandleCoverage = (rows: PriceCandleRow[], interval: CandleInterval): boolean => {
+  if (interval === "1m") {
+    return (
+      rows.length < CANDLE_MIN_POINTS_FOR_1M_COVERAGE ||
+      candleSpanMs(rows) < CANDLE_MIN_SPAN_MS_FOR_1M_COVERAGE
+    );
+  }
+  return rows.length < CANDLE_MIN_POINTS_FOR_COVERAGE || candleSpanMs(rows) < CANDLE_MIN_SPAN_MS_FOR_COVERAGE;
 };
+
+const selectCandleResolutionMs = (interval: CandleInterval): number =>
+  CANDLE_RESOLUTION_MS[interval];
 
 const aggregateCandles = (
   rows: PriceCandleRow[],
@@ -1381,7 +1426,8 @@ const aggregateCandles = (
 
 const normalizeCandlesForChart = (
   rows: PriceCandleRow[],
-  limit: number
+  limit: number,
+  interval: CandleInterval
 ): PriceCandleRow[] => {
   if (rows.length === 0) return [];
   const sorted = [...rows]
@@ -1395,7 +1441,7 @@ const normalizeCandlesForChart = (
     )
     .sort((a, b) => candleTs(a) - candleTs(b));
   if (sorted.length === 0) return [];
-  const resolutionMs = selectCandleResolutionMs(sorted);
+  const resolutionMs = selectCandleResolutionMs(interval);
   const aggregated = aggregateCandles(sorted, resolutionMs);
   return aggregated.slice(Math.max(0, aggregated.length - limit));
 };
@@ -1408,6 +1454,108 @@ const pickBetterCandleSet = (a: PriceCandleRow[], b: PriceCandleRow[]): PriceCan
   if (bSpan > aSpan) return b;
   if (aSpan > bSpan) return a;
   return b.length > a.length ? b : a;
+};
+
+const BASELINE_CANDLE_POINTS_MIN_BY_INTERVAL: Record<CandleInterval, number> = {
+  "1m": 60,
+  "1h": 16,
+};
+const BASELINE_CANDLE_POINTS_MAX_BY_INTERVAL: Record<CandleInterval, number> = {
+  "1m": 360,
+  "1h": 72,
+};
+
+const buildBaselineBuckets = (limit: number, interval: CandleInterval): string[] => {
+  const points = Math.max(
+    BASELINE_CANDLE_POINTS_MIN_BY_INTERVAL[interval],
+    Math.min(BASELINE_CANDLE_POINTS_MAX_BY_INTERVAL[interval], limit)
+  );
+  const now = Date.now();
+  const resolutionMs = CANDLE_RESOLUTION_MS[interval];
+  const alignedNow = Math.floor(now / resolutionMs) * resolutionMs;
+  const firstTs = alignedNow - (points - 1) * resolutionMs;
+  return Array.from({ length: points }, (_, idx) =>
+    new Date(firstTs + idx * resolutionMs).toISOString()
+  );
+};
+
+const buildFlatBaselineCandles = (
+  limit: number,
+  price: number,
+  outcomeId: string | null,
+  outcomeTitle: string | null,
+  interval: CandleInterval
+): PriceCandleRow[] => {
+  const safePrice = clamp01(Number.isFinite(price) ? price : 0.5);
+  return buildBaselineBuckets(limit, interval).map((bucket) => ({
+    bucket,
+    outcomeId,
+    outcomeTitle,
+    outcomeColor: null,
+    open: safePrice,
+    high: safePrice,
+    low: safePrice,
+    close: safePrice,
+    volume: 0,
+    tradesCount: 0,
+  }));
+};
+
+const pickYesLikeOutcome = <T extends { title?: string | null; sortOrder?: number | null }>(
+  outcomes: T[]
+): T | null => {
+  if (outcomes.length === 0) return null;
+  const yesByTitle =
+    outcomes.find((outcome) => String(outcome.title ?? "").trim().toLowerCase() === "yes") ??
+    outcomes.find((outcome) => String(outcome.title ?? "").trim().toLowerCase().includes("yes")) ??
+    null;
+  if (yesByTitle) return yesByTitle;
+  const bySort = outcomes
+    .filter((outcome) => Number.isFinite(Number(outcome.sortOrder ?? 0)))
+    .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0))[0];
+  return bySort ?? outcomes[0] ?? null;
+};
+
+const buildBaselineCandlesFromPolymarketMarket = (
+  market: PolymarketMarket,
+  limit: number,
+  interval: CandleInterval
+): PriceCandleRow[] => {
+  const outcomes = market.outcomes.filter(
+    (outcome) => Number.isFinite(outcome.price)
+  );
+  if (outcomes.length === 0) {
+    return buildFlatBaselineCandles(limit, 0.5, null, null, interval);
+  }
+  if (outcomes.length > 2) {
+    return outcomes.flatMap((outcome) =>
+      buildFlatBaselineCandles(limit, outcome.price, outcome.id, outcome.title, interval)
+    );
+  }
+  const yesOutcome = pickYesLikeOutcome(outcomes);
+  const yesPrice = yesOutcome ? yesOutcome.price : outcomes[0]?.price ?? 0.5;
+  return buildFlatBaselineCandles(limit, yesPrice, null, null, interval);
+};
+
+const buildBaselineCandlesFromVenueMarket = (
+  market: VenueMarket,
+  limit: number,
+  interval: CandleInterval
+): PriceCandleRow[] => {
+  const outcomes = market.outcomes.filter((outcome) =>
+    Number.isFinite(outcome.price)
+  );
+  if (outcomes.length === 0) {
+    return buildFlatBaselineCandles(limit, 0.5, null, null, interval);
+  }
+  if (outcomes.length > 2) {
+    return outcomes.flatMap((outcome) =>
+      buildFlatBaselineCandles(limit, outcome.price, outcome.id, outcome.title, interval)
+    );
+  }
+  const yesOutcome = pickYesLikeOutcome(outcomes);
+  const yesPrice = yesOutcome ? yesOutcome.price : outcomes[0]?.price ?? 0.5;
+  return buildFlatBaselineCandles(limit, yesPrice, null, null, interval);
 };
 
 export const __marketRouterTestUtils = {
@@ -1810,80 +1958,117 @@ const buildL2Signature = (
     .replace(/\//g, "_");
 };
 
-const loadDynamicPolymarketCategoryRows = async (
-  supabaseService: unknown
+const buildProviderSelectionCacheKey = (providers: VenueProvider[]): string => {
+  const deduped = Array.from(new Set(providers));
+  return deduped.sort().join(",") || "none";
+};
+
+const collectCategoryValuesFromRows = (
+  categories: Map<string, string>,
+  rows: unknown[] | null | undefined,
+  column: string
+) => {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    const rec = asObject(row);
+    if (!rec) continue;
+    addCategoryValue(categories, rec[column]);
+  }
+};
+
+const loadDynamicCategoryRows = async (
+  supabaseService: unknown,
+  providers: VenueProvider[]
 ): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
   const categories = new Map<string, string>();
-  const collectFromRows = (rows: unknown[] | null | undefined, column: string) => {
-    if (!Array.isArray(rows)) return;
-    for (const row of rows) {
-      const rec = asObject(row);
-      if (!rec) continue;
-      addCategoryValue(categories, rec[column]);
-    }
-  };
+  const selectedProviders = Array.from(new Set(providers));
 
-  if (supabaseService) {
+  if (supabaseService && selectedProviders.length > 0) {
+    await Promise.all(
+      selectedProviders.map(async (provider) => {
+        try {
+          const { data, error } = await (supabaseService as any)
+            .from("market_catalog")
+            .select("category")
+            .eq("provider", provider)
+            .eq("state", "open")
+            .not("category", "is", null)
+            .order("source_updated_at", { ascending: false })
+            .limit(5000);
+          if (!error) {
+            collectCategoryValuesFromRows(categories, data, "category");
+          }
+        } catch {
+          // Continue with fallback sources.
+        }
+      })
+    );
+  }
+
+  if (supabaseService && selectedProviders.includes("polymarket")) {
     try {
       const { data, error } = await (supabaseService as any)
-        .from("market_catalog")
+        .from("polymarket_market_cache")
         .select("category")
-        .eq("provider", "polymarket")
         .eq("state", "open")
         .not("category", "is", null)
         .order("source_updated_at", { ascending: false })
         .limit(5000);
       if (!error) {
-        collectFromRows(data, "category");
+        collectCategoryValuesFromRows(categories, data, "category");
       }
     } catch {
-      // Continue with fallback sources.
-    }
-
-    if (categories.size === 0) {
-      try {
-        const { data, error } = await (supabaseService as any)
-          .from("polymarket_market_cache")
-          .select("category")
-          .eq("state", "open")
-          .not("category", "is", null)
-          .order("source_updated_at", { ascending: false })
-          .limit(5000);
-        if (!error) {
-          collectFromRows(data, "category");
-        }
-      } catch {
-        // Continue with API fallback.
-      }
+      // Continue with adapter/API fallback.
     }
   }
 
   if (categories.size === 0) {
-    try {
-      const liveMarkets = await listPolymarketMarkets(500, { hydrateMidpoints: false });
-      for (const market of liveMarkets) {
-        addCategoryValue(categories, market.category);
-      }
-    } catch {
-      // Best-effort fallback.
-    }
+    await Promise.all(
+      selectedProviders.map(async (provider) => {
+        if (provider === "polymarket") {
+          try {
+            const liveMarkets = await listPolymarketMarkets(500, { hydrateMidpoints: false });
+            for (const market of liveMarkets) {
+              addCategoryValue(categories, market.category);
+            }
+          } catch {
+            // Best-effort fallback.
+          }
+          return;
+        }
+
+        try {
+          const adapter = getVenueAdapter(provider);
+          if (!adapter.isEnabled()) return;
+          const snapshot = await adapter.listMarketsSnapshot({ onlyOpen: true, limit: 600 });
+          for (const market of snapshot) {
+            addCategoryValue(categories, market.category);
+          }
+        } catch {
+          // Best-effort fallback.
+        }
+      })
+    );
   }
 
   return sortCategoryRows(categories);
 };
 
-const getCachedDynamicPolymarketCategoryRows = async (
-  supabaseService: unknown
+const getCachedDynamicCategoryRows = async (
+  supabaseService: unknown,
+  providers: VenueProvider[]
 ): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
   const now = Date.now();
-  if (cachedCategoryRows && cachedCategoryRows.expiresAt > now) {
-    return cachedCategoryRows.rows;
+  const cacheKey = buildProviderSelectionCacheKey(providers);
+  const cached = cachedCategoryRowsByProviderKey.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.rows;
   }
-  const rows = await loadDynamicPolymarketCategoryRows(supabaseService);
-  cachedCategoryRows = {
+  const rows = await loadDynamicCategoryRows(supabaseService, providers);
+  cachedCategoryRowsByProviderKey.set(cacheKey, {
     rows,
     expiresAt: now + CATEGORY_ROWS_CACHE_TTL_MS,
-  };
+  });
   return rows;
 };
 
@@ -2018,10 +2203,24 @@ const finalizeRelayAudit = async (
 };
 
 export const marketRouter = router({
-  listCategories: publicProcedure.output(z.array(marketCategoryOutput)).query(async ({ ctx }) => {
-    const rows = await getCachedDynamicPolymarketCategoryRows(ctx.supabaseService);
-    return rows;
-  }),
+  listCategories: publicProcedure
+    .input(
+      z
+        .object({
+          providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
+          providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
+        })
+        .optional()
+    )
+    .output(z.array(marketCategoryOutput))
+    .query(async ({ ctx, input }) => {
+      const selectedProviders = parseProviderSelection({
+        providers: input?.providers,
+        providerFilter: input?.providerFilter,
+      });
+      const rows = await getCachedDynamicCategoryRows(ctx.supabaseService, selectedProviders);
+      return rows;
+    }),
 
   listMarkets: publicProcedure
     .input(
@@ -2785,6 +2984,7 @@ export const marketRouter = router({
       z.object({
         marketId: z.string().min(1),
         provider: z.enum(["polymarket", "limitless"]).optional(),
+        interval: candleIntervalSchema.optional().default("1h"),
         limit: z.number().int().positive().max(20000).optional(),
       })
     )
@@ -2794,8 +2994,15 @@ export const marketRouter = router({
       incrementRealtimeMetricCounter("trpc.market.getPriceCandles.calls");
       try {
         const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+        const interval: CandleInterval = input.interval ?? "1h";
         const limit = Math.max(1, Math.min(input.limit ?? 200, 20_000));
-        const rawLimit = Math.min(20_000, Math.max(limit * 4, 4_000));
+        const rawLimit = Math.min(
+          20_000,
+          Math.max(
+            interval === "1h" ? limit * 90 : limit * 4,
+            interval === "1h" ? 8_000 : 4_000
+          )
+        );
 
         if (ref.provider === "polymarket") {
           let cachedCandles: PriceCandleRow[] = [];
@@ -2807,25 +3014,56 @@ export const marketRouter = router({
           if (marketRefId) {
             const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
             if (canonical.length > 0) {
-              const normalizedCanonical = normalizeCandlesForChart(canonical, limit);
-              if (!isSparseCandleCoverage(normalizedCanonical)) return normalizedCanonical;
+              const normalizedCanonical = normalizeCandlesForChart(canonical, limit, interval);
+              if (interval === "1m" && !isSparseCandleCoverage(normalizedCanonical, interval)) {
+                return normalizedCanonical;
+              }
               cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
             }
           }
 
           const localCandles = await listLocalCandles(ctx.supabaseService, ref.providerMarketId, rawLimit);
           if (localCandles.length > 0) {
-            const normalizedLocal = normalizeCandlesForChart(localCandles, limit);
-            if (!isSparseCandleCoverage(normalizedLocal)) return normalizedLocal;
+            const normalizedLocal = normalizeCandlesForChart(localCandles, limit, interval);
+            if (interval === "1m" && !isSparseCandleCoverage(normalizedLocal, interval)) {
+              return normalizedLocal;
+            }
             cachedCandles = pickBetterCandleSet(cachedCandles, normalizedLocal);
           }
 
           const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-          if (!market) return cachedCandles;
+          if (!market) {
+            return cachedCandles.length > 0
+              ? cachedCandles
+              : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
+          }
+
+          if (marketRefId && market.outcomes.length > 2) {
+            const canonicalOutcomeRows = await listCanonicalCandles(
+              ctx.supabaseService,
+              marketRefId,
+              rawLimit,
+              null
+            );
+            if (canonicalOutcomeRows.length > 0) {
+              const normalizedByOutcome = normalizeCandlesForChart(
+                canonicalOutcomeRows,
+                limit,
+                interval
+              );
+              if (normalizedByOutcome.some((row) => Boolean(row.outcomeId))) {
+                if (interval === "1m" && !isSparseCandleCoverage(normalizedByOutcome, interval)) {
+                  return normalizedByOutcome;
+                }
+                cachedCandles = pickBetterCandleSet(cachedCandles, normalizedByOutcome);
+              }
+            }
+          }
 
           const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
           if (withToken.length === 0) {
-            return cachedCandles;
+            const baseline = buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
+            return pickBetterCandleSet(cachedCandles, baseline);
           }
 
           const isBinary = market.outcomes.length <= 2;
@@ -2839,7 +3077,7 @@ export const marketRouter = router({
           const histories = await Promise.all(
             targetOutcomes.map(async (o) => ({
               outcome: o,
-              history: await getPolymarketPriceHistory(String(o.tokenId)),
+              history: await getPolymarketPriceHistory(String(o.tokenId), { interval }),
             }))
           );
 
@@ -2869,9 +3107,14 @@ export const marketRouter = router({
               });
             })
             .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
-          if (candles.length === 0) return cachedCandles;
-          const normalizedHistory = normalizeCandlesForChart(candles, limit);
-          return pickBetterCandleSet(cachedCandles, normalizedHistory);
+          if (candles.length === 0) {
+            const baseline = buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
+            return pickBetterCandleSet(cachedCandles, baseline);
+          }
+          const normalizedHistory = normalizeCandlesForChart(candles, limit, interval);
+          const best = pickBetterCandleSet(cachedCandles, normalizedHistory);
+          if (best.length > 0) return best;
+          return buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
         }
 
         const adapter = getVenueAdapter(ref.provider);
@@ -2885,20 +3128,55 @@ export const marketRouter = router({
         if (marketRefId) {
           const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
           if (canonical.length > 0) {
-            const normalizedCanonical = normalizeCandlesForChart(canonical, limit);
-            if (!isSparseCandleCoverage(normalizedCanonical)) return normalizedCanonical;
+            const normalizedCanonical = normalizeCandlesForChart(canonical, limit, interval);
+            if (interval === "1m" && !isSparseCandleCoverage(normalizedCanonical, interval)) {
+              return normalizedCanonical;
+            }
             cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
           }
         }
 
-        if (!adapter.isEnabled()) return cachedCandles;
+        if (!adapter.isEnabled()) {
+          return cachedCandles.length > 0
+            ? cachedCandles
+            : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
+        }
 
         const market = await adapter.getMarketById(ref.providerMarketId);
-        if (!market) return cachedCandles;
+        if (!market) {
+          return cachedCandles.length > 0
+            ? cachedCandles
+            : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
+        }
 
-        const history = await adapter.getPriceHistory(market, Math.max(limit * 6, 720));
+        if (marketRefId && market.outcomes.length > 2) {
+          const canonicalOutcomeRows = await listCanonicalCandles(
+            ctx.supabaseService,
+            marketRefId,
+            rawLimit,
+            null
+          );
+          if (canonicalOutcomeRows.length > 0) {
+            const normalizedByOutcome = normalizeCandlesForChart(
+              canonicalOutcomeRows,
+              limit,
+              interval
+            );
+            if (normalizedByOutcome.some((row) => Boolean(row.outcomeId))) {
+              if (interval === "1m" && !isSparseCandleCoverage(normalizedByOutcome, interval)) {
+                return normalizedByOutcome;
+              }
+              cachedCandles = pickBetterCandleSet(cachedCandles, normalizedByOutcome);
+            }
+          }
+        }
+
+        const history = await adapter.getPriceHistory(market, Math.max(limit * 6, 720), {
+          interval,
+        });
         if (history.length === 0) {
-          return cachedCandles;
+          const baseline = buildBaselineCandlesFromVenueMarket(market, limit, interval);
+          return pickBetterCandleSet(cachedCandles, baseline);
         }
 
         const deduped = history
@@ -2923,8 +3201,10 @@ export const marketRouter = router({
             tradesCount: 0,
           };
         });
-        const normalizedHistory = normalizeCandlesForChart(candles, limit);
-        return pickBetterCandleSet(cachedCandles, normalizedHistory);
+        const normalizedHistory = normalizeCandlesForChart(candles, limit, interval);
+        const best = pickBetterCandleSet(cachedCandles, normalizedHistory);
+        if (best.length > 0) return best;
+        return buildBaselineCandlesFromVenueMarket(market, limit, interval);
       } finally {
         recordRealtimeMetricTiming("trpc.market.getPriceCandles.ms", Date.now() - startedAt);
       }

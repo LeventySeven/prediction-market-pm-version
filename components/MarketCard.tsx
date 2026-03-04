@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Market } from '../types';
 import { Clock } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
@@ -30,9 +30,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
   const noLabel = lang === 'RU' ? 'Нет' : 'No';
   const chanceLabel = lang === 'RU' ? 'Вероятность' : 'Chance';
   const volLabel = lang === 'RU' ? 'Объем' : 'Vol';
-  const vol24Label = '24h';
   const volumeBase = market.volume;
-  const volume24h = market.volume24h ?? '—';
   const categoryLabel =
     lang === "RU"
       ? market.categoryLabelRu ?? market.categoryLabelEn
@@ -53,6 +51,18 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
   const timeLeft = isResolved
     ? (lang === 'RU' ? 'Завершено' : 'Resolved')
     : (deadline ? formatTimeRemaining(deadline, isUrgentCountdown ? 'minutes' : 'hours', lang) : '—');
+  const prevChanceRef = useRef(displayChance);
+  const [chanceBump, setChanceBump] = useState(false);
+
+  useEffect(() => {
+    if (prevChanceRef.current !== displayChance) {
+      prevChanceRef.current = displayChance;
+      setChanceBump(true);
+      const timer = setTimeout(() => setChanceBump(false), 260);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [displayChance]);
 
   return (
     <div 
@@ -100,9 +110,6 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
             )}
             <span className="uppercase tracking-wider">{volLabel}</span>
             <span className="text-zinc-400">{volumeBase}</span>
-            <span className="text-zinc-700">•</span>
-            <span className="uppercase tracking-wider">{vol24Label}</span>
-            <span className="text-zinc-400">{volume24h}</span>
             <span className="ml-auto flex items-center gap-1">
               {isUrgentCountdown ? (
                 <span className="relative inline-flex h-2.5 w-2.5">
@@ -123,7 +130,11 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
       {/* Main Stats: Chance Bar */}
       <div className="mt-auto">
         <div className="flex items-end justify-between mb-2">
-          <span className="text-2xl font-bold text-zinc-100 leading-none tracking-tight tabular-nums">
+          <span
+            className={`text-2xl font-bold text-zinc-100 leading-none tracking-tight tabular-nums transition-transform duration-200 ${
+              chanceBump ? "scale-105" : "scale-100"
+            }`}
+          >
             {displayChance}%
           </span>
           <span className="text-[11px] text-zinc-500 font-medium uppercase tracking-wide">
@@ -134,7 +145,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
         {/* Probability color follows market tilt: >50% YES is green */}
         <div className="w-full h-1.5 bg-white/10 rounded-full mb-3 overflow-hidden">
           <div
-            className={isAboveMidpoint ? "h-full bg-[rgba(190,255,29,1)]" : "h-full bg-[rgba(245,68,166,0.85)]"}
+            className={`${isAboveMidpoint ? "h-full bg-[rgba(190,255,29,1)]" : "h-full bg-[rgba(245,68,166,0.85)]"} transition-[width] duration-300 ease-out`}
             style={{ width: `${displayChance}%` }}
           />
         </div>

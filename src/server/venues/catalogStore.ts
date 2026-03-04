@@ -294,15 +294,22 @@ export const upsertProviderSyncState = async (
 ): Promise<void> => {
   if (!supabaseService) return;
 
-  await (supabaseService as any).from("provider_sync_state").upsert(
-    {
-      provider: payload.provider,
-      scope: payload.scope,
-      last_started_at: payload.startedAt ?? null,
-      last_success_at: payload.successAt ?? null,
-      last_error: payload.errorMessage ?? null,
-      updated_at: toNowIso(),
-    },
-    { onConflict: "provider,scope" }
-  );
+  const row: Record<string, unknown> = {
+    provider: payload.provider,
+    scope: payload.scope,
+    updated_at: toNowIso(),
+  };
+  if (payload.startedAt !== undefined) {
+    row.last_started_at = payload.startedAt;
+  }
+  if (payload.successAt !== undefined) {
+    row.last_success_at = payload.successAt;
+  }
+  if (payload.errorMessage !== undefined) {
+    row.last_error = payload.errorMessage;
+  }
+
+  await (supabaseService as any)
+    .from("provider_sync_state")
+    .upsert(row, { onConflict: "provider,scope" });
 };

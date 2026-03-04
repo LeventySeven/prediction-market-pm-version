@@ -584,19 +584,38 @@ export async function getPolymarketMarketById(marketId: string): Promise<Polymar
 
 export type PolymarketPricePoint = { ts: number; price: number };
 
-export async function getPolymarketPriceHistory(tokenId: string): Promise<PolymarketPricePoint[]> {
+export async function getPolymarketPriceHistory(
+  tokenId: string,
+  options?: { interval?: "1m" | "1h" }
+): Promise<PolymarketPricePoint[]> {
   const clean = tokenId.trim();
   if (!clean) return [];
   const base = getClobBaseUrl();
-  const historyWindows: Array<{ interval: string; fidelity: number }> = [
-    { interval: "max", fidelity: 60 },
-    { interval: "max", fidelity: 15 },
-    { interval: "1w", fidelity: 15 },
-    { interval: "1m", fidelity: 60 },
-  ];
+  const requestedInterval = options?.interval ?? "1h";
+  const historyWindows: Array<{ interval: string; fidelity?: number }> =
+    requestedInterval === "1m"
+      ? [
+          { interval: "1h", fidelity: 1 },
+          { interval: "1m", fidelity: 1 },
+          { interval: "max", fidelity: 1 },
+          { interval: "max", fidelity: 15 },
+        ]
+      : [
+          { interval: "1h" },
+          { interval: "max", fidelity: 60 },
+          { interval: "max", fidelity: 15 },
+          { interval: "1w", fidelity: 15 },
+          { interval: "1m", fidelity: 60 },
+        ];
 
   for (const window of historyWindows) {
-    const url = `${base}/prices-history?market=${encodeURIComponent(clean)}&interval=${window.interval}&fidelity=${window.fidelity}`;
+    const params = new URLSearchParams();
+    params.set("market", clean);
+    params.set("interval", window.interval);
+    if (typeof window.fidelity === "number" && Number.isFinite(window.fidelity)) {
+      params.set("fidelity", String(window.fidelity));
+    }
+    const url = `${base}/prices-history?${params.toString()}`;
     try {
       const res = await fetch(url, { next: { revalidate: 20 } });
       if (!res.ok) continue;

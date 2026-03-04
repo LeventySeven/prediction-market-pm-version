@@ -761,7 +761,7 @@ const snapshotSync = async (mode: "head" | "full") => {
   }
 
   const limit = mode === "head" ? HEAD_SNAPSHOT_LIMIT : SNAPSHOT_LIMIT;
-  const writeSyncState = mode === "full";
+  const writeSyncState = true;
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
 

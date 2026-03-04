@@ -9,6 +9,7 @@ import {
 } from "../polymarket/client";
 import {
   type VenueAdapter,
+  type VenueCandleInterval,
   type VenueMarket,
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
@@ -391,7 +392,11 @@ export const polymarketAdapter: VenueAdapter = {
     const row = await getPolymarketMarketById(marketId);
     return row ? mapPolymarketToVenue(row) : null;
   },
-  getPriceHistory: async (market, limit = 400) => {
+  getPriceHistory: async (
+    market,
+    limit = 400,
+    params?: { interval?: VenueCandleInterval }
+  ) => {
     const yesOutcome =
       market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ?? market.outcomes[0] ?? null;
 
@@ -399,7 +404,9 @@ export const polymarketAdapter: VenueAdapter = {
       return [];
     }
 
-    const rows = await getPolymarketPriceHistory(yesOutcome.providerTokenId);
+    const rows = await getPolymarketPriceHistory(yesOutcome.providerTokenId, {
+      interval: params?.interval ?? "1h",
+    });
     return rows.slice(Math.max(0, rows.length - limit));
   },
   getPublicTrades: async (market, limit = 50) => {

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import {
   type VenueAdapter,
+  type VenueCandleInterval,
   type VenueMarket,
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
@@ -991,15 +992,28 @@ export const limitlessAdapter: VenueAdapter = {
     const mapped = rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
     return mapped.find((m) => m.providerMarketId === clean || m.slug === clean) ?? null;
   },
-  getPriceHistory: async (market, limit = 400) => {
+  getPriceHistory: async (
+    market,
+    limit = 400,
+    params?: { interval?: VenueCandleInterval }
+  ) => {
     const id = encodeURIComponent(market.providerMarketId);
     const safeLimit = Math.max(10, Math.min(limit, 5000));
-    const intervalPlans: Array<{ interval: string; perIntervalLimit: number }> = [
-      { interval: "1h", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
-      { interval: "1d", perIntervalLimit: Math.max(90, Math.min(1500, Math.ceil(safeLimit / 4))) },
-      { interval: "15m", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
-      { interval: "1m", perIntervalLimit: Math.max(240, Math.min(2000, safeLimit)) },
-    ];
+    const requestedInterval = params?.interval ?? "1h";
+    const intervalPlans: Array<{ interval: string; perIntervalLimit: number }> =
+      requestedInterval === "1m"
+        ? [
+            { interval: "1m", perIntervalLimit: Math.max(240, Math.min(2000, safeLimit)) },
+            { interval: "15m", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+            { interval: "1h", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+            { interval: "1d", perIntervalLimit: Math.max(90, Math.min(1500, Math.ceil(safeLimit / 4))) },
+          ]
+        : [
+            { interval: "1h", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+            { interval: "15m", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+            { interval: "1d", perIntervalLimit: Math.max(90, Math.min(1500, Math.ceil(safeLimit / 4))) },
+            { interval: "1m", perIntervalLimit: Math.max(240, Math.min(2000, safeLimit)) },
+          ];
 
     let bestPoints: Array<{ ts: number; price: number }> = [];
     let bestSpan = 0;

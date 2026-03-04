@@ -8,6 +8,13 @@ import type { Database } from "../../../types/database";
 import { verifyPrivyAccessToken } from "../../auth/privy";
 import { assertCsrfForMutation } from "../../security/csrf";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
+import {
+  isPlaceholderDisplayName,
+  isPlaceholderPrivyUsername,
+  isValidUsername,
+  normalizeDisplayName,
+  normalizeUsername,
+} from "../../auth/identity";
 
 const publicColumns =
   "id, email, username, display_name, avatar_url, profile_description, avatar_palette, profile_setup_completed_at, telegram_photo_url, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin, privy_user_id, privy_wallet_address, auth_provider";
@@ -18,16 +25,17 @@ type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 const PRIVY_PLACEHOLDER_DOMAIN = "privy.local";
 const buildPrivyEmail = (privyUserId: string) => `privy_${privyUserId}@${PRIVY_PLACEHOLDER_DOMAIN}`;
 
-const normalizeUsername = (input: string) =>
-  input
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^[_\-.]+|[_\-.]+$/g, "")
-    .slice(0, 32);
-
 const buildPrivyUsername = (privyUserId: string) =>
   normalizeUsername(`privy_${privyUserId}`) || `privy_${randomBytes(4).toString("hex")}`;
+
+const needsProfileSetup = (row: DbUserRow): boolean => {
+  if (row.auth_provider !== "privy") return false;
+  const username = normalizeUsername(String(row.username ?? ""));
+  const displayName = normalizeDisplayName(String(row.display_name ?? ""));
+  const usernameValid = isValidUsername(username) && !isPlaceholderPrivyUsername(username);
+  const displayNameValid = displayName.length >= 2 && !isPlaceholderDisplayName(displayName);
+  return !row.profile_setup_completed_at || !usernameValid || !displayNameValid;
+};
 
 const toPublicUser = (row: DbUserRow): PublicUser => ({
   id: String(row.id),
@@ -37,7 +45,7 @@ const toPublicUser = (row: DbUserRow): PublicUser => ({
   avatarUrl: row.avatar_url ?? null,
   profileDescription: row.profile_description ?? null,
   avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
-  needsProfileSetup: row.auth_provider === "privy" && !row.profile_setup_completed_at,
+  needsProfileSetup: needsProfileSetup(row),
   telegramPhotoUrl: row.telegram_photo_url ?? null,
   referralCode: row.referral_code,
   referralCommissionRate:
@@ -60,6 +68,55 @@ const issueAuthCookie = async (setCookie: (value: string) => void, row: DbUserRo
     isAdmin: Boolean(row.is_admin),
   });
   setCookie(authCookie(token));
+};
+
+const isDuplicateError = (error: { code?: unknown; message?: unknown } | null | undefined): boolean => {
+  const code = String(error?.code ?? "").trim();
+  if (code === "23505") return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return message.includes("duplicate");
+};
+
+const resolvePrivyUserConflict = async (
+  supabaseService: {
+    from: (table: string) => {
+      select: (columns: string) => any;
+      update: (values: Database["public"]["Tables"]["users"]["Update"]) => any;
+    };
+  },
+  identity: { privyUserId: string; walletAddress: string | null; email: string | null }
+): Promise<DbUserRow | null> => {
+  const byPrivy = await supabaseService
+    .from("users")
+    .select(publicColumns)
+    .eq("privy_user_id", identity.privyUserId)
+    .maybeSingle();
+  if (!byPrivy.error && byPrivy.data) {
+    return byPrivy.data as DbUserRow;
+  }
+
+  if (!identity.email) return null;
+
+  const byEmail = await supabaseService
+    .from("users")
+    .select(publicColumns)
+    .eq("email", identity.email)
+    .maybeSingle();
+  if (byEmail.error || !byEmail.data) return null;
+
+  const linked = await supabaseService
+    .from("users")
+    .update({
+      privy_user_id: identity.privyUserId,
+      privy_wallet_address: identity.walletAddress,
+      auth_provider: "privy",
+    } as Database["public"]["Tables"]["users"]["Update"])
+    .eq("id", byEmail.data.id)
+    .select(publicColumns)
+    .single();
+
+  if (linked.error || !linked.data) return null;
+  return linked.data as DbUserRow;
 };
 
 const upsertPrivyUser = async (
@@ -147,12 +204,20 @@ const upsertPrivyUser = async (
     }
 
     lastError = insert.error?.message ?? "PRIVY_USER_INSERT_FAILED";
-    if (!String(lastError).toLowerCase().includes("duplicate")) {
+    if (!isDuplicateError(insert.error as { code?: unknown; message?: unknown })) {
+      break;
+    }
+
+    const recovered = await resolvePrivyUserConflict(supabaseService, identity);
+    if (recovered) {
+      insertedUser = recovered;
       break;
     }
   }
 
   if (!insertedUser) {
+    const recovered = await resolvePrivyUserConflict(supabaseService, identity);
+    if (recovered) return recovered;
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: lastError ?? "PRIVY_USER_INSERT_FAILED",
@@ -167,17 +232,29 @@ export const authRouter = router({
     .input(z.object({ accessToken: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       try {
-        assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+        try {
+          assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+        } catch (error) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+          });
+        }
+        const identity = await verifyPrivyAccessToken(input.accessToken);
+        const userRow = await upsertPrivyUser(ctx.supabaseService as any, identity);
+        await issueAuthCookie(ctx.setCookie, userRow);
+        return { user: toPublicUser(userRow) };
       } catch (error) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+        const err = error as { message?: string; code?: string | number };
+        console.warn("[auth.privyLogin] failed", {
+          message: String(err?.message ?? "unknown_error"),
+          code: err?.code ?? null,
+          hasCsrfCookie: Boolean(ctx.cookies?.csrf_token),
+          hasAuthCookie: Boolean(ctx.cookies?.auth_token),
+          hasServiceRole: Boolean(ctx.hasServiceRole),
         });
+        throw error;
       }
-      const identity = await verifyPrivyAccessToken(input.accessToken);
-      const userRow = await upsertPrivyUser(ctx.supabaseService as any, identity);
-      await issueAuthCookie(ctx.setCookie, userRow);
-      return { user: toPublicUser(userRow) };
     }),
 
   privyLogout: publicProcedure.mutation(async ({ ctx }) => {

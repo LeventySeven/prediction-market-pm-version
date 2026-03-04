@@ -265,3 +265,5 @@ export interface PriceCandle {
   volume: number;
   tradesCount: number;
 }
+
+export type CandleInterval = "1h" | "1m";

@@ -9,6 +9,26 @@ const dispatchSyncedEvent = () => {
   window.dispatchEvent(new CustomEvent("privy-session-bridged"));
 };
 
+const hasCsrfError = (error: unknown): boolean => {
+  const raw =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+      ? error.message
+      : error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : "";
+  return raw.toUpperCase().includes("CSRF_TOKEN_INVALID");
+};
+
+const refreshCsrfCookie = async () => {
+  await fetch("/api/auth/csrf", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+  });
+};
+
 export default function PrivyAuthBridge() {
   const { ready, authenticated, getAccessToken } = usePrivy();
   const lastAccessTokenRef = useRef<string | null>(null);
@@ -22,7 +42,13 @@ export default function PrivyAuthBridge() {
         try {
           const token = await getAccessToken();
           if (!token || token === lastAccessTokenRef.current) return;
-          await trpcClient.auth.privyLogin.mutate({ accessToken: token });
+          try {
+            await trpcClient.auth.privyLogin.mutate({ accessToken: token });
+          } catch (error) {
+            if (!hasCsrfError(error)) throw error;
+            await refreshCsrfCookie();
+            await trpcClient.auth.privyLogin.mutate({ accessToken: token });
+          }
           lastAccessTokenRef.current = token;
           dispatchSyncedEvent();
         } catch (err) {

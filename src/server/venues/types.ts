@@ -47,6 +47,8 @@ export type VenuePricePoint = {
   price: number;
 };
 
+export type VenueCandleInterval = "1m" | "1h";
+
 export type VenuePublicTrade = {
   id: string;
   side: "BUY" | "SELL";
@@ -93,7 +95,11 @@ export type VenueAdapter = {
   listMarketsSnapshot: (params?: { limit?: number; onlyOpen?: boolean; sortBy?: "newest" | "volume" }) => Promise<VenueMarket[]>;
   searchMarkets: (query: string, limit?: number) => Promise<VenueMarket[]>;
   getMarketById: (marketId: string) => Promise<VenueMarket | null>;
-  getPriceHistory: (market: VenueMarket, limit?: number) => Promise<VenuePricePoint[]>;
+  getPriceHistory: (
+    market: VenueMarket,
+    limit?: number,
+    params?: { interval?: VenueCandleInterval }
+  ) => Promise<VenuePricePoint[]>;
   getPublicTrades: (market: VenueMarket, limit?: number) => Promise<VenuePublicTrade[]>;
   checkTradeAccess: (params: { requestIp?: string | null; cacheKey: string }) => Promise<VenueTradeAccessStatus>;
   relaySignedOrder: (input: VenueRelayOrderInput) => Promise<VenueRelayOrderOutput>;
@@ -108,12 +114,18 @@ export const parseVenueMarketRef = (
   explicitProvider?: VenueProvider | null
 ): { provider: VenueProvider; providerMarketId: string; canonicalMarketId: string } => {
   const trimmed = marketId.trim();
+  const stripKnownPrefix = (value: string): string => {
+    if (value.startsWith("polymarket:")) return value.slice("polymarket:".length);
+    if (value.startsWith("limitless:")) return value.slice("limitless:".length);
+    return value;
+  };
   const fromExplicit = explicitProvider ?? null;
   if (fromExplicit) {
+    const providerMarketId = stripKnownPrefix(trimmed);
     return {
       provider: fromExplicit,
-      providerMarketId: trimmed,
-      canonicalMarketId: venueToCanonicalId(fromExplicit, trimmed),
+      providerMarketId,
+      canonicalMarketId: venueToCanonicalId(fromExplicit, providerMarketId),
     };
   }
 

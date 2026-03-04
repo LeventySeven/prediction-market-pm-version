@@ -205,7 +205,7 @@ describe("buildMarketChartSeries", () => {
     expect(first.data.map((row) => row.ts)).toEqual(second.data.map((row) => row.ts));
   });
 
-  test("binary series stays empty when candle history is empty", () => {
+  test("binary series falls back to baseline when candle history is empty", () => {
     const series = buildMarketChartSeries({
       priceCandles: [],
       market: baseMarket({
@@ -218,6 +218,69 @@ describe("buildMarketChartSeries", () => {
 
     expect(series.mode).toBe("binary");
     if (series.mode !== "binary") return;
-    expect(series.data.length).toBe(0);
+    expect(series.data.length).toBeGreaterThan(0);
+    expect(series.data[series.data.length - 1]?.close).toBeCloseTo(67, 2);
+  });
+
+  test("multi series falls back to baseline when only aggregate candles are available", () => {
+    const outcomes = [
+      {
+        id: "yes",
+        marketId: "polymarket:test-market",
+        tokenId: "yes",
+        slug: "yes",
+        title: "Yes",
+        iconUrl: null,
+        chartColor: null,
+        sortOrder: 0,
+        probability: 0.63,
+        price: 0.63,
+        isActive: true,
+      },
+      {
+        id: "no",
+        marketId: "polymarket:test-market",
+        tokenId: "no",
+        slug: "no",
+        title: "No",
+        iconUrl: null,
+        chartColor: null,
+        sortOrder: 1,
+        probability: 0.37,
+        price: 0.37,
+        isActive: true,
+      },
+    ] as const;
+
+    const aggregateOnlyCandles: PriceCandle[] = [
+      {
+        bucket: "2026-03-03T10:01:00.000Z",
+        outcomeId: null,
+        outcomeTitle: null,
+        outcomeColor: null,
+        open: 0.63,
+        high: 0.64,
+        low: 0.62,
+        close: 0.63,
+        volume: 50,
+        tradesCount: 3,
+      },
+    ];
+
+    const series = buildMarketChartSeries({
+      priceCandles: aggregateOnlyCandles,
+      market: baseMarket({
+        marketType: "multi_choice",
+        outcomes: outcomes.map((o) => ({ ...o })),
+      }),
+      lang: "EN",
+    });
+
+    expect(series.mode).toBe("multi");
+    if (series.mode !== "multi") return;
+    expect(series.data.length).toBeGreaterThan(0);
+    const latest = series.data[series.data.length - 1];
+    expect(latest?.values.yes).toBeCloseTo(63, 2);
+    expect(latest?.values.no).toBeCloseTo(37, 2);
   });
 });

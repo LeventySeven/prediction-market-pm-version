@@ -4,10 +4,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, Image, Lock, Mail, User as UserIcon } from 'lucide-react';
 import Button from './Button';
 import type { User } from '@/types';
+import { trpcClient } from '@/src/utils/trpcClient';
 
 export type ProfileSetupAvatarMode = 'unchanged' | 'upload' | 'import_telegram' | 'clear';
 
 export type ProfileSetupSubmitPayload = {
+  username: string;
   displayName: string;
   email: string;
   profileDescription: string;
@@ -32,6 +34,22 @@ const isPrivyPlaceholderName = (value?: string | null) => {
   return normalized.startsWith('privy_');
 };
 
+const normalizeHandleInput = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '')
+    .slice(0, 32);
+
+const isValidHandle = (value: string) => /^[a-z0-9_.-]{3,32}$/.test(value);
+
+const isPrivyPlaceholderHandle = (value?: string | null) => {
+  const normalized = normalizeHandleInput(String(value ?? ''));
+  return normalized.startsWith('privy_') || normalized.startsWith('privy-');
+};
+
 const initialsFrom = (value?: string) => {
   const v = String(value ?? '').trim();
   if (!v) return '?';
@@ -42,6 +60,7 @@ const initialsFrom = (value?: string) => {
 };
 
 const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lang, saving, error, onSubmit }) => {
+  const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [profileDescription, setProfileDescription] = useState('');
@@ -49,20 +68,30 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [usernameChecking, setUsernameChecking] = useState(false);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
+  const [usernameReason, setUsernameReason] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isOpen || !user) return;
+    const suggestedHandle = isPrivyPlaceholderHandle(user.username)
+      ? ''
+      : normalizeHandleInput(String(user.username ?? ''));
     const suggestedName = isPrivyPlaceholderName(user.name)
       ? ''
       : String(user.name ?? user.username ?? '').trim();
     const suggestedEmail = isPrivyPlaceholderEmail(user.email) ? '' : String(user.email ?? '').trim();
+    setUsername(suggestedHandle);
     setDisplayName(suggestedName);
     setEmail(suggestedEmail);
     setProfileDescription(String(user.profileDescription ?? '').trim());
     setAvatarMode('unchanged');
     setAvatarFile(null);
     setLocalError(null);
+    setUsernameChecking(false);
+    setUsernameAvailable(null);
+    setUsernameReason(null);
   }, [isOpen, user]);
 
   useEffect(() => {
@@ -75,8 +104,56 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
     return () => URL.revokeObjectURL(next);
   }, [avatarFile]);
 
+  const usernameNormalized = useMemo(() => normalizeHandleInput(username), [username]);
+  const isHandleFormatValid = isValidHandle(usernameNormalized);
   const displayNameTrimmed = displayName.trim();
   const isNameValid = displayNameTrimmed.length >= 2;
+  const isHandleReady = isHandleFormatValid && usernameAvailable === true && !usernameChecking;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!usernameNormalized) {
+      setUsernameAvailable(null);
+      setUsernameReason(null);
+      setUsernameChecking(false);
+      return;
+    }
+    if (!isHandleFormatValid) {
+      setUsernameAvailable(false);
+      setUsernameReason('INVALID_FORMAT');
+      setUsernameChecking(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setUsernameChecking(true);
+      void trpcClient.user.checkUsernameAvailability
+        .query({ username: usernameNormalized })
+        .then((result) => {
+          if (cancelled) return;
+          const normalized = normalizeHandleInput(String(result.normalized ?? usernameNormalized));
+          if (normalized !== usernameNormalized) {
+            setUsername(normalized);
+          }
+          setUsernameAvailable(Boolean(result.available));
+          setUsernameReason(result.reason ?? null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setUsernameAvailable(false);
+          setUsernameReason('CHECK_FAILED');
+        })
+        .finally(() => {
+          if (!cancelled) setUsernameChecking(false);
+        });
+    }, 260);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isHandleFormatValid, isOpen, usernameNormalized]);
 
   const avatarSrc = useMemo(() => {
     if (avatarMode === 'clear') return null;
@@ -86,6 +163,31 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
   }, [avatarMode, previewUrl, user?.avatarUrl, user?.telegramPhotoUrl]);
 
   if (!isOpen || !user) return null;
+
+  const usernameStatusText = (() => {
+    if (!usernameNormalized) {
+      return lang === 'RU' ? 'Укажите уникальный @handle (3-32 символа).' : 'Set a unique @handle (3-32 chars).';
+    }
+    if (usernameChecking) {
+      return lang === 'RU' ? 'Проверяем доступность...' : 'Checking availability...';
+    }
+    if (!isHandleFormatValid || usernameReason === 'INVALID_FORMAT') {
+      return lang === 'RU' ? 'Допустимы: a-z, 0-9, _, ., - (3-32).' : 'Allowed: a-z, 0-9, _, ., - (3-32).';
+    }
+    if (usernameReason === 'RESERVED') {
+      return lang === 'RU' ? 'Этот handle зарезервирован.' : 'This handle is reserved.';
+    }
+    if (usernameReason === 'TAKEN') {
+      return lang === 'RU' ? 'Этот handle уже занят.' : 'This handle is already taken.';
+    }
+    if (usernameReason === 'CHECK_FAILED') {
+      return lang === 'RU' ? 'Не удалось проверить handle.' : 'Could not verify handle availability.';
+    }
+    if (usernameAvailable) {
+      return lang === 'RU' ? 'Handle доступен.' : 'Handle is available.';
+    }
+    return lang === 'RU' ? 'Проверьте handle.' : 'Please review the handle.';
+  })();
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
@@ -101,8 +203,8 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
             </h2>
             <p className="mt-1 text-xs text-zinc-500">
               {lang === 'RU'
-                ? 'Окно обязательно после входа. Продолжить можно после ввода никнейма.'
-                : 'This step is required after login. Continue after setting a nickname.'}
+                ? 'Обязательный шаг: укажите и @handle, и display name.'
+                : 'Required step: set both @handle and display name.'}
             </p>
           </div>
         </div>
@@ -110,14 +212,36 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
         <div className="space-y-4">
           <div>
             <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
-              {lang === 'RU' ? 'Никнейм (обязательно)' : 'Nickname (required)'}
+              {lang === 'RU' ? 'Handle (обязательно)' : 'Handle (required)'}
+            </div>
+            <div className="relative">
+              <UserIcon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
+              <span className="absolute left-8 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">@</span>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="username"
+                className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 pl-12 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+              />
+            </div>
+            <div className={`mt-1 text-[11px] ${usernameAvailable ? 'text-[rgba(190,255,29,1)]' : 'text-zinc-500'}`}>
+              {usernameStatusText}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
+              {lang === 'RU' ? 'Display name (обязательно)' : 'Display name (required)'}
             </div>
             <div className="relative">
               <UserIcon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                placeholder={lang === 'RU' ? 'Ваш никнейм' : 'Your nickname'}
+                placeholder={lang === 'RU' ? 'Ваше имя в интерфейсе' : 'Your display name'}
                 className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 pl-9 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
               />
             </div>
@@ -132,7 +256,7 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
               <input
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder={lang === 'RU' ? 'you@example.com' : 'you@example.com'}
+                placeholder="you@example.com"
                 className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 pl-9 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
               />
             </div>
@@ -232,11 +356,23 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
           <Button
             fullWidth
             className="h-11 rounded-full"
-            disabled={saving || !isNameValid}
+            disabled={saving || !isNameValid || !isHandleReady}
             onClick={async () => {
               setLocalError(null);
+              if (!isHandleReady) {
+                setLocalError(
+                  lang === 'RU'
+                    ? 'Укажите доступный handle перед продолжением.'
+                    : 'Choose an available handle before continuing.'
+                );
+                return;
+              }
               if (!isNameValid) {
-                setLocalError(lang === 'RU' ? 'Введите никнейм (минимум 2 символа)' : 'Enter a nickname (minimum 2 characters)');
+                setLocalError(
+                  lang === 'RU'
+                    ? 'Введите display name (минимум 2 символа)'
+                    : 'Enter a display name (minimum 2 characters)'
+                );
                 return;
               }
 
@@ -247,6 +383,7 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
               }
 
               await onSubmit({
+                username: usernameNormalized,
                 displayName: displayNameTrimmed,
                 email: emailValue,
                 profileDescription: profileDescription.trim(),

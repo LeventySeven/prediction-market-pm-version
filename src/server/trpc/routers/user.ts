@@ -4,6 +4,14 @@ import { randomBytes } from "node:crypto";
 import { publicProcedure, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
+import { authCookie, signAuthToken } from "../../auth/jwt";
+import {
+  isPlaceholderDisplayName,
+  isPlaceholderPrivyUsername,
+  isValidUsername,
+  normalizeDisplayName,
+  normalizeUsername,
+} from "../../auth/identity";
 
 const PRIVY_PLACEHOLDER_DOMAIN = "@privy.local";
 const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
@@ -30,7 +38,6 @@ const userShape = z.object({
   isAdmin: z.boolean(),
 });
 
-const normalizeDisplayName = (value: string) => value.trim().replace(/\s+/g, " ");
 const normalizeDescription = (value: string | null | undefined) => {
   const normalized = String(value ?? "").trim();
   return normalized.length > 0 ? normalized : null;
@@ -42,6 +49,38 @@ const normalizeEmail = (value: string | undefined) => {
 const isPrivyPlaceholderEmail = (value: string) => value.trim().toLowerCase().endsWith(PRIVY_PLACEHOLDER_DOMAIN);
 const buildReferralCode = () => randomBytes(6).toString("hex").toUpperCase();
 
+const normalizeHandleInput = (value: string) => normalizeUsername(value);
+
+const isProfileIdentityComplete = (row: any): boolean => {
+  const provider = String(row.auth_provider ?? "").toLowerCase();
+  if (provider !== "privy") return true;
+
+  const username = normalizeHandleInput(String(row.username ?? ""));
+  const displayName = normalizeDisplayName(String(row.display_name ?? ""));
+  const usernameValid = isValidUsername(username) && !isPlaceholderPrivyUsername(username);
+  const displayNameValid = displayName.length >= 2 && !isPlaceholderDisplayName(displayName);
+
+  return Boolean(row.profile_setup_completed_at) && usernameValid && displayNameValid;
+};
+
+const issueUserAuthCookie = async (
+  setCookie: (value: string) => void,
+  row: {
+    id: string;
+    email: string;
+    username: string;
+    is_admin: boolean | null;
+  }
+) => {
+  const token = await signAuthToken({
+    sub: String(row.id),
+    email: String(row.email),
+    username: String(row.username),
+    isAdmin: Boolean(row.is_admin),
+  });
+  setCookie(authCookie(token));
+};
+
 const mapUser = (row: any) => ({
   id: String(row.id),
   email: String(row.email ?? ""),
@@ -50,7 +89,7 @@ const mapUser = (row: any) => ({
   avatarUrl: row.avatar_url ? String(row.avatar_url) : null,
   profileDescription: row.profile_description ? String(row.profile_description) : null,
   avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
-  needsProfileSetup: String(row.auth_provider ?? "").toLowerCase() === "privy" && !row.profile_setup_completed_at,
+  needsProfileSetup: !isProfileIdentityComplete(row),
   telegramPhotoUrl: row.telegram_photo_url ? String(row.telegram_photo_url) : null,
   referralCode: row.referral_code ? String(row.referral_code) : null,
   referralCommissionRate:
@@ -70,6 +109,20 @@ const requireServiceRoleForUserWrite = (hasServiceRole: boolean) => {
     message: "SERVICE_ROLE_UNAVAILABLE",
   });
 };
+
+const usernameAvailabilityOutput = z.object({
+  available: z.boolean(),
+  normalized: z.string(),
+  reason: z
+    .enum([
+      "INVALID_FORMAT",
+      "RESERVED",
+      "TAKEN",
+      "CHECK_FAILED",
+      "UNCHANGED",
+    ])
+    .optional(),
+});
 
 export const userRouter = router({
   publicUser: publicProcedure
@@ -173,6 +226,39 @@ export const userRouter = router({
       }));
     }),
 
+  checkUsernameAvailability: publicProcedure
+    .input(z.object({ username: z.string().min(1).max(64) }))
+    .output(usernameAvailabilityOutput)
+    .query(async ({ ctx, input }) => {
+      const normalized = normalizeHandleInput(input.username);
+      if (!isValidUsername(normalized)) {
+        return { available: false, normalized, reason: "INVALID_FORMAT" };
+      }
+      if (isPlaceholderPrivyUsername(normalized)) {
+        return { available: false, normalized, reason: "RESERVED" };
+      }
+
+      try {
+        const existing = await (ctx.supabaseService as any)
+          .from("users")
+          .select("id")
+          .eq("username", normalized)
+          .maybeSingle();
+        if (existing.error) {
+          return { available: false, normalized, reason: "CHECK_FAILED" };
+        }
+        if (!existing.data) {
+          return { available: true, normalized };
+        }
+        if (ctx.authUser && String(existing.data.id ?? "") === ctx.authUser.id) {
+          return { available: true, normalized, reason: "UNCHANGED" };
+        }
+        return { available: false, normalized, reason: "TAKEN" };
+      } catch {
+        return { available: false, normalized, reason: "CHECK_FAILED" };
+      }
+    }),
+
   updateDisplayName: publicProcedure
     .input(z.object({ displayName: z.string().min(2).max(32) }))
     .output(userShape)
@@ -188,6 +274,61 @@ export const userRouter = router({
         .select("*")
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update display name" });
+      return mapUser(updated.data);
+    }),
+
+  updateProfileIdentity: publicProcedure
+    .input(
+      z.object({
+        username: z.string().min(3).max(32),
+        displayName: z.string().min(2).max(32),
+      })
+    )
+    .output(userShape)
+    .mutation(async ({ ctx, input }) => {
+      const { supabaseService, authUser } = ctx;
+      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+
+      const normalizedUsername = normalizeHandleInput(input.username);
+      const displayName = normalizeDisplayName(input.displayName);
+      if (!isValidUsername(normalizedUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_USERNAME_FORMAT" });
+      }
+      if (isPlaceholderPrivyUsername(normalizedUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "USERNAME_RESERVED" });
+      }
+      if (displayName.length < 2 || isPlaceholderDisplayName(displayName)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_DISPLAY_NAME" });
+      }
+
+      const updated = await (supabaseService as any)
+        .from("users")
+        .update({
+          username: normalizedUsername,
+          display_name: displayName,
+          profile_setup_completed_at: new Date().toISOString(),
+        })
+        .eq("id", authUser.id)
+        .select("*")
+        .single();
+
+      if (updated.error || !updated.data) {
+        const code = String((updated.error as any)?.code ?? "");
+        const message = String(updated.error?.message ?? "").toLowerCase();
+        if (code === "23505" || message.includes("username")) {
+          throw new TRPCError({ code: "CONFLICT", message: "USERNAME_TAKEN" });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: updated.error?.message ?? "Failed to update profile identity",
+        });
+      }
+
+      if (normalizedUsername !== authUser.username) {
+        await issueUserAuthCookie(ctx.setCookie, updated.data);
+      }
+
       return mapUser(updated.data);
     }),
 
@@ -219,6 +360,7 @@ export const userRouter = router({
   completeProfileSetup: publicProcedure
     .input(
       z.object({
+        username: z.string().min(3).max(32),
         displayName: z.string().min(2).max(32),
         email: z.string().trim().email().max(254).optional(),
         profileDescription: z.string().max(280).nullable().optional(),
@@ -232,12 +374,22 @@ export const userRouter = router({
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
 
+      const normalizedUsername = normalizeHandleInput(input.username);
       const displayName = normalizeDisplayName(input.displayName);
+      if (!isValidUsername(normalizedUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_USERNAME_FORMAT" });
+      }
+      if (isPlaceholderPrivyUsername(normalizedUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "USERNAME_RESERVED" });
+      }
+      if (displayName.length < 2 || isPlaceholderDisplayName(displayName)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "INVALID_DISPLAY_NAME" });
+      }
       const nextEmail = normalizeEmail(input.email);
       const description = normalizeDescription(input.profileDescription);
       const existing = await (supabaseService as any)
         .from("users")
-        .select("email")
+        .select("email, username, is_admin")
         .eq("id", authUser.id)
         .maybeSingle();
 
@@ -250,6 +402,7 @@ export const userRouter = router({
 
       const currentEmail = String(existing.data.email ?? "");
       const updatePayload: Record<string, unknown> = {
+        username: normalizedUsername,
         display_name: displayName,
         profile_description: description,
         profile_setup_completed_at: new Date().toISOString(),
@@ -280,13 +433,21 @@ export const userRouter = router({
 
       if (updated.error || !updated.data) {
         const code = String((updated.error as any)?.code ?? "");
+        const message = String(updated.error?.message ?? "").toLowerCase();
         if (code === "23505") {
+          if (message.includes("username")) {
+            throw new TRPCError({ code: "CONFLICT", message: "USERNAME_TAKEN" });
+          }
           throw new TRPCError({ code: "CONFLICT", message: "EMAIL_ALREADY_IN_USE" });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: updated.error?.message ?? "Failed to complete profile setup",
         });
+      }
+
+      if (normalizedUsername !== authUser.username) {
+        await issueUserAuthCookie(ctx.setCookie, updated.data);
       }
       return mapUser(updated.data);
     }),

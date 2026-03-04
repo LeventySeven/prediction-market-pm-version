@@ -1,4 +1,4 @@
-import type { Market, PriceCandle } from "@/types";
+import type { CandleInterval, Market, PriceCandle } from "@/types";
 
 export type MultiChartRow = {
   ts: number;
@@ -45,25 +45,47 @@ const fallbackOutcomeColor = (seed: string) => {
 
 const candleTs = (candle: PriceCandle): number => Date.parse(String(candle.bucket));
 
-const selectResolutionMs = (candles: PriceCandle[]): number => {
-  if (candles.length < 2) return 60 * 60 * 1000;
-  const times = candles
-    .map(candleTs)
-    .filter((ts) => Number.isFinite(ts))
-    .sort((a, b) => a - b);
-  if (times.length < 2) return 60 * 60 * 1000;
-  const first = times[0] ?? 0;
-  const last = times[times.length - 1] ?? first;
-  const span = Math.max(0, last - first);
-  if (span >= 7 * 24 * 60 * 60 * 1000) {
-    return 24 * 60 * 60 * 1000;
-  }
-  return 60 * 60 * 1000;
+const clampPercent = (value: number): number => {
+  if (!Number.isFinite(value)) return 50;
+  return Math.max(0, Math.min(100, value));
 };
 
-const aggregatePriceCandles = (candles: PriceCandle[]): PriceCandle[] => {
+const clampPrice = (value: number): number => {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.max(0, Math.min(1, value));
+};
+
+const resolutionMsByInterval: Record<CandleInterval, number> = {
+  "1m": 60 * 1000,
+  "1h": 60 * 60 * 1000,
+};
+
+const fallbackPointsByInterval: Record<CandleInterval, number> = {
+  "1m": 120,
+  "1h": 24,
+};
+
+const buildFallbackTimeline = (
+  inputTimes: number[],
+  interval: CandleInterval,
+  points = fallbackPointsByInterval[interval]
+): number[] => {
+  const sortedUnique = Array.from(new Set(inputTimes.filter((ts) => Number.isFinite(ts)))).sort(
+    (a, b) => a - b
+  );
+  if (sortedUnique.length > 0) {
+    return sortedUnique.slice(Math.max(0, sortedUnique.length - points));
+  }
+  const now = Date.now();
+  const resolutionMs = resolutionMsByInterval[interval];
+  const alignedNow = Math.floor(now / resolutionMs) * resolutionMs;
+  const firstTs = alignedNow - (points - 1) * resolutionMs;
+  return Array.from({ length: points }, (_, idx) => firstTs + idx * resolutionMs);
+};
+
+const aggregatePriceCandles = (candles: PriceCandle[], interval: CandleInterval): PriceCandle[] => {
   if (candles.length === 0) return [];
-  const resolutionMs = selectResolutionMs(candles);
+  const resolutionMs = resolutionMsByInterval[interval];
   const ordered = [...candles]
     .filter((c) => Number.isFinite(candleTs(c)))
     .sort((a, b) => candleTs(a) - candleTs(b));
@@ -101,12 +123,14 @@ export const buildMarketChartSeries = ({
   priceCandles,
   market,
   lang,
+  interval,
 }: {
   priceCandles: PriceCandle[];
   market: Market;
   lang: "RU" | "EN";
+  interval: CandleInterval;
 }): ChartSeries => {
-  const chartCandles = aggregatePriceCandles(priceCandles);
+  const chartCandles = aggregatePriceCandles(priceCandles, interval);
   const isMulti =
     market.marketType === "multi_choice" &&
     Array.isArray(market.outcomes) &&
@@ -150,8 +174,43 @@ export const buildMarketChartSeries = ({
       color: o.chartColor ?? fallbackOutcomeColor(`${market.id}:${o.id}`),
       sortOrder: o.sortOrder ?? 0,
     }));
-    const initialProb =
-      outcomeLines.length > 0 ? Number((100 / outcomeLines.length).toFixed(2)) : 0;
+    const outcomeLookup = new Map<string, string>();
+    for (const outcome of market.outcomes ?? []) {
+      const id = String(outcome.id ?? "").trim();
+      if (!id) continue;
+      outcomeLookup.set(id.toLowerCase(), id);
+      const slugKey = String(outcome.slug ?? "").trim().toLowerCase();
+      const titleKey = String(outcome.title ?? "").trim().toLowerCase();
+      if (slugKey) outcomeLookup.set(slugKey, id);
+      if (titleKey) outcomeLookup.set(titleKey, id);
+    }
+
+    const initialProbByOutcomeId = new Map<string, number>();
+    for (const outcome of market.outcomes ?? []) {
+      const id = String(outcome.id ?? "").trim();
+      if (!id) continue;
+      const raw = Number.isFinite(outcome.probability)
+        ? outcome.probability <= 1
+          ? outcome.probability * 100
+          : outcome.probability
+        : Number.isFinite(outcome.price)
+        ? outcome.price * 100
+        : 100 / Math.max(1, outcomeLines.length);
+      initialProbByOutcomeId.set(id, clampPercent(raw));
+    }
+
+    const resolveOutcomeId = (candle: PriceCandle): string | null => {
+      const byId = String(candle.outcomeId ?? "").trim().toLowerCase();
+      if (byId && outcomeLookup.has(byId)) {
+        return outcomeLookup.get(byId) ?? null;
+      }
+      const byTitle = String(candle.outcomeTitle ?? "").trim().toLowerCase();
+      if (byTitle && outcomeLookup.has(byTitle)) {
+        return outcomeLookup.get(byTitle) ?? null;
+      }
+      return null;
+    };
+
     const byTs = new Map<
       number,
       {
@@ -163,21 +222,25 @@ export const buildMarketChartSeries = ({
     >();
     chartCandles.forEach((c) => {
       const ts = Date.parse(String(c.bucket));
-      if (!Number.isFinite(ts) || !c.outcomeId) return;
+      if (!Number.isFinite(ts)) return;
+      const resolvedOutcomeId = resolveOutcomeId(c);
+      if (!resolvedOutcomeId) return;
       const row = byTs.get(ts) ?? {
         ts,
         label: labelFor(ts),
         spansMultipleDays,
         values: {},
       };
-      row.values[c.outcomeId] = Number((c.close * 100).toFixed(2));
+      row.values[resolvedOutcomeId] = Number((c.close * 100).toFixed(2));
       byTs.set(ts, row);
     });
 
     const sortedRows = Array.from(byTs.values()).sort((a, b) => a.ts - b.ts);
     const lastValues: Record<string, number> = {};
     outcomeLines.forEach((o) => {
-      lastValues[o.id] = initialProb;
+      lastValues[o.id] = Number(
+        (initialProbByOutcomeId.get(o.id) ?? 100 / Math.max(1, outcomeLines.length)).toFixed(2)
+      );
     });
     const normalizedRows = sortedRows.map((row) => {
       const values: Record<string, number> = {};
@@ -192,6 +255,29 @@ export const buildMarketChartSeries = ({
       });
       return { ...row, values };
     });
+
+    if (normalizedRows.length === 0) {
+      const timeline = buildFallbackTimeline(candleTimes, interval);
+      const fallbackRows = timeline.map((ts) => {
+        const values: Record<string, number> = {};
+        outcomeLines.forEach((line) => {
+          values[line.id] = Number(
+            (initialProbByOutcomeId.get(line.id) ?? 100 / Math.max(1, outcomeLines.length)).toFixed(2)
+          );
+        });
+        return {
+          ts,
+          label: labelFor(ts),
+          spansMultipleDays,
+          values,
+        };
+      });
+      return {
+        mode: "multi",
+        data: fallbackRows,
+        lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder),
+      };
+    }
 
     return {
       mode: "multi",
@@ -234,6 +320,23 @@ export const buildMarketChartSeries = ({
       } => Boolean(v)
     )
     .sort((a, b) => a.ts - b.ts);
+
+  if (rows.length === 0) {
+    const timeline = buildFallbackTimeline(candleTimes, interval);
+    const fallbackPrice = clampPrice(Number.isFinite(market.yesPrice) ? market.yesPrice : 0.5);
+    const fallbackValue = Number((fallbackPrice * 100).toFixed(2));
+    const fallbackRows = timeline.map((ts) => ({
+      ts,
+      label: labelFor(ts),
+      value: fallbackValue,
+      open: fallbackValue,
+      high: fallbackValue,
+      low: fallbackValue,
+      close: fallbackValue,
+      spansMultipleDays,
+    }));
+    return { mode: "binary", data: fallbackRows, lines: [] };
+  }
 
   return { mode: "binary", data: rows, lines: [] };
 };

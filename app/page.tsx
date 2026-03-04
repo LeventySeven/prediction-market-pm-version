@@ -17,6 +17,7 @@ import type {
   Position,
   Trade,
   PriceCandle,
+  CandleInterval,
   PublicTrade,
   LeaderboardUser,
   Comment as MarketComment,
@@ -48,7 +49,14 @@ import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/mark
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 50;
-const MARKET_CANDLE_LIMIT = 5000;
+const CANDLE_INTERVAL_RESOLUTION_MS: Record<CandleInterval, number> = {
+  "1m": 60_000,
+  "1h": 60 * 60 * 1000,
+};
+const MARKET_CANDLE_LIMIT_BY_INTERVAL: Record<CandleInterval, number> = {
+  "1m": 720,
+  "1h": 720,
+};
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
@@ -163,27 +171,6 @@ const parseUsdVolume = (value: string): number => {
   }
   const parsed = Number(normalized.replace(/[^0-9.-]+/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const detectCandleResolutionMs = (candles: PriceCandle[]): number => {
-  if (candles.length < 2) return 60 * 60 * 1000;
-  const times = candles
-    .map((c) => Date.parse(c.bucket))
-    .filter((ts) => Number.isFinite(ts))
-    .sort((a, b) => a - b);
-  if (times.length < 2) return 60 * 60 * 1000;
-  const deltas: number[] = [];
-  for (let i = 1; i < times.length; i += 1) {
-    const prev = times[i - 1];
-    const next = times[i];
-    if (prev === undefined || next === undefined) continue;
-    const delta = next - prev;
-    if (delta > 0) deltas.push(delta);
-  }
-  if (deltas.length === 0) return 60 * 60 * 1000;
-  const minDelta = Math.min(...deltas);
-  if (minDelta >= 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
-  return 60 * 60 * 1000;
 };
 
 const alignBucketToResolution = (bucketMs: number, resolutionMs: number): number => {
@@ -431,7 +418,7 @@ const getCatalogProviderFromLocation = (): "all" | "polymarket" | "limitless" =>
 const getCatalogPathForProvider = (provider: "all" | "polymarket" | "limitless"): string => {
   if (provider === "polymarket") return "/markets/polymarket";
   if (provider === "limitless") return "/markets/limitless";
-  return "/";
+  return "/catalog";
 };
 
 const getViewFromLocation = (): ViewType => {
@@ -701,6 +688,7 @@ export default function HomePage() {
   }>({ open: false, marketTitle: "", side: "YES", amount: 0, newBalance: undefined, errorMessage: null });
   type MarketBetIntent = { marketId: string; side?: "YES" | "NO"; outcomeId?: string; nonce: number } | null;
   const [marketBetIntent, setMarketBetIntent] = useState<MarketBetIntent>(null);
+  const [marketCandleInterval, setMarketCandleInterval] = useState<CandleInterval>("1h");
   const [marketCandles, setMarketCandles] = useState<PriceCandle[]>([]);
   const [marketPublicTrades, setMarketPublicTrades] = useState<PublicTrade[]>([]);
   const [marketLiveActivityTicks, setMarketLiveActivityTicks] = useState<LiveActivityTick[]>([]);
@@ -751,6 +739,7 @@ export default function HomePage() {
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
   const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
   const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
+  const lastCategoriesProviderRef = useRef<ProviderFilter | null>(null);
   const [myComments, setMyComments] = useState<Array<{
     id: string;
     marketId: string;
@@ -1005,16 +994,19 @@ export default function HomePage() {
     })();
   }, [selectedMarketId, user, reloginRequired, refreshUser, attemptSilentRefresh]);
 
-  const handleUpdateDisplayName = useCallback(
-    async (nextDisplayName: string) => {
-      const updated = await trpcClient.user.updateDisplayName.mutate({
-        displayName: nextDisplayName,
+  const handleUpdateProfileIdentity = useCallback(
+    async (params: { username: string; displayName: string }) => {
+      const updated = await trpcClient.user.updateProfileIdentity.mutate({
+        username: params.username,
+        displayName: params.displayName,
       });
       setUser((prev) =>
         prev
           ? {
               ...prev,
+              username: updated.username,
               name: updated.displayName ?? updated.username,
+              needsProfileSetup: updated.needsProfileSetup ?? prev.needsProfileSetup,
             }
           : prev
       );
@@ -1094,6 +1086,7 @@ export default function HomePage() {
             : sanitizeAvatarPalette(avatarPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
 
         const updated = await trpcClient.user.completeProfileSetup.mutate({
+          username: payload.username.trim(),
           displayName: payload.displayName.trim(),
           email: payload.email.trim().length > 0 ? payload.email.trim() : undefined,
           profileDescription:
@@ -1125,7 +1118,15 @@ export default function HomePage() {
         setProfileSetupError(null);
       } catch (err) {
         const msg = String(getErrorMessage(err) ?? "").toUpperCase();
-        if (msg.includes("EMAIL_ALREADY_IN_USE") || msg.includes("CONFLICT")) {
+        if (msg.includes("USERNAME_TAKEN")) {
+          setProfileSetupError(lang === "RU" ? "Этот handle уже занят." : "This handle is already taken.");
+        } else if (msg.includes("INVALID_USERNAME")) {
+          setProfileSetupError(
+            lang === "RU"
+              ? "Некорректный handle (a-z, 0-9, _, ., -, 3-32)."
+              : "Invalid handle (a-z, 0-9, _, ., -, 3-32)."
+          );
+        } else if (msg.includes("EMAIL_ALREADY_IN_USE") || msg.includes("CONFLICT")) {
           setProfileSetupError(lang === "RU" ? "Этот email уже используется." : "This email is already in use.");
         } else if (msg.includes("INVALID_FILE_TYPE")) {
           setProfileSetupError(lang === "RU" ? "Неверный формат аватара." : "Invalid avatar file type.");
@@ -1315,32 +1316,89 @@ export default function HomePage() {
     void loadUser();
   }, [attemptSilentRefresh, privyAuthenticated, privyReady, refreshUser]);
 
+  type CatalogFetchParams = {
+    page: number;
+    providerFilter: ProviderFilter;
+    sortBy: "newest" | "volume";
+  };
+  type CatalogFetchResult = {
+    rows: MarketApiRow[];
+    hasMore: boolean;
+  };
+  type CatalogPageCacheEntry = CatalogFetchResult & { updatedAt: number };
+
+  const buildCatalogFetchKey = useCallback((params: CatalogFetchParams): string => {
+    return `provider:${params.providerFilter}:page:${params.page}:sort:${params.sortBy}`;
+  }, []);
+
+  const catalogPageCacheRef = useRef<Map<string, CatalogPageCacheEntry>>(new Map());
+  const catalogInFlightRef = useRef<Map<string, Promise<CatalogFetchResult>>>(new Map());
+
+  const fetchCatalogPage = useCallback(async (params: CatalogFetchParams): Promise<CatalogFetchResult> => {
+    const cacheKey = buildCatalogFetchKey(params);
+    const inFlight = catalogInFlightRef.current.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const fetchPromise = (async () => {
+      const fetchSize = CATALOG_PAGE_SIZE + 1;
+      const response = await trpcClient.market.listMarkets.query({
+        onlyOpen: false,
+        page: params.page,
+        pageSize: fetchSize,
+        sortBy: params.sortBy,
+        providerFilter: params.providerFilter,
+        providers:
+          params.providerFilter === "all"
+            ? ["polymarket", "limitless"]
+            : [params.providerFilter],
+      });
+      const hasMore = (response?.length ?? 0) > CATALOG_PAGE_SIZE;
+      const rows = ((response ?? []).slice(0, CATALOG_PAGE_SIZE) as MarketApiRow[]);
+      catalogPageCacheRef.current.set(cacheKey, {
+        rows,
+        hasMore,
+        updatedAt: Date.now(),
+      });
+      return { rows, hasMore };
+    })();
+
+    catalogInFlightRef.current.set(cacheKey, fetchPromise);
+    try {
+      return await fetchPromise;
+    } finally {
+      catalogInFlightRef.current.delete(cacheKey);
+    }
+  }, [buildCatalogFetchKey]);
+
   const loadMarkets = useCallback(async () => {
     const startedAt = Date.now();
     incrementClientCounter("catalog.loadMarkets.calls");
-    setLoadingMarkets(true);
-    setMarketsError(null);
-    setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
-    try {
-      const fetchSize = CATALOG_PAGE_SIZE + 1;
-      const backendSortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
-      const response = await trpcClient.market.listMarkets.query({
-        onlyOpen: false,
-        page: catalogPage,
-        pageSize: fetchSize,
-        sortBy: backendSortBy,
-        providerFilter: activeProviderFilter,
-        providers:
-          activeProviderFilter === "all"
-            ? ["polymarket", "limitless"]
-            : [activeProviderFilter],
-      });
+    const backendSortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
+    const fetchParams: CatalogFetchParams = {
+      page: catalogPage,
+      providerFilter: activeProviderFilter,
+      sortBy: backendSortBy,
+    };
+    const cacheKey = buildCatalogFetchKey(fetchParams);
+    const cached = catalogPageCacheRef.current.get(cacheKey);
+    const hasCached = Boolean(cached);
 
-      const hasMore = (response?.length ?? 0) > CATALOG_PAGE_SIZE;
-      setHasNextCatalogPage(hasMore);
-      const mapped: Market[] = (response ?? [])
-        .slice(0, CATALOG_PAGE_SIZE)
-        .map((m) => mapMarketApiToMarket(m as MarketApiRow, lang));
+    setMarketsError(null);
+    if (!hasCached) {
+      setLoadingMarkets(true);
+      setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
+    } else {
+      setLoadingMarkets(false);
+      setMarketsLoadingMessage(null);
+      setHasNextCatalogPage(cached.hasMore);
+      setMarkets(cached.rows.map((m) => mapMarketApiToMarket(m, lang)));
+      setMarketLivePatchById({});
+    }
+
+    try {
+      const result = await fetchCatalogPage(fetchParams);
+      setHasNextCatalogPage(result.hasMore);
+      const mapped: Market[] = result.rows.map((m) => mapMarketApiToMarket(m, lang));
       setMarkets(mapped);
       setMarketLivePatchById({});
     } catch (err) {
@@ -1355,7 +1413,7 @@ export default function HomePage() {
       setMarketsLoadingMessage(null);
       observeClientTiming("catalog.loadMarkets.ms", Date.now() - startedAt);
     }
-  }, [activeProviderFilter, catalogPage, catalogSort, lang]);
+  }, [activeProviderFilter, buildCatalogFetchKey, catalogPage, catalogSort, fetchCatalogPage, lang]);
   const loadMarketsRef = useRef(loadMarkets);
   useEffect(() => {
     loadMarketsRef.current = loadMarkets;
@@ -1364,7 +1422,13 @@ export default function HomePage() {
   const loadMarketCategories = useCallback(async () => {
     setLoadingMarketCategories(true);
     try {
-      const rowsRaw = await trpcClient.market.listCategories.query();
+      const rowsRaw = await trpcClient.market.listCategories.query({
+        providerFilter: activeProviderFilter,
+        providers:
+          activeProviderFilter === "all"
+            ? ["polymarket", "limitless"]
+            : [activeProviderFilter],
+      });
       const rowsParsed = marketCategoriesSchema.parse(rowsRaw);
       const rows: MarketCategoryStrict[] = rowsParsed.map((c) => ({
         id: requireValue(c.id, "CATEGORY_ID_MISSING"),
@@ -1378,7 +1442,7 @@ export default function HomePage() {
     } finally {
       setLoadingMarketCategories(false);
     }
-  }, []);
+  }, [activeProviderFilter]);
 
   const loadMyComments = useCallback(async () => {
     if (!user) return;
@@ -1436,10 +1500,48 @@ export default function HomePage() {
   }, [loadMarkets]);
 
   useEffect(() => {
-    if (marketCategories.length === 0 && !loadingMarketCategories) {
-      void loadMarketCategories();
+    if (loadingMarketCategories) return;
+    if (
+      lastCategoriesProviderRef.current === activeProviderFilter &&
+      marketCategories.length > 0
+    ) {
+      return;
     }
-  }, [loadMarketCategories, marketCategories.length, loadingMarketCategories]);
+    lastCategoriesProviderRef.current = activeProviderFilter;
+    void loadMarketCategories();
+  }, [
+    activeProviderFilter,
+    loadMarketCategories,
+    loadingMarketCategories,
+    marketCategories.length,
+  ]);
+
+  const prefetchCatalogPage = useCallback(
+    async (providerFilter: ProviderFilter, page: number) => {
+      const sortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
+      const params: CatalogFetchParams = { providerFilter, page, sortBy };
+      const cacheKey = buildCatalogFetchKey(params);
+      if (catalogPageCacheRef.current.has(cacheKey)) return;
+      try {
+        await fetchCatalogPage(params);
+      } catch {
+        // Best-effort prefetch only.
+      }
+    },
+    [buildCatalogFetchKey, catalogSort, fetchCatalogPage]
+  );
+
+  useEffect(() => {
+    if (currentView !== "CATALOG") return;
+    if (selectedMarketId) return;
+    const timer = setTimeout(() => {
+      void prefetchCatalogPage("all", 1);
+      void prefetchCatalogPage("polymarket", 1);
+      void prefetchCatalogPage("limitless", 1);
+      void prefetchCatalogPage(activeProviderFilter, 2);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [activeProviderFilter, currentView, prefetchCatalogPage, selectedMarketId]);
 
   useEffect(() => {
     if (selectedMarketId || currentView !== "CATALOG") return;
@@ -1949,14 +2051,9 @@ export default function HomePage() {
 
   const catalogMarkets = useMemo(() => {
     const parseVol = (m: Market) =>
-      Math.max(
-        typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
-          ? m.volumeRaw
-          : parseUsdVolume(m.volume),
-        typeof m.volume24hRaw === "number" && Number.isFinite(m.volume24hRaw)
-          ? m.volume24hRaw
-          : parseUsdVolume(m.volume24h ?? "")
-      );
+      typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
+        ? m.volumeRaw
+        : parseUsdVolume(m.volume);
     const categoryLabel = (m: Market) => {
       const raw =
         lang === "RU"
@@ -2169,6 +2266,11 @@ export default function HomePage() {
     return undefined;
   }, [selectedMarket?.provider, selectedMarketId]);
 
+  useEffect(() => {
+    if (!selectedMarketId) return;
+    setMarketCandleInterval("1h");
+  }, [selectedMarketId]);
+
   const tradeBlockedMessage = useMemo(() => {
     if (!HAS_PRIVY_PROVIDER || !selectedMarketId) return null;
     if (tradeAccessLoading && !tradeAccessState) {
@@ -2192,6 +2294,10 @@ export default function HomePage() {
     if (!selectedMarketId) return;
 
     const streamMarketId = (selectedMarket?.id ?? selectedMarketId).trim();
+    const streamQueryMarketId =
+      selectedProvider && selectedMarket?.providerMarketId
+        ? selectedMarket.providerMarketId
+        : streamMarketId;
     if (!streamMarketId) return;
 
     const pendingPatches = new Map<string, MarketLivePatch>();
@@ -2302,7 +2408,7 @@ export default function HomePage() {
       const refreshFromApi = async () => {
         try {
           const row = await trpcClient.market.getMarket.query({
-            marketId: streamMarketId,
+            marketId: streamQueryMarketId,
             provider: selectedProvider,
           });
           if (stopped || !row) return;
@@ -2398,7 +2504,7 @@ export default function HomePage() {
       pendingPatches.clear();
       stopSupabaseFallback();
     };
-  }, [selectedMarketId, selectedMarket?.id, selectedProvider]);
+  }, [selectedMarketId, selectedMarket?.id, selectedMarket?.providerMarketId, selectedProvider]);
 
   const goToView = useCallback(
     (view: ViewType) => {
@@ -2446,6 +2552,18 @@ export default function HomePage() {
 
     let cancelled = false;
     const activeMarketId = selectedMarketId;
+    const activeMarketQueryId =
+      selectedProvider && selectedMarket?.providerMarketId
+        ? selectedMarket.providerMarketId
+        : activeMarketId;
+    const candleResolutionMs = CANDLE_INTERVAL_RESOLUTION_MS[marketCandleInterval];
+    const candleLimit = MARKET_CANDLE_LIMIT_BY_INTERVAL[marketCandleInterval];
+    const polymarketRealtimeMarketId =
+      selectedProvider === "polymarket"
+        ? (activeMarketId.startsWith("polymarket:")
+            ? activeMarketId.slice("polymarket:".length)
+            : activeMarketId)
+        : null;
     void trpcClient.events.track
       .mutate({
         sessionId: sessionIdRef.current,
@@ -2461,6 +2579,7 @@ export default function HomePage() {
     let candleFlushTimer: ReturnType<typeof setTimeout> | null = null;
     let tickFlushTimer: ReturnType<typeof setTimeout> | null = null;
     let candleFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let candlePollingTimer: ReturnType<typeof setInterval> | null = null;
 
     const flushPendingCandleRows = () => {
       candleFlushTimer = null;
@@ -2470,12 +2589,11 @@ export default function HomePage() {
 
       setMarketCandles((prev) => {
         const byBucket = new Map(prev.map((item) => [item.bucket, item]));
-        const resolutionMs = detectCandleResolutionMs(prev);
         for (const row of rows) {
-          if (row.market_id !== activeMarketId) continue;
+          if (polymarketRealtimeMarketId && row.market_id !== polymarketRealtimeMarketId) continue;
           const bucketMs = Date.parse(row.bucket_start);
           if (!Number.isFinite(bucketMs)) continue;
-          const alignedBucketMs = alignBucketToResolution(bucketMs, resolutionMs);
+          const alignedBucketMs = alignBucketToResolution(bucketMs, candleResolutionMs);
           const bucket = new Date(alignedBucketMs).toISOString();
           const nextOpen = asNumber(row.open) ?? 0;
           const nextHigh = asNumber(row.high) ?? 0;
@@ -2503,21 +2621,26 @@ export default function HomePage() {
 
           byBucket.set(bucket, {
             ...existing,
-            high: Math.max(existing.high, nextHigh),
-            low: Math.min(existing.low, nextLow),
+            open: nextOpen,
+            high: nextHigh,
+            low: nextLow,
             close: nextClose,
-            volume: Math.max(0, existing.volume + nextVolume),
-            tradesCount: Math.max(0, existing.tradesCount + nextTrades),
+            volume: Math.max(0, nextVolume),
+            tradesCount: Math.max(0, nextTrades),
           });
         }
-        return Array.from(byBucket.values()).sort(
+        return Array.from(byBucket.values())
+          .sort(
           (a, b) => Date.parse(a.bucket) - Date.parse(b.bucket)
-        );
+          )
+          .slice(Math.max(0, byBucket.size - candleLimit));
       });
     };
 
     const queueCandleRow = (row: CandleRow) => {
-      if (row.market_id !== activeMarketId) return;
+      if (marketCandleInterval !== "1m") return;
+      if (!polymarketRealtimeMarketId) return;
+      if (row.market_id !== polymarketRealtimeMarketId) return;
       const key = `${row.market_id}:${row.bucket_start}`;
       pendingCandleRows.set(key, row);
       incrementClientCounter("market.candles.rowsReceived");
@@ -2535,7 +2658,7 @@ export default function HomePage() {
       setMarketLiveActivityTicks((prev) => {
         const byId = new Map(prev.map((item) => [item.id, item] as const));
         for (const row of rows) {
-          if (row.market_id !== activeMarketId) continue;
+          if (polymarketRealtimeMarketId && row.market_id !== polymarketRealtimeMarketId) continue;
           const id = String(row.id);
           const sideRaw = typeof row.side === "string" ? row.side.toUpperCase() : "UNKNOWN";
           const side: LiveActivityTick["side"] =
@@ -2564,7 +2687,8 @@ export default function HomePage() {
     };
 
     const queueTickRow = (row: TickRow) => {
-      if (row.market_id !== activeMarketId) return;
+      if (!polymarketRealtimeMarketId) return;
+      if (row.market_id !== polymarketRealtimeMarketId) return;
       pendingTickRows.set(String(row.id), row);
       incrementClientCounter("market.activity.rowsReceived");
       if (!tickFlushTimer) {
@@ -2573,7 +2697,7 @@ export default function HomePage() {
     };
 
     const supabase = getBrowserSupabaseClient();
-    const candleChannel = supabase
+    const candleChannel = supabase && polymarketRealtimeMarketId && marketCandleInterval === "1m"
       ? supabase
           .channel(`market-candles-${activeMarketId}`)
           .on(
@@ -2582,7 +2706,7 @@ export default function HomePage() {
               event: "INSERT",
               schema: "public",
               table: "polymarket_candles_1m",
-              filter: `market_id=eq.${activeMarketId}`,
+              filter: `market_id=eq.${polymarketRealtimeMarketId}`,
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
@@ -2596,7 +2720,7 @@ export default function HomePage() {
               event: "UPDATE",
               schema: "public",
               table: "polymarket_candles_1m",
-              filter: `market_id=eq.${activeMarketId}`,
+              filter: `market_id=eq.${polymarketRealtimeMarketId}`,
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
@@ -2619,7 +2743,7 @@ export default function HomePage() {
           })
       : null;
 
-    const tickChannel = supabase
+    const tickChannel = supabase && polymarketRealtimeMarketId
       ? supabase
           .channel(`market-ticks-${activeMarketId}`)
           .on(
@@ -2628,7 +2752,7 @@ export default function HomePage() {
               event: "INSERT",
               schema: "public",
               table: "polymarket_market_ticks",
-              filter: `market_id=eq.${activeMarketId}`,
+              filter: `market_id=eq.${polymarketRealtimeMarketId}`,
             },
             (payload) => {
               if (payload.new && typeof payload.new === "object") {
@@ -2648,9 +2772,10 @@ export default function HomePage() {
       setMarketInsightsError(null);
       try {
         const candlesRaw = await trpcClient.market.getPriceCandles.query({
-          marketId: activeMarketId,
+          marketId: activeMarketQueryId,
           provider: selectedProvider,
-          limit: MARKET_CANDLE_LIMIT,
+          interval: marketCandleInterval,
+          limit: candleLimit,
         });
         if (cancelled) return;
         const candlesParsed = priceCandlesSchema.parse(candlesRaw);
@@ -2693,12 +2818,12 @@ export default function HomePage() {
       try {
         const [ticksRes, tradesRes] = await Promise.allSettled([
           trpcClient.market.getLiveActivity.query({
-            marketId: activeMarketId,
+            marketId: activeMarketQueryId,
             provider: selectedProvider,
             limit: 80,
           }),
           trpcClient.market.getPublicTrades.query({
-            marketId: activeMarketId,
+            marketId: activeMarketQueryId,
             provider: selectedProvider,
             limit: 50,
           }),
@@ -2782,6 +2907,16 @@ export default function HomePage() {
     }
 
     void fetchCandles();
+    const pollIntervalMs = marketCandleInterval === "1m"
+      ? selectedProvider === "limitless"
+        ? 3_000
+        : 5_000
+      : selectedProvider === "limitless"
+        ? 10_000
+        : 15_000;
+    candlePollingTimer = setInterval(() => {
+      void fetchCandles();
+    }, pollIntervalMs);
     void fetchActivity();
     void fetchComments();
 
@@ -2790,6 +2925,7 @@ export default function HomePage() {
       if (candleFlushTimer) clearTimeout(candleFlushTimer);
       if (tickFlushTimer) clearTimeout(tickFlushTimer);
       if (candleFallbackTimer) clearTimeout(candleFallbackTimer);
+      if (candlePollingTimer) clearInterval(candlePollingTimer);
       pendingCandleRows.clear();
       pendingTickRows.clear();
       if (supabase && candleChannel) {
@@ -2799,7 +2935,14 @@ export default function HomePage() {
         void supabase.removeChannel(tickChannel);
       }
     };
-  }, [selectedMarketId, selectedProvider, lang, maybeRequireRelogin]);
+  }, [
+    selectedMarketId,
+    selectedProvider,
+    selectedMarket?.providerMarketId,
+    lang,
+    maybeRequireRelogin,
+    marketCandleInterval,
+  ]);
 
   useEffect(() => {
     if (!HAS_PRIVY_PROVIDER || !selectedMarketId) {
@@ -3483,6 +3626,8 @@ export default function HomePage() {
               onToggleCommentLike={handleToggleMarketCommentLike}
               userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
               priceCandles={marketCandles}
+              chartInterval={marketCandleInterval}
+              onChartIntervalChange={setMarketCandleInterval}
               publicTrades={marketPublicTrades}
               liveActivityTicks={marketLiveActivityTicks}
               insightsLoading={marketInsightsLoading}
@@ -3822,7 +3967,7 @@ export default function HomePage() {
                     lang={lang}
                     onLogin={() => openAuth("SIGN_IN")}
                     onLogout={handleLogout}
-                    onUpdateDisplayName={handleUpdateDisplayName}
+                    onUpdateProfileIdentity={handleUpdateProfileIdentity}
                     onUpdateAvatarUrl={handleUpdateAvatarUrl}
                     balanceMajor={walletBalanceMajor ?? user?.balance ?? 0}
                     pnlMajor={profilePnlMajor ?? 0}

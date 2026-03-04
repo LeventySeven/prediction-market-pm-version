@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from 'react';
-import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick } from '../types';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick, CandleInterval } from '../types';
 import Button from './Button';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
@@ -111,6 +111,8 @@ interface MarketPageProps {
   onDeleteMarket?: () => void;
   tradeBlockedMessage?: string | null;
   onOpenExternalTrade?: (marketId: string) => void;
+  chartInterval?: CandleInterval;
+  onChartIntervalChange?: (interval: CandleInterval) => void;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -149,6 +151,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   onDeleteMarket,
   tradeBlockedMessage = null,
   onOpenExternalTrade,
+  chartInterval = "1h",
+  onChartIntervalChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
@@ -267,13 +271,24 @@ const MarketPage: React.FC<MarketPageProps> = ({
         priceCandles,
         market,
         lang,
+        interval: chartInterval,
       }),
-    [priceCandles, market, lang]
+    [priceCandles, market, lang, chartInterval]
   );
 
   const displayedChance = isMulti
     ? Math.round(Number((selectedOutcome?.price ?? 0) * 100))
     : (Number.isFinite(market.chance) ? market.chance : Math.round(Number(market.yesPrice ?? 0.5) * 100));
+  const prevDisplayedChanceRef = useRef(displayedChance);
+  const [chanceBump, setChanceBump] = useState(false);
+
+  useEffect(() => {
+    if (prevDisplayedChanceRef.current === displayedChance) return;
+    prevDisplayedChanceRef.current = displayedChance;
+    setChanceBump(true);
+    const timer = setTimeout(() => setChanceBump(false), 260);
+    return () => clearTimeout(timer);
+  }, [displayedChance]);
 
   const activityItems = useMemo(() => {
     const items: Array<
@@ -687,8 +702,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 </span>
                 <span className="flex items-center gap-2"><ShieldCheck size={14}/> 
                   {lang === 'RU' ? 'Объем' : 'Vol'}: {market.volume}
-                  {' • '}
-                  24h: {market.volume24h ?? '—'}
                 </span>
                 <span className="flex items-center gap-2 text-zinc-400">
                   <CalendarDays size={14} />
@@ -740,7 +753,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     : 'Trading closed. Outcome will be published after resolution.'}
                 </p>
                 <div className="bg-neutral-800 border border-neutral-700 rounded-lg p-3 text-sm text-neutral-400">
-                  {lang === 'RU' ? 'Итог' : 'Summary'}: {market.chance}% {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume} • 24h: {market.volume24h ?? '—'}
+                  {lang === 'RU' ? 'Итог' : 'Summary'}: {market.chance}% {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume}
                   {isResolved && (
                     <div className="text-xs text-neutral-500 mt-2">
                       {lang === 'RU'
@@ -1215,20 +1228,46 @@ const MarketPage: React.FC<MarketPageProps> = ({
         >
           <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[520px] relative">
             <div className="flex items-baseline gap-4 mb-8">
-              <span className="text-4xl font-bold tracking-tight text-zinc-100">{displayedChance}%</span>
+              <span
+                className={`text-4xl font-bold tracking-tight text-zinc-100 transition-transform duration-200 ${
+                  chanceBump ? "scale-105" : "scale-100"
+                }`}
+              >
+                {displayedChance}%
+              </span>
               <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
                 {isMulti
                   ? (lang === 'RU' ? 'Вероятность выбранного исхода' : 'Selected outcome probability')
                   : (lang === 'RU' ? 'Вероятность (Да)' : 'Yes Probability')}
               </span>
             </div>
-            {insightsLoading && (
-              <span className="absolute top-6 right-6 text-[11px] uppercase text-zinc-500 tracking-wider">
-                {lang === 'RU' ? 'Обновление...' : 'Updating...'}
-              </span>
-            )}
+            <div className="absolute top-6 right-6 z-20 flex items-center gap-2">
+              {(["1h", "1m"] as const).map((intervalOption) => {
+                const active = chartInterval === intervalOption;
+                return (
+                  <button
+                    key={`chart-interval-${intervalOption}`}
+                    type="button"
+                    onClick={() => onChartIntervalChange?.(intervalOption)}
+                    className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition ${
+                      active
+                        ? "border-zinc-200 bg-zinc-100 text-zinc-900"
+                        : "border-zinc-800 bg-black/70 text-zinc-300 hover:border-zinc-700 hover:text-white"
+                    }`}
+                    aria-pressed={active}
+                  >
+                    {intervalOption}
+                  </button>
+                );
+              })}
+              {insightsLoading && (
+                <span className="text-[11px] uppercase text-zinc-500 tracking-wider">
+                  {lang === 'RU' ? 'Обновление...' : 'Updating...'}
+                </span>
+              )}
+            </div>
             {chartSeries.mode === 'multi' && chartSeries.lines.length > 0 && (
-              <div className="absolute top-12 right-6 z-10 rounded-xl border border-zinc-900 bg-black/80 backdrop-blur px-3 py-2 space-y-1">
+              <div className="absolute top-16 right-6 z-10 rounded-xl border border-zinc-900 bg-black/80 backdrop-blur px-3 py-2 space-y-1">
                 {chartSeries.lines.map((line) => (
                   <div key={`legend-${line.id}`} className="flex items-center gap-2 text-[10px] text-zinc-300 max-w-[180px]">
                     <span className="w-2.5 h-2.5 rounded-full border border-zinc-800/80 shrink-0" style={{ backgroundColor: line.color }} />

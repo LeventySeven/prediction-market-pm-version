@@ -7,6 +7,7 @@ import {
   writeUpstashActivityTicks,
   writeUpstashMarketLivePatches,
 } from "../../src/server/cache/upstash";
+import { upsertProviderSyncState } from "../../src/server/venues/catalogStore";
 import type { Database, Json } from "../../src/types/database";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -1025,7 +1026,16 @@ const syncSnapshot = async (mode: "full" | "head") => {
     runningHeadSnapshot = true;
   }
 
+  const syncScope = "open";
+  const startedAt = new Date().toISOString();
   try {
+    await upsertProviderSyncState(supabase, {
+      provider: "polymarket",
+      scope: syncScope,
+      startedAt,
+      errorMessage: null,
+    });
+
     const markets = await listPolymarketMarketsSnapshot({
       scope: "open",
       pageSize: mode === "head" ? NEW_MARKET_POLL_PAGE_SIZE : SNAPSHOT_PAGE_SIZE,
@@ -1033,7 +1043,15 @@ const syncSnapshot = async (mode: "full" | "head") => {
       hydrateMidpoints: false,
     });
 
-    if (markets.length === 0) return;
+    if (markets.length === 0) {
+      await upsertProviderSyncState(supabase, {
+        provider: "polymarket",
+        scope: syncScope,
+        successAt: new Date().toISOString(),
+        errorMessage: null,
+      });
+      return;
+    }
 
     const changedMarkets = selectChangedMarkets(markets);
     if (changedMarkets.length > 0) {
@@ -1107,6 +1125,21 @@ const syncSnapshot = async (mode: "full" | "head") => {
     console.log(
       `[collector] ${tag} fetched=${markets.length} changed=${changedMarkets.length} trackedAssets=${trackedAssetIds.size}`
     );
+    await upsertProviderSyncState(supabase, {
+      provider: "polymarket",
+      scope: syncScope,
+      successAt: new Date().toISOString(),
+      errorMessage: null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await upsertProviderSyncState(supabase, {
+      provider: "polymarket",
+      scope: syncScope,
+      errorMessage: message,
+    });
+    console.error(`[collector] ${mode} snapshot sync failed`, message);
+    throw error;
   } finally {
     const now = Date.now();
     if (mode === "full") {

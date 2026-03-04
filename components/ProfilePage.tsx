@@ -17,7 +17,7 @@ type ProfilePageProps = {
   lang: 'RU' | 'EN';
   onLogin: () => void;
   onLogout: () => void;
-  onUpdateDisplayName: (nextDisplayName: string) => Promise<void>;
+  onUpdateProfileIdentity: (params: { username: string; displayName: string }) => Promise<void>;
   onUpdateAvatarUrl: (
     nextAvatarUrl: string | null,
     nextAvatarPalette?: { primary: string; secondary: string } | null
@@ -92,9 +92,26 @@ const mapProfileSaveError = (error: unknown, lang: 'RU' | 'EN') => {
       ? 'Сервис временно недоступен (service role не настроен).'
       : 'Service temporarily unavailable (service role is not configured).';
   }
+  if (code.includes('USERNAME_TAKEN')) {
+    return lang === 'RU' ? 'Этот handle уже занят.' : 'This handle is already taken.';
+  }
+  if (code.includes('INVALID_USERNAME')) {
+    return lang === 'RU' ? 'Некорректный handle.' : 'Invalid handle.';
+  }
 
   return lang === 'RU' ? 'Не удалось сохранить' : 'Failed to save';
 };
+
+const normalizeHandleInput = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '')
+    .slice(0, 32);
+
+const isValidHandle = (value: string) => /^[a-z0-9_.-]{3,32}$/.test(value);
 
 const buildSparklinePath = (values: number[]) => {
   // viewBox: 0 0 100 40
@@ -128,7 +145,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   lang,
   onLogin,
   onLogout,
-  onUpdateDisplayName,
+  onUpdateProfileIdentity,
   onUpdateAvatarUrl,
   balanceMajor,
   pnlMajor,
@@ -158,6 +175,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   // Tabs are "closed" by default: user chooses what to open.
   const [activeTab, setActiveTab] = useState<'BETS' | 'COMMENTS' | 'BOOKMARKS' | 'MARKETS' | null>(null);
   const [nameDraft, setNameDraft] = useState(displayName);
+  const [usernameDraft, setUsernameDraft] = useState(String(user?.username ?? '').trim().toLowerCase());
   const [avatarMode, setAvatarMode] = useState<'unchanged' | 'upload' | 'import_telegram' | 'clear'>('unchanged');
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
@@ -210,6 +228,12 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
     setAvatarPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [avatarFile]);
+
+  useEffect(() => {
+    if (isEditing) return;
+    setNameDraft(displayName);
+    setUsernameDraft(String(user?.username ?? '').trim().toLowerCase());
+  }, [displayName, isEditing, user?.username]);
 
   const activeBets = bets.filter((b) => b.status === 'open' && Number(b.shares ?? 0) > 0);
   const settledBets = bets.filter((b) => b.status !== 'open');
@@ -286,6 +310,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 onClick={() => {
                   setEditError(null);
                   setNameDraft(displayName);
+                  setUsernameDraft(String(user.username ?? '').trim().toLowerCase());
                   setAvatarMode('unchanged');
                   setAvatarFile(null);
                   setIsEditing(true);
@@ -340,12 +365,33 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
             <div className="grid grid-cols-1 gap-4">
               <div>
                 <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
-                  {lang === 'RU' ? 'Никнейм' : 'Nickname'}
+                  {lang === 'RU' ? 'Handle' : 'Handle'}
+                </div>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">@</span>
+                  <input
+                    value={usernameDraft}
+                    onChange={(e) => setUsernameDraft(normalizeHandleInput(e.target.value))}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="username"
+                    className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 pl-8 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                  />
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  {lang === 'RU' ? 'a-z, 0-9, _, ., - (3-32)' : 'a-z, 0-9, _, ., - (3-32)'}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                  {lang === 'RU' ? 'Display name' : 'Display name'}
                 </div>
                 <input
                   value={nameDraft}
                   onChange={(e) => setNameDraft(e.target.value)}
-                  placeholder={lang === 'RU' ? 'Никнейм' : 'Display name'}
+                  placeholder={lang === 'RU' ? 'Отображаемое имя' : 'Display name'}
                   className="w-full h-11 rounded-full bg-zinc-950 border border-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
                 />
               </div>
@@ -439,17 +485,29 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   disabled={saving}
                   onClick={async () => {
                     setEditError(null);
+                    const nextUsername = normalizeHandleInput(usernameDraft);
                     const nextName = nameDraft.trim();
+                    if (!isValidHandle(nextUsername)) {
+                      setEditError(
+                        lang === 'RU'
+                          ? 'Некорректный handle (a-z, 0-9, _, ., -, 3-32).'
+                          : 'Invalid handle (a-z, 0-9, _, ., -, 3-32).'
+                      );
+                      return;
+                    }
                     if (nextName.length < 2) {
-                      setEditError(lang === 'RU' ? 'Слишком короткий ник' : 'Name is too short');
+                      setEditError(lang === 'RU' ? 'Слишком короткий display name' : 'Display name is too short');
                       return;
                     }
 
                     setSaving(true);
                     try {
-                      const paletteSeed = String(user.id ?? user.username ?? nextName);
-                      if (nextName !== displayName) {
-                        await onUpdateDisplayName(nextName);
+                      const paletteSeed = String(user.id ?? nextUsername ?? nextName);
+                      if (nextName !== displayName || nextUsername !== String(user.username ?? '').trim().toLowerCase()) {
+                        await onUpdateProfileIdentity({
+                          username: nextUsername,
+                          displayName: nextName,
+                        });
                       }
 
                       if (avatarMode === 'upload' && avatarFile) {
