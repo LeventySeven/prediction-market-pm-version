@@ -12,6 +12,7 @@ type TrpcMockOptions = {
 type TrpcMockState = {
   getRequests: (procedure: string) => number;
   getResponses: (procedure: string) => number;
+  getLastInput: (procedure: string) => unknown;
 };
 
 const BASE_TS = Date.parse("2026-03-04T12:00:00.000Z");
@@ -303,6 +304,11 @@ const parseProcedureInputs = (request: Parameters<Page["route"]>[1]["request"]) 
   };
 };
 
+const isRouteClosedError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return /Target page, context or browser has been closed/i.test(error.message);
+};
+
 const resolveMockProcedure = (procedure: string, input: unknown) => {
   switch (procedure) {
     case "market.listCategories":
@@ -399,6 +405,7 @@ export const installTrpcMock = async (
   const counters = {
     requests: {} as Record<string, number>,
     responses: {} as Record<string, number>,
+    inputs: {} as Record<string, unknown[]>,
   };
   const mergedOptions: Required<TrpcMockOptions> = {
     listMarketsDelayMs: options?.listMarketsDelayMs ?? 80,
@@ -416,6 +423,9 @@ export const installTrpcMock = async (
     for (let index = 0; index < procedures.length; index += 1) {
       const procedure = procedures[index] ?? "";
       counters.requests[procedure] = (counters.requests[procedure] ?? 0) + 1;
+      const procedureInputs = counters.inputs[procedure] ?? [];
+      procedureInputs.push(inputs[index]);
+      counters.inputs[procedure] = procedureInputs;
 
       const waitMs = getProcedureDelay(procedure, mergedOptions);
       await delay(waitMs);
@@ -430,16 +440,28 @@ export const installTrpcMock = async (
       counters.responses[procedure] = (counters.responses[procedure] ?? 0) + 1;
     }
 
-    const body = JSON.stringify(isBatch ? responses : responses[0] ?? { result: { data: superjson.serialize(null) } });
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body,
-    });
+    const body = JSON.stringify(
+      isBatch ? responses : responses[0] ?? { result: { data: superjson.serialize(null) } }
+    );
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body,
+      });
+    } catch (error) {
+      if (!isRouteClosedError(error)) {
+        throw error;
+      }
+    }
   });
 
   return {
     getRequests: (procedure: string) => counters.requests[procedure] ?? 0,
     getResponses: (procedure: string) => counters.responses[procedure] ?? 0,
+    getLastInput: (procedure: string) => {
+      const values = counters.inputs[procedure] ?? [];
+      return values.length > 0 ? values[values.length - 1] : undefined;
+    },
   };
 };

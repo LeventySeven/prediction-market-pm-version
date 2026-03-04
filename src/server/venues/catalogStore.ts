@@ -111,26 +111,35 @@ export const upsertVenueMarketsToCatalog = async (
     new Map(markets.map((market) => [`${market.provider}:${market.providerMarketId}`, market])).values()
   );
   const nowIso = toNowIso();
-  const marketRows: CatalogRowPayload[] = dedupedMarkets.map((market) => ({
-    provider: market.provider,
-    provider_market_id: market.providerMarketId,
-    provider_condition_id: market.providerConditionId,
-    slug: market.slug,
-    title: market.title,
-    description: market.description,
-    state: market.state,
-    category: market.category,
-    source_url: market.sourceUrl,
-    image_url: market.imageUrl,
-    provider_payload: {
-      capabilities: market.capabilities,
-      resolved_outcome_title: market.resolvedOutcomeTitle,
-      created_at: market.createdAt,
-      closes_at: market.closesAt,
-      expires_at: market.expiresAt,
-      volume: market.volume,
-    },
-  }));
+  const marketRows: CatalogRowPayload[] = dedupedMarkets.map((market) => {
+    const providerPayload =
+      market.providerPayload && typeof market.providerPayload === "object" && !Array.isArray(market.providerPayload)
+        ? market.providerPayload
+        : {};
+
+    return {
+      provider: market.provider,
+      provider_market_id: market.providerMarketId,
+      provider_condition_id: market.providerConditionId,
+      slug: market.slug,
+      title: market.title,
+      description: market.description,
+      state: market.state,
+      category: market.category,
+      source_url: market.sourceUrl,
+      image_url: market.imageUrl,
+      provider_payload: {
+        ...providerPayload,
+        capabilities: market.capabilities,
+        resolved_outcome_title: market.resolvedOutcomeTitle,
+        created_at: market.createdAt,
+        closes_at: market.closesAt,
+        expires_at: market.expiresAt,
+        volume: market.volume,
+        market_address: market.marketAddress ?? null,
+      },
+    };
+  });
 
   const keyRows = marketRows.map((row) => ({
     provider: row.provider,

@@ -40,6 +40,40 @@ test.describe("Realtime-first frontend performance", () => {
     expect(trpc.getRequests("market.listMarkets") - baselineListCalls).toBeLessThanOrEqual(1);
   });
 
+  test("catalog provider/pagination/search operations stay responsive and send correct backend params", async ({
+    page,
+  }) => {
+    const trpc = await installTrpcMock(page, {
+      listMarketsDelayMs: 140,
+    });
+
+    await page.goto("/catalog");
+    await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+      timeout: 7_000,
+    });
+
+    const baselineCalls = trpc.getRequests("market.listMarkets");
+    const providerClickedAt = Date.now();
+    await page.getByRole("button", { name: "Limitless" }).first().click({ force: true });
+
+    await expect
+      .poll(() => trpc.getRequests("market.listMarkets"), {
+        timeout: 5_000,
+      })
+      .toBeGreaterThan(baselineCalls);
+
+    const afterProviderInput = trpc.getLastInput("market.listMarkets") as
+      | { sortBy?: string; providerFilter?: string }
+      | undefined;
+    expect(afterProviderInput?.providerFilter).toBe("limitless");
+    expect(Date.now() - providerClickedAt).toBeLessThan(1_800);
+
+    const callsBeforeSearch = trpc.getRequests("market.listMarkets");
+    await page.getByPlaceholder(/Search|Поиск/i).first().fill("ETH");
+    await page.waitForTimeout(250);
+    expect(trpc.getRequests("market.listMarkets")).toBe(callsBeforeSearch);
+  });
+
   test("market open reaches chart first paint before slow comments complete", async ({
     page,
   }) => {

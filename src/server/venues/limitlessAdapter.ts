@@ -18,18 +18,58 @@ type JsonLike =
 const DEFAULT_BASE_ROOT = "https://api.limitless.exchange";
 const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
 const DEFAULT_BASE_ALT = `${DEFAULT_BASE_ROOT}/api-v1`;
+const DEFAULT_WS_URL = "wss://ws.limitless.exchange/markets";
 const DEFAULT_SITE = "https://limitless.exchange";
 const SNAPSHOT_CACHE_TTL_MS = Math.max(1000, Number(process.env.LIMITLESS_MARKETS_CACHE_TTL_MS ?? 15_000));
 const LIMITLESS_ACTIVE_PAGE_LIMIT = Math.max(
   1,
-  Math.min(25, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 25))
+  Math.min(100, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 100))
 );
 const LIMITLESS_DEBUG = (process.env.LIMITLESS_DEBUG || "").trim().toLowerCase() === "true";
 const LIMITLESS_HTTP_TIMEOUT_MS = Math.max(2_000, Number(process.env.LIMITLESS_HTTP_TIMEOUT_MS ?? 10_000));
+// Limitless API reference recommends max 2 concurrent calls with ~300ms spacing.
 const LIMITLESS_PAGED_FETCH_CONCURRENCY = Math.max(
   1,
-  Math.min(8, Number(process.env.LIMITLESS_PAGED_FETCH_CONCURRENCY ?? 4))
+  Math.min(2, Number(process.env.LIMITLESS_PAGED_FETCH_CONCURRENCY ?? 2))
 );
+const LIMITLESS_HTTP_MAX_RETRIES = Math.max(0, Math.min(6, Number(process.env.LIMITLESS_HTTP_MAX_RETRIES ?? 2)));
+const LIMITLESS_HTTP_RETRY_BASE_MS = Math.max(
+  100,
+  Number(process.env.LIMITLESS_HTTP_RETRY_BASE_MS ?? 300)
+);
+const LIMITLESS_HTTP_RETRY_MAX_MS = Math.max(
+  LIMITLESS_HTTP_RETRY_BASE_MS,
+  Number(process.env.LIMITLESS_HTTP_RETRY_MAX_MS ?? 5_000)
+);
+const LIMITLESS_HTTP_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+type LimitlessSnapshotSort = "newest" | "volume";
+
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, Math.max(0, ms));
+  });
+
+const parseRetryAfterMs = (value: string | null): number | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  const retryAt = Date.parse(trimmed);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(0, retryAt - Date.now());
+};
+
+const retryDelayMs = (attempt: number, retryAfterMs: number | null): number =>
+  Math.min(
+    LIMITLESS_HTTP_RETRY_MAX_MS,
+    Math.max(
+      LIMITLESS_HTTP_RETRY_BASE_MS,
+      retryAfterMs ?? LIMITLESS_HTTP_RETRY_BASE_MS * Math.pow(2, attempt)
+    )
+  );
 
 const normalizeBase = (base: string): string => base.trim().replace(/\/+$/, "");
 
@@ -65,7 +105,18 @@ const getPrimaryBaseUrl = (): string => getCandidateBaseUrls()[0] ?? DEFAULT_BAS
 const toNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
-    const parsed = Number(value);
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const compact = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*([kmb])$/i);
+    if (compact) {
+      const base = Number(compact[1]);
+      const suffix = compact[2].toLowerCase();
+      const multiplier = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : 1_000_000_000;
+      const out = base * multiplier;
+      if (Number.isFinite(out)) return out;
+    }
+    const normalized = trimmed.replace(/[$,%_\s]/g, "").replace(/,/g, "");
+    const parsed = Number(normalized);
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
@@ -236,6 +287,58 @@ const parseOutcomes = (
   ];
 };
 
+const parseLimitlessVolume = (row: Record<string, unknown>): number => {
+  const stats = asRecord(row.stats);
+  const marketStats = asRecord(row.marketStats) ?? asRecord(row.market_stats);
+  const metrics = asRecord(row.metrics);
+  const aggregates = asRecord(row.aggregates);
+
+  const candidates: unknown[] = [
+    row.volume,
+    row.totalVolume,
+    row.total_volume,
+    row.volumeUsd,
+    row.volume_usd,
+    row.volumeUSD,
+    row.usdVolume,
+    row.usd_volume,
+    row.volume24h,
+    row.volume_24h,
+    row.dailyVolume,
+    row.daily_volume,
+    row.liquidity,
+    row.liquidityUsd,
+    row.liquidity_usd,
+    row.totalLiquidity,
+    row.total_liquidity,
+    stats?.volume,
+    stats?.totalVolume,
+    stats?.total_volume,
+    stats?.volume24h,
+    stats?.volume_24h,
+    stats?.liquidity,
+    stats?.liquidityUsd,
+    marketStats?.volume,
+    marketStats?.totalVolume,
+    marketStats?.total_volume,
+    marketStats?.volume24h,
+    marketStats?.volume_24h,
+    metrics?.volume,
+    metrics?.totalVolume,
+    metrics?.volumeUsd,
+    metrics?.liquidity,
+    aggregates?.volume,
+    aggregates?.totalVolume,
+    aggregates?.volumeUsd,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = toNumber(candidate);
+    if (parsed !== null) return Math.max(0, parsed);
+  }
+  return 0;
+};
+
 const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null => {
   const providerMarketId =
     toString(row.id) ?? toString(row.marketId) ?? toString(row.market_id) ?? toString(row.slug);
@@ -277,14 +380,20 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
   const sourceUrl = sourceUrlRaw && /^https?:\/\//i.test(sourceUrlRaw)
     ? sourceUrlRaw
     : fallbackSourceUrl(slug);
+  const marketAddress =
+    toString(row.marketAddress) ??
+    toString(row.market_address) ??
+    toString(row.address) ??
+    null;
 
-  const volume = Math.max(0, toNumber(row.volume) ?? toNumber(row.volume24h) ?? toNumber(row.liquidity) ?? 0);
+  const volume = parseLimitlessVolume(row);
 
   return {
     provider: "limitless",
     providerMarketId,
     providerConditionId:
       toString(row.conditionId) ?? toString(row.condition_id) ?? toString(row.eventId) ?? null,
+    marketAddress,
     slug,
     title,
     description: toString(row.description),
@@ -307,41 +416,74 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
       supportsPublicTrades: true,
       chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
     },
+    providerPayload: row,
   };
 };
 
 const fetchJson = async (url: string): Promise<unknown> => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LIMITLESS_HTTP_TIMEOUT_MS);
-  const response = await fetch(url, {
-    cache: "no-store",
-    signal: controller.signal,
-    headers: {
-      accept: "application/json",
-      "user-agent": "prediction-market-worker/1.0 (+https://prediction-market.local)",
-    },
-  }).finally(() => clearTimeout(timeout));
+  for (let attempt = 0; attempt <= LIMITLESS_HTTP_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LIMITLESS_HTTP_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          accept: "application/json",
+          "user-agent": "prediction-market-worker/1.0 (+https://prediction-market.local)",
+        },
+      });
 
-  if (!response.ok) {
-    if (LIMITLESS_DEBUG) {
-      const body = await response.text().catch(() => "");
-      console.warn(`[limitless-adapter] http ${response.status} ${url} body=${body.slice(0, 180).replace(/\s+/g, " ")}`);
+      if (!response.ok) {
+        if (LIMITLESS_DEBUG) {
+          const body = await response.text().catch(() => "");
+          console.warn(
+            `[limitless-adapter] http ${response.status} ${url} body=${body
+              .slice(0, 180)
+              .replace(/\s+/g, " ")}`
+          );
+        }
+        const shouldRetry =
+          LIMITLESS_HTTP_RETRYABLE_STATUSES.has(response.status) &&
+          attempt < LIMITLESS_HTTP_MAX_RETRIES;
+        if (shouldRetry) {
+          const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+          await wait(retryDelayMs(attempt, retryAfterMs));
+          continue;
+        }
+        throw new Error(`HTTP_${response.status}`);
+      }
+
+      const payload = await response.json();
+      if (LIMITLESS_DEBUG) {
+        const rows = parseRows(payload);
+        console.log(`[limitless-adapter] ok ${url} rows=${rows.length}`);
+      }
+      return payload;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const shouldRetry =
+        attempt < LIMITLESS_HTTP_MAX_RETRIES &&
+        (message.includes("aborted") ||
+          message.includes("timed out") ||
+          message.includes("fetch failed") ||
+          message.includes("ECONNRESET") ||
+          message.includes("ENOTFOUND"));
+      if (!shouldRetry) throw error;
+      await wait(retryDelayMs(attempt, null));
+    } finally {
+      clearTimeout(timeout);
     }
-    throw new Error(`HTTP_${response.status}`);
   }
 
-  const payload = await response.json();
-  if (LIMITLESS_DEBUG) {
-    const rows = parseRows(payload);
-    console.log(`[limitless-adapter] ok ${url} rows=${rows.length}`);
-  }
-  return payload;
+  throw new Error("LIMITLESS_HTTP_RETRY_EXHAUSTED");
 };
 
 const fetchMarketRows = async (params: {
   query?: string;
   limit?: number;
   onlyOpen?: boolean;
+  sortBy?: LimitlessSnapshotSort;
 }): Promise<Record<string, unknown>[]> => {
   const limit = Math.max(1, Math.min(params.limit ?? 300, 1000));
   const pageSize = Math.max(
@@ -446,19 +588,39 @@ const fetchMarketRows = async (params: {
       continue;
     }
 
-    const openRowsPrimary = await fetchPaged(base, "/markets/active", "sortBy=newest");
-    const openRows = openRowsPrimary.length > 0
-      ? openRowsPrimary
-      : await fetchPaged(base, "/markets/active");
+    const activeSortHints =
+      params.sortBy === "volume"
+        ? ["high_value", "newest", ""]
+        : ["newest", "ending_soon", ""];
+    let openRows: Record<string, unknown>[] = [];
+    for (const sortHint of activeSortHints) {
+      const rows = await fetchPaged(
+        base,
+        "/markets/active",
+        sortHint ? `sortBy=${encodeURIComponent(sortHint)}` : undefined
+      );
+      if (rows.length > 0) {
+        openRows = rows;
+        break;
+      }
+    }
     if (openRows.length > 0) {
       if (params.onlyOpen) return openRows.slice(0, limit);
       if (openRows.length >= limit) return openRows.slice(0, limit);
     }
 
     const status = params.onlyOpen ? "open" : "all";
+    const statusSortHints =
+      params.sortBy === "volume"
+        ? ["high_value", "newest", ""]
+        : ["newest", "ending_soon", ""];
+    const statusUrls = statusSortHints.map((sortHint) =>
+      sortHint
+        ? `${base}/markets?limit=${limit}&status=${status}&sortBy=${encodeURIComponent(sortHint)}`
+        : `${base}/markets?limit=${limit}&status=${status}`
+    );
     const rows = await fetchFirstNonEmpty([
-      `${base}/markets?limit=${limit}&status=${status}&sortBy=newest`,
-      `${base}/markets?limit=${limit}&status=${status}`,
+      ...statusUrls,
       `${base}/markets?limit=${limit}`,
     ]);
     if (rows.length > 0) {
@@ -680,6 +842,43 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
   }
 };
 
+const mapHistoryRowsToPoints = (
+  rows: Record<string, unknown>[],
+  limit: number
+): Array<{ ts: number; price: number }> => {
+  const points = rows
+    .map((row) => {
+      const ts =
+        toNumber(row.ts) ??
+        toNumber(row.timestamp) ??
+        toNumber(row.t) ??
+        toNumber(row.time) ??
+        null;
+      const price =
+        toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
+      if (ts === null || price === null) return null;
+      const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
+      return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
+    })
+    .filter((item): item is { ts: number; price: number } => Boolean(item))
+    .sort((a, b) => a.ts - b.ts);
+
+  if (points.length === 0) return [];
+
+  const byTs = new Map<number, { ts: number; price: number }>();
+  for (const point of points) {
+    byTs.set(point.ts, point);
+  }
+
+  const deduped = Array.from(byTs.values()).sort((a, b) => a.ts - b.ts);
+  return deduped.slice(Math.max(0, deduped.length - limit));
+};
+
+const historySpanSeconds = (points: Array<{ ts: number; price: number }>): number => {
+  if (points.length <= 1) return 0;
+  return Math.max(0, points[points.length - 1]!.ts - points[0]!.ts);
+};
+
 export const limitlessAdapter: VenueAdapter = {
   provider: "limitless",
   capabilities: {
@@ -692,18 +891,23 @@ export const limitlessAdapter: VenueAdapter = {
   listMarketsSnapshot: async (params) => {
     const onlyOpen = params?.onlyOpen ?? false;
     const limit = Math.max(1, Math.min(params?.limit ?? 300, 1000));
-    const cacheKey = `${onlyOpen ? "open" : "all"}:${limit}`;
+    const sortBy: LimitlessSnapshotSort = params?.sortBy ?? "newest";
+    const cacheKey = `${onlyOpen ? "open" : "all"}:${sortBy}:${limit}`;
     const now = Date.now();
     const cached = snapshotCache.get(cacheKey);
     if (cached && cached.expiresAt > now) {
       return cached.rows.slice(0, limit);
     }
 
-    const rows = await fetchMarketRows({ limit, onlyOpen });
+    const rows = await fetchMarketRows({ limit, onlyOpen, sortBy });
     const mapped = rows
       .map(mapLimitlessMarket)
       .filter((item): item is VenueMarket => Boolean(item))
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      .sort((a, b) =>
+        sortBy === "volume"
+          ? b.volume - a.volume || Date.parse(b.createdAt) - Date.parse(a.createdAt)
+          : Date.parse(b.createdAt) - Date.parse(a.createdAt)
+      );
     if (LIMITLESS_DEBUG) {
       console.log(`[limitless-adapter] snapshot raw=${rows.length} mapped=${mapped.length} onlyOpen=${onlyOpen} limit=${limit}`);
       if (mapped.length > 0) {
@@ -721,7 +925,7 @@ export const limitlessAdapter: VenueAdapter = {
   },
   searchMarkets: async (query, limit = 80) => {
     if (!query.trim()) return [];
-    const rows = await fetchMarketRows({ query, limit, onlyOpen: false });
+    const rows = await fetchMarketRows({ query, limit, onlyOpen: false, sortBy: "newest" });
     return rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
   },
   getMarketById: async (marketId) => {
@@ -744,71 +948,67 @@ export const limitlessAdapter: VenueAdapter = {
       }
     }
 
-    const rows = await fetchMarketRows({ limit: 600, onlyOpen: false });
+    const rows = await fetchMarketRows({ limit: 600, onlyOpen: false, sortBy: "newest" });
     const mapped = rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
     return mapped.find((m) => m.providerMarketId === clean || m.slug === clean) ?? null;
   },
   getPriceHistory: async (market, limit = 400) => {
     const id = encodeURIComponent(market.providerMarketId);
-    for (const base of getCandidateBaseUrls()) {
-      const urls = [
-        `${base}/markets/${id}/candles?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-        `${base}/candles?market_id=${id}&interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-        `${base}/markets/${id}/prices?interval=1m&limit=${Math.max(10, Math.min(limit, 2000))}`,
-      ];
+    const safeLimit = Math.max(10, Math.min(limit, 5000));
+    const intervalPlans: Array<{ interval: string; perIntervalLimit: number }> = [
+      { interval: "1h", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+      { interval: "1d", perIntervalLimit: Math.max(90, Math.min(1500, Math.ceil(safeLimit / 4))) },
+      { interval: "15m", perIntervalLimit: Math.max(240, Math.min(5000, safeLimit)) },
+      { interval: "1m", perIntervalLimit: Math.max(240, Math.min(2000, safeLimit)) },
+    ];
 
-      for (const url of urls) {
-        try {
-          const payload = await fetchJson(url);
-          const rows = parseRows(payload);
-          if (rows.length === 0 && Array.isArray(payload)) {
-            const directRows = (payload as unknown[])
-              .map((item) => asRecord(item))
-              .filter((item): item is Record<string, unknown> => Boolean(item));
-            if (directRows.length > 0) {
-              const points = directRows
-                .map((row) => {
-                  const ts =
-                    toNumber(row.ts) ??
-                    toNumber(row.timestamp) ??
-                    toNumber(row.t) ??
-                    toNumber(row.time) ??
-                    null;
-                  const price =
-                    toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
-                  if (ts === null || price === null) return null;
-                  const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-                  return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
-                })
-                .filter((item): item is { ts: number; price: number } => Boolean(item));
-              if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
+    let bestPoints: Array<{ ts: number; price: number }> = [];
+    let bestSpan = 0;
+
+    for (const plan of intervalPlans) {
+      for (const base of getCandidateBaseUrls()) {
+        const urls = [
+          `${base}/markets/${id}/candles?interval=${plan.interval}&limit=${plan.perIntervalLimit}`,
+          `${base}/candles?market_id=${id}&interval=${plan.interval}&limit=${plan.perIntervalLimit}`,
+          `${base}/markets/${id}/prices?interval=${plan.interval}&limit=${plan.perIntervalLimit}`,
+        ];
+
+        for (const url of urls) {
+          try {
+            const payload = await fetchJson(url);
+            const rows = parseRows(payload);
+            const sourceRows =
+              rows.length > 0
+                ? rows
+                : Array.isArray(payload)
+                  ? (payload as unknown[])
+                      .map((item) => asRecord(item))
+                      .filter((item): item is Record<string, unknown> => Boolean(item))
+                  : [];
+            if (sourceRows.length === 0) continue;
+
+            const points = mapHistoryRowsToPoints(sourceRows, safeLimit);
+            if (points.length === 0) continue;
+
+            const span = historySpanSeconds(points);
+            const isBetter =
+              span > bestSpan || (span === bestSpan && points.length > bestPoints.length);
+            if (isBetter) {
+              bestSpan = span;
+              bestPoints = points;
             }
+
+            if (bestSpan >= 7 * 24 * 60 * 60 && bestPoints.length >= Math.min(120, safeLimit)) {
+              return bestPoints;
+            }
+          } catch {
+            // try next endpoint / interval
           }
-
-          const points = rows
-            .map((row) => {
-              const ts =
-                toNumber(row.ts) ??
-                toNumber(row.timestamp) ??
-                toNumber(row.t) ??
-                toNumber(row.time) ??
-                null;
-              const price =
-                toNumber(row.price) ?? toNumber(row.close) ?? toNumber(row.p) ?? toNumber(row.value) ?? null;
-              if (ts === null || price === null) return null;
-              const unix = ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts);
-              return { ts: unix, price: clamp01(price > 1 ? price / 100 : price) };
-            })
-            .filter((item): item is { ts: number; price: number } => Boolean(item));
-
-          if (points.length > 0) return points.slice(Math.max(0, points.length - limit));
-        } catch {
-          // try next
         }
       }
     }
 
-    return [];
+    return bestPoints;
   },
   getPublicTrades: async (market, limit = 50) => {
     const id = encodeURIComponent(market.providerMarketId);
@@ -866,7 +1066,12 @@ export const limitlessAdapter: VenueAdapter = {
   checkTradeAccess,
   relaySignedOrder,
   wsCollectorConfig: () => ({
-    url: (process.env.LIMITLESS_RTDS_WS_URL || process.env.LIMITLESS_WS_URL || "").trim() || null,
+    url: (
+      process.env.LIMITLESS_RTDS_WS_URL ||
+      process.env.LIMITLESS_WS_URL ||
+      DEFAULT_WS_URL
+    )
+      .trim() || null,
     channels: ["markets", "prices", "trades"],
   }),
 };

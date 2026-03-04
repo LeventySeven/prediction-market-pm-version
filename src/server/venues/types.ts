@@ -24,6 +24,7 @@ export type VenueMarket = {
   provider: VenueProvider;
   providerMarketId: string;
   providerConditionId: string | null;
+  marketAddress?: string | null;
   slug: string;
   title: string;
   description: string | null;
@@ -38,6 +39,7 @@ export type VenueMarket = {
   resolvedOutcomeTitle: string | null;
   outcomes: VenueOutcome[];
   capabilities: VenueCapabilities;
+  providerPayload?: Record<string, unknown> | null;
 };
 
 export type VenuePricePoint = {
@@ -88,7 +90,7 @@ export type VenueAdapter = {
   provider: VenueProvider;
   capabilities: VenueCapabilities;
   isEnabled: () => boolean;
-  listMarketsSnapshot: (params?: { limit?: number; onlyOpen?: boolean }) => Promise<VenueMarket[]>;
+  listMarketsSnapshot: (params?: { limit?: number; onlyOpen?: boolean; sortBy?: "newest" | "volume" }) => Promise<VenueMarket[]>;
   searchMarkets: (query: string, limit?: number) => Promise<VenueMarket[]>;
   getMarketById: (marketId: string) => Promise<VenueMarket | null>;
   getPriceHistory: (market: VenueMarket, limit?: number) => Promise<VenuePricePoint[]>;

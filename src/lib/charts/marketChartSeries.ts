@@ -43,6 +43,60 @@ const fallbackOutcomeColor = (seed: string) => {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
 };
 
+const candleTs = (candle: PriceCandle): number => Date.parse(String(candle.bucket));
+
+const selectResolutionMs = (candles: PriceCandle[]): number => {
+  if (candles.length < 2) return 60 * 60 * 1000;
+  const times = candles
+    .map(candleTs)
+    .filter((ts) => Number.isFinite(ts))
+    .sort((a, b) => a - b);
+  if (times.length < 2) return 60 * 60 * 1000;
+  const first = times[0] ?? 0;
+  const last = times[times.length - 1] ?? first;
+  const span = Math.max(0, last - first);
+  if (span >= 45 * 24 * 60 * 60 * 1000) {
+    return 24 * 60 * 60 * 1000;
+  }
+  return 60 * 60 * 1000;
+};
+
+const aggregatePriceCandles = (candles: PriceCandle[]): PriceCandle[] => {
+  if (candles.length === 0) return [];
+  const resolutionMs = selectResolutionMs(candles);
+  const ordered = [...candles]
+    .filter((c) => Number.isFinite(candleTs(c)))
+    .sort((a, b) => candleTs(a) - candleTs(b));
+  if (ordered.length === 0) return [];
+
+  const byBucket = new Map<string, PriceCandle>();
+  for (const row of ordered) {
+    const ts = candleTs(row);
+    if (!Number.isFinite(ts)) continue;
+    const bucketStart = Math.floor(ts / resolutionMs) * resolutionMs;
+    const outcomeKey = row.outcomeId ?? "__market__";
+    const key = `${outcomeKey}:${bucketStart}`;
+    const existing = byBucket.get(key);
+    if (!existing) {
+      byBucket.set(key, {
+        ...row,
+        bucket: new Date(bucketStart).toISOString(),
+      });
+      continue;
+    }
+    byBucket.set(key, {
+      ...existing,
+      high: Math.max(existing.high, row.high),
+      low: Math.min(existing.low, row.low),
+      close: row.close,
+      volume: (existing.volume ?? 0) + (row.volume ?? 0),
+      tradesCount: (existing.tradesCount ?? 0) + (row.tradesCount ?? 0),
+    });
+  }
+
+  return Array.from(byBucket.values()).sort((a, b) => candleTs(a) - candleTs(b));
+};
+
 export const buildMarketChartSeries = ({
   priceCandles,
   market,
@@ -52,12 +106,13 @@ export const buildMarketChartSeries = ({
   market: Market;
   lang: "RU" | "EN";
 }): ChartSeries => {
+  const chartCandles = aggregatePriceCandles(priceCandles);
   const isMulti =
     market.marketType === "multi_choice" &&
     Array.isArray(market.outcomes) &&
     market.outcomes.length > 0;
 
-  const candleTimes = priceCandles
+  const candleTimes = chartCandles
     .map((c) => Date.parse(String(c.bucket)))
     .filter((t) => Number.isFinite(t));
   const createdTsRaw = Date.parse(String(market.createdAt));
@@ -110,7 +165,7 @@ export const buildMarketChartSeries = ({
         values: Record<string, number>;
       }
     >();
-    priceCandles.forEach((c) => {
+    chartCandles.forEach((c) => {
       const ts = Date.parse(String(c.bucket));
       if (!Number.isFinite(ts) || !c.outcomeId) return;
       const row = byTs.get(ts) ?? {
@@ -172,7 +227,7 @@ export const buildMarketChartSeries = ({
     ? market.chance
     : Math.round(Number(market.yesPrice ?? 0.5) * 100);
 
-  const rows = priceCandles
+  const rows = chartCandles
     .map((c) => {
       const ts = Date.parse(String(c.bucket));
       if (!Number.isFinite(ts)) return null;

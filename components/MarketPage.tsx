@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick } from '../types';
 import Button from './Button';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
-import { formatTimeRemaining } from '../lib/time';
+import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
 import { buildMarketChartSeries } from '@/src/lib/charts/marketChartSeries';
 
@@ -158,6 +158,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [selectedOutcomeId, setSelectedOutcomeId] = useState<string | null>(isMulti ? (market.outcomes?.[0]?.id ?? null) : null);
   const [amount, setAmount] = useState('');
   const [timeLeft, setTimeLeft] = useState('');
+  const [isUrgentCountdown, setIsUrgentCountdown] = useState(false);
   const [placeError, setPlaceError] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   const [selling, setSelling] = useState(false);
@@ -322,12 +323,20 @@ const MarketPage: React.FC<MarketPageProps> = ({
     const update = () => {
       if (isResolved) {
         setTimeLeft(lang === 'RU' ? 'Завершено' : 'Resolved');
+        setIsUrgentCountdown(false);
         return;
       }
+      const remaining = getTimeRemainingInfo(tradingDeadline);
+      if (remaining.isExpired) {
+        setTimeLeft(lang === 'RU' ? 'Завершено' : 'Ended');
+        setIsUrgentCountdown(false);
+        return;
+      }
+      setIsUrgentCountdown(remaining.isUnderHour);
       setTimeLeft(formatTimeRemaining(tradingDeadline, 'minutes', lang));
     };
     update();
-    const timer = setInterval(update, 60000);
+    const timer = setInterval(update, 15000);
     return () => clearInterval(timer);
   }, [tradingDeadline, lang, isResolved]);
 
@@ -665,7 +674,17 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 <span className="inline-flex items-center rounded-full border border-zinc-800 bg-zinc-900/50 px-2 py-1 text-zinc-200">
                   {providerLabel}
                 </span>
-                <span className="flex items-center gap-2 text-zinc-200 font-mono"><Clock size={14}/> {timeLeft}</span>
+                <span className={`flex items-center gap-2 font-mono ${isUrgentCountdown ? 'text-red-400' : 'text-zinc-200'}`}>
+                  {isUrgentCountdown ? (
+                    <span className="relative inline-flex h-2.5 w-2.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/80" />
+                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_14px_rgba(239,68,68,0.9)]" />
+                    </span>
+                  ) : (
+                    <Clock size={14} />
+                  )}
+                  {timeLeft}
+                </span>
                 <span className="flex items-center gap-2"><ShieldCheck size={14}/> 
                   {lang === 'RU' ? 'Объем' : 'Vol'}: {market.volume}
                 </span>

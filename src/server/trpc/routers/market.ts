@@ -532,33 +532,56 @@ const getMarketFromMirrorOrLive = async (
   return null;
 };
 
+type TimeoutOutcome<T> = { kind: "ok"; value: T } | { kind: "timeout" };
+
+const waitForWithTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<TimeoutOutcome<T>> =>
+  new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timeout);
+        resolve({ kind: "ok", value });
+      })
+      .catch((error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+  });
+
+const POLYMARKET_LIVE_LIST_TIMEOUT_MS = Math.max(
+  250,
+  Number(process.env.POLYMARKET_LIVE_LIST_TIMEOUT_MS ?? 1_800)
+);
+
 const listMarketsFromMirrorOrLive = async (
   supabaseService: SupabaseServiceClient,
   params: { onlyOpen: boolean; limit: number; sortBy: "newest" | "volume" }
 ): Promise<PolymarketMarket[]> => {
-  let mirrored: PolymarketMarket[] = [];
-  const preferMirror = await isPolymarketWorkerFresh(supabaseService).catch(() => false);
-
-  try {
-    mirrored = await listMirroredPolymarketMarkets(supabaseService, {
+  const [preferMirror, mirrored] = await Promise.all([
+    isPolymarketWorkerFresh(supabaseService).catch(() => false),
+    listMirroredPolymarketMarkets(supabaseService, {
       onlyOpen: params.onlyOpen,
       limit: params.limit,
       sortBy: params.sortBy === "newest" ? "created_desc" : "volume",
-    });
-    if (preferMirror && mirrored.length > 0) {
-      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
-    }
-  } catch (err) {
-    console.warn("Mirror listMarkets prefetch failed", err);
-  }
-
-  try {
-    const live = await listPolymarketMarkets(params.limit, { hydrateMidpoints: false });
-    const sortedLive = [...live].sort((a, b) =>
+    }).catch((err) => {
+      console.warn("Mirror listMarkets prefetch failed", err);
+      return [] as PolymarketMarket[];
+    }),
+  ]);
+  const filterRows = (rows: PolymarketMarket[]) =>
+    params.onlyOpen ? rows.filter((m) => m.state === "open") : rows;
+  const sortRows = (rows: PolymarketMarket[]) =>
+    [...rows].sort((a, b) =>
       params.sortBy === "newest"
         ? Date.parse(b.createdAt) - Date.parse(a.createdAt)
         : Number(b.volume ?? 0) - Number(a.volume ?? 0)
     );
+
+  if (preferMirror && mirrored.length > 0) {
+    return filterRows(mirrored);
+  }
+
+  const livePromise = listPolymarketMarkets(params.limit, { hydrateMidpoints: false }).then(async (live) => {
     if (live.length > 0) {
       try {
         await upsertMirroredPolymarketMarkets(supabaseService, live);
@@ -566,16 +589,33 @@ const listMarketsFromMirrorOrLive = async (
         console.warn("Mirror upsert after live listMarkets failed", err);
       }
     }
-    if (sortedLive.length === 0 && mirrored.length > 0) {
-      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
+    return sortRows(live);
+  });
+
+  if (mirrored.length > 0) {
+    try {
+      const liveAttempt = await waitForWithTimeout(livePromise, POLYMARKET_LIVE_LIST_TIMEOUT_MS);
+      if (liveAttempt.kind === "timeout") {
+        void livePromise.catch((err) => {
+          console.warn("Live listMarkets background refresh failed", err);
+        });
+        return filterRows(mirrored);
+      }
+      if (liveAttempt.value.length === 0) return filterRows(mirrored);
+      return filterRows(liveAttempt.value);
+    } catch (err) {
+      console.warn("Live listMarkets failed, serving stale mirrored markets", err);
+      return filterRows(mirrored);
     }
-    return params.onlyOpen
-      ? sortedLive.filter((m) => m.state === "open")
-      : sortedLive;
+  }
+
+  try {
+    const live = await livePromise;
+    return filterRows(live);
   } catch (err) {
     if (mirrored.length > 0) {
       console.warn("Live listMarkets failed, serving stale mirrored markets", err);
-      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
+      return filterRows(mirrored);
     }
     throw err;
   }
@@ -910,6 +950,68 @@ const readCategoryFromPayload = (payload: Record<string, unknown> | null): strin
   return null;
 };
 
+const readNumericValue = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const compact = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*([kmb])$/i);
+    if (compact) {
+      const base = Number(compact[1]);
+      const suffix = compact[2].toLowerCase();
+      const multiplier = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : 1_000_000_000;
+      const out = base * multiplier;
+      if (Number.isFinite(out)) return out;
+    }
+    const normalized = trimmed.replace(/[$,%_\s]/g, "").replace(/,/g, "");
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
+const readVolumeFromPayload = (payload: Record<string, unknown> | null): number | null => {
+  if (!payload) return null;
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  const candidates = [
+    payload,
+    asRecord(payload.stats),
+    asRecord(payload.marketStats),
+    asRecord(payload.market_stats),
+    asRecord(payload.metrics),
+    asRecord(payload.aggregates),
+  ].filter((row): row is Record<string, unknown> => Boolean(row));
+
+  const keys = [
+    "volume",
+    "totalVolume",
+    "total_volume",
+    "volumeUsd",
+    "volume_usd",
+    "volumeUSD",
+    "usdVolume",
+    "usd_volume",
+    "volume24h",
+    "volume_24h",
+    "dailyVolume",
+    "daily_volume",
+    "liquidity",
+    "liquidityUsd",
+    "liquidity_usd",
+    "totalLiquidity",
+    "total_liquidity",
+  ];
+
+  for (const row of candidates) {
+    for (const key of keys) {
+      const parsed = readNumericValue(row[key]);
+      if (parsed !== null) return Math.max(0, parsed);
+    }
+  }
+  return null;
+};
+
 const readCapabilitiesFromPayload = (
   payload: Record<string, unknown> | null,
   provider: VenueProvider
@@ -1067,7 +1169,7 @@ const listCanonicalProviderMarkets = async (
     const yes = outcomes[0];
     const no = outcomes[1];
     const live = liveByMarketId.get(marketRefId);
-    const payloadVolume = toFiniteNumber(payload?.volume as any);
+    const payloadVolume = readVolumeFromPayload(payload);
     const liveMid = toFiniteNumber(live?.mid as any);
     const useLiveMid = typeof liveMid === "number" && liveMid >= 0 && liveMid <= 1;
     const priceYes = useLiveMid ? liveMid : yes ? yes.price : 0.5;
@@ -1199,6 +1301,117 @@ const listCanonicalCandles = async (
         Number.isFinite(row.low) &&
         Number.isFinite(row.close)
     );
+};
+
+type PriceCandleRow = z.infer<typeof priceCandleOutput>;
+
+const CANDLE_MIN_POINTS_FOR_COVERAGE = Math.max(
+  24,
+  Number(process.env.CANDLE_MIN_POINTS_FOR_COVERAGE ?? 72)
+);
+const CANDLE_MIN_SPAN_MS_FOR_COVERAGE = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.CANDLE_MIN_SPAN_MS_FOR_COVERAGE ?? 12 * 60 * 60 * 1000)
+);
+
+const candleTs = (row: PriceCandleRow): number => Date.parse(String(row.bucket));
+
+const candleSpanMs = (rows: PriceCandleRow[]): number => {
+  if (rows.length <= 1) return 0;
+  const sortedTs = rows
+    .map(candleTs)
+    .filter((ts) => Number.isFinite(ts))
+    .sort((a, b) => a - b);
+  if (sortedTs.length <= 1) return 0;
+  const first = sortedTs[0] ?? 0;
+  const last = sortedTs[sortedTs.length - 1] ?? 0;
+  return Math.max(0, last - first);
+};
+
+const isSparseCandleCoverage = (rows: PriceCandleRow[]): boolean =>
+  rows.length < CANDLE_MIN_POINTS_FOR_COVERAGE || candleSpanMs(rows) < CANDLE_MIN_SPAN_MS_FOR_COVERAGE;
+
+const selectCandleResolutionMs = (rows: PriceCandleRow[]): number => {
+  const span = candleSpanMs(rows);
+  if (span >= 45 * 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
+  return 60 * 60 * 1000;
+};
+
+const aggregateCandles = (
+  rows: PriceCandleRow[],
+  resolutionMs: number
+): PriceCandleRow[] => {
+  if (rows.length === 0) return [];
+  const safeResolution = Math.max(60 * 1000, resolutionMs);
+  const byBucket = new Map<string, PriceCandleRow>();
+
+  const sorted = [...rows]
+    .filter((row) => Number.isFinite(candleTs(row)))
+    .sort((a, b) => candleTs(a) - candleTs(b));
+
+  for (const row of sorted) {
+    const ts = candleTs(row);
+    if (!Number.isFinite(ts)) continue;
+    const bucketStart = Math.floor(ts / safeResolution) * safeResolution;
+    const outcomeKey = row.outcomeId ?? "__market__";
+    const key = `${outcomeKey}:${bucketStart}`;
+    const existing = byBucket.get(key);
+    if (!existing) {
+      byBucket.set(key, {
+        ...row,
+        bucket: new Date(bucketStart).toISOString(),
+        volume: Number.isFinite(row.volume) ? row.volume : 0,
+        tradesCount: Number.isFinite(row.tradesCount) ? row.tradesCount : 0,
+      });
+      continue;
+    }
+
+    byBucket.set(key, {
+      ...existing,
+      high: Math.max(existing.high, row.high),
+      low: Math.min(existing.low, row.low),
+      close: row.close,
+      volume:
+        (Number.isFinite(existing.volume) ? existing.volume : 0) +
+        (Number.isFinite(row.volume) ? row.volume : 0),
+      tradesCount:
+        (Number.isFinite(existing.tradesCount) ? existing.tradesCount : 0) +
+        (Number.isFinite(row.tradesCount) ? row.tradesCount : 0),
+    });
+  }
+
+  return Array.from(byBucket.values()).sort((a, b) => candleTs(a) - candleTs(b));
+};
+
+const normalizeCandlesForChart = (
+  rows: PriceCandleRow[],
+  limit: number
+): PriceCandleRow[] => {
+  if (rows.length === 0) return [];
+  const sorted = [...rows]
+    .filter(
+      (row) =>
+        Number.isFinite(candleTs(row)) &&
+        Number.isFinite(row.open) &&
+        Number.isFinite(row.high) &&
+        Number.isFinite(row.low) &&
+        Number.isFinite(row.close)
+    )
+    .sort((a, b) => candleTs(a) - candleTs(b));
+  if (sorted.length === 0) return [];
+  const resolutionMs = selectCandleResolutionMs(sorted);
+  const aggregated = aggregateCandles(sorted, resolutionMs);
+  return aggregated.slice(Math.max(0, aggregated.length - limit));
+};
+
+const pickBetterCandleSet = (a: PriceCandleRow[], b: PriceCandleRow[]): PriceCandleRow[] => {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  const aSpan = candleSpanMs(a);
+  const bSpan = candleSpanMs(b);
+  if (bSpan > aSpan) return b;
+  if (aSpan > bSpan) return a;
+  return b.length > a.length ? b : a;
 };
 
 const listLocalLiveActivityTicks = async (
@@ -1832,12 +2045,14 @@ export const marketRouter = router({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
       });
-      const polymarketWorkerFresh = selectedProviders.includes("polymarket")
-        ? await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
-        : true;
-      const limitlessWorkerFresh = selectedProviders.includes("limitless")
-        ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
-        : true;
+      const [polymarketWorkerFresh, limitlessWorkerFresh] = await Promise.all([
+        selectedProviders.includes("polymarket")
+          ? isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
+          : Promise.resolve(true),
+        selectedProviders.includes("limitless")
+          ? isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
+          : Promise.resolve(true),
+      ]);
       const workersFreshForSelection = polymarketWorkerFresh && limitlessWorkerFresh;
       const selectedCacheProviders = selectedProviders
         .filter((provider): provider is "polymarket" | "limitless" => provider === "polymarket" || provider === "limitless")
@@ -1860,9 +2075,7 @@ export const marketRouter = router({
         incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
       }
 
-      const responseRows: Array<z.infer<typeof marketOutput>> = [];
-
-      if (selectedProviders.includes("polymarket")) {
+      const loadPolymarketRows = async (): Promise<Array<z.infer<typeof marketOutput>>> => {
         const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
           onlyOpen,
           limit: candidateLimit,
@@ -1874,10 +2087,11 @@ export const marketRouter = router({
           mapped.map((m) => m.id)
         );
         const merged = mergeMarketsWithLive(mapped, liveByMarket);
-        responseRows.push(...(onlyOpen ? merged.filter((m) => m.state === "open") : merged));
-      }
+        return onlyOpen ? merged.filter((m) => m.state === "open") : merged;
+      };
 
-      if (selectedProviders.includes("limitless")) {
+      const loadLimitlessRows = async (): Promise<Array<z.infer<typeof marketOutput>>> => {
+        const providerRows: Array<z.infer<typeof marketOutput>> = [];
         let hasLiveLimitlessRows = false;
         if (limitlessWorkerFresh) {
           const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
@@ -1887,24 +2101,25 @@ export const marketRouter = router({
           });
           if (canonicalRows.length > 0) {
             hasLiveLimitlessRows = true;
-            responseRows.push(...canonicalRows);
+            providerRows.push(...canonicalRows);
           }
         }
         const adapter = getVenueAdapter("limitless");
         if (!hasLiveLimitlessRows && adapter.isEnabled()) {
           try {
-            const rows = await adapter.listMarketsSnapshot({
+            const liveRows = await adapter.listMarketsSnapshot({
               onlyOpen,
               limit: candidateLimit,
+              sortBy,
             });
-            if (rows.length > 0) {
+            if (liveRows.length > 0) {
               hasLiveLimitlessRows = true;
               if (ENABLE_CATALOG_SYNC_ON_READ) {
-                void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
+                void upsertVenueMarketsToCatalog(ctx.supabaseService, liveRows).catch(() => {
                   // Best effort only for canonical table sync.
                 });
               }
-              responseRows.push(...rows.map((row) => mapVenueMarketToMarketOutput(row)));
+              providerRows.push(...liveRows.map((row) => mapVenueMarketToMarketOutput(row)));
             }
           } catch (err) {
             console.warn("Limitless live listMarkets failed, falling back to canonical cache", err);
@@ -1918,9 +2133,47 @@ export const marketRouter = router({
             limit: candidateLimit,
           });
           if (canonicalRows.length > 0) {
-            responseRows.push(...canonicalRows);
+            providerRows.push(...canonicalRows);
           }
         }
+
+        return providerRows;
+      };
+
+      const providerTasks: Array<
+        Promise<{
+          provider: "polymarket" | "limitless";
+          rows: Array<z.infer<typeof marketOutput>>;
+          error?: unknown;
+        }>
+      > = [];
+      if (selectedProviders.includes("polymarket")) {
+        providerTasks.push(
+          loadPolymarketRows()
+            .then((rows) => ({ provider: "polymarket" as const, rows }))
+            .catch((error) => ({ provider: "polymarket" as const, rows: [], error }))
+        );
+      }
+      if (selectedProviders.includes("limitless")) {
+        providerTasks.push(
+          loadLimitlessRows()
+            .then((rows) => ({ provider: "limitless" as const, rows }))
+            .catch((error) => ({ provider: "limitless" as const, rows: [], error }))
+        );
+      }
+
+      const providerResults = await Promise.all(providerTasks);
+      const responseRows: Array<z.infer<typeof marketOutput>> = [];
+      for (const result of providerResults) {
+        if (result.error) {
+          console.warn(`listMarkets provider ${result.provider} failed`, result.error);
+          continue;
+        }
+        responseRows.push(...result.rows);
+      }
+      if (responseRows.length === 0) {
+        const firstFailure = providerResults.find((result) => result.error);
+        if (firstFailure?.error) throw firstFailure.error;
       }
 
       const deduped = new Map<string, z.infer<typeof marketOutput>>();
@@ -2536,27 +2789,38 @@ export const marketRouter = router({
       incrementRealtimeMetricCounter("trpc.market.getPriceCandles.calls");
       try {
         const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-        const limit = input.limit ?? 200;
+        const limit = Math.max(1, Math.min(input.limit ?? 200, 20_000));
+        const rawLimit = Math.min(20_000, Math.max(limit * 4, 4_000));
 
         if (ref.provider === "polymarket") {
+          let cachedCandles: PriceCandleRow[] = [];
           const marketRefId = await resolveMarketCatalogRefId(
             ctx.supabaseService,
             ref.provider,
             ref.providerMarketId
           );
           if (marketRefId) {
-            const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
-            if (canonical.length > 0) return canonical;
+            const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
+            if (canonical.length > 0) {
+              const normalizedCanonical = normalizeCandlesForChart(canonical, limit);
+              if (!isSparseCandleCoverage(normalizedCanonical)) return normalizedCanonical;
+              cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
+            }
           }
 
-          const localCandles = await listLocalCandles(ctx.supabaseService, ref.providerMarketId, limit);
-          if (localCandles.length > 0) return localCandles;
+          const localCandles = await listLocalCandles(ctx.supabaseService, ref.providerMarketId, rawLimit);
+          if (localCandles.length > 0) {
+            const normalizedLocal = normalizeCandlesForChart(localCandles, limit);
+            if (!isSparseCandleCoverage(normalizedLocal)) return normalizedLocal;
+            cachedCandles = pickBetterCandleSet(cachedCandles, normalizedLocal);
+          }
 
           const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-          if (!market) return [];
+          if (!market) return cachedCandles;
 
           const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
           if (withToken.length === 0) {
+            if (cachedCandles.length > 0) return cachedCandles;
             const fallback = market.outcomes[0]?.price ?? 0.5;
             return [
               {
@@ -2615,12 +2879,13 @@ export const marketRouter = router({
               });
             })
             .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
-          if (candles.length === 0) return [];
-          return candles.slice(Math.max(0, candles.length - limit));
+          if (candles.length === 0) return cachedCandles;
+          const normalizedHistory = normalizeCandlesForChart(candles, limit);
+          return pickBetterCandleSet(cachedCandles, normalizedHistory);
         }
 
         const adapter = getVenueAdapter(ref.provider);
-        if (!adapter.isEnabled()) return [];
+        let cachedCandles: PriceCandleRow[] = [];
 
         const marketRefId = await resolveMarketCatalogRefId(
           ctx.supabaseService,
@@ -2628,15 +2893,22 @@ export const marketRouter = router({
           ref.providerMarketId
         );
         if (marketRefId) {
-          const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
-          if (canonical.length > 0) return canonical;
+          const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
+          if (canonical.length > 0) {
+            const normalizedCanonical = normalizeCandlesForChart(canonical, limit);
+            if (!isSparseCandleCoverage(normalizedCanonical)) return normalizedCanonical;
+            cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
+          }
         }
 
-        const market = await adapter.getMarketById(ref.providerMarketId);
-        if (!market) return [];
+        if (!adapter.isEnabled()) return cachedCandles;
 
-        const history = await adapter.getPriceHistory(market, limit * 3);
+        const market = await adapter.getMarketById(ref.providerMarketId);
+        if (!market) return cachedCandles;
+
+        const history = await adapter.getPriceHistory(market, Math.max(limit * 6, 720));
         if (history.length === 0) {
+          if (cachedCandles.length > 0) return cachedCandles;
           const fallback = market.outcomes[0]?.price ?? 0.5;
           return [
             {
@@ -2676,7 +2948,8 @@ export const marketRouter = router({
             tradesCount: 0,
           };
         });
-        return candles.slice(Math.max(0, candles.length - limit));
+        const normalizedHistory = normalizeCandlesForChart(candles, limit);
+        return pickBetterCandleSet(cachedCandles, normalizedHistory);
       } finally {
         recordRealtimeMetricTiming("trpc.market.getPriceCandles.ms", Date.now() - startedAt);
       }

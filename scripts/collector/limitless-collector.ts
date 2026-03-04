@@ -2,6 +2,13 @@ import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
 import { writeUpstashMarketLivePatches } from "../../src/server/cache/upstash";
 import { limitlessAdapter } from "../../src/server/venues/limitlessAdapter";
+import {
+  encodeSocketIoEventPacket,
+  normalizeHexAddress,
+  normalizeSlug,
+  parseSocketIoEventPacket,
+  resolveSocketIoConnection,
+} from "../../src/server/venues/limitlessSocketIo";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
 import { venueToCanonicalId, type VenueMarket } from "../../src/server/venues/types";
 
@@ -52,10 +59,7 @@ const CATALOG_ID_CACHE_TTL_MS = Math.max(
   Number(process.env.LIMITLESS_COLLECTOR_CATALOG_ID_CACHE_TTL_MS ?? 30 * 60_000)
 );
 const SEED_REALTIME_FROM_SNAPSHOT =
-  (
-    process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ??
-    (LIMITLESS_WS_CONFIG?.url ? "false" : "true")
-  )
+  (process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ?? "true")
     .trim()
     .toLowerCase() === "true";
 
@@ -118,6 +122,15 @@ const latestLiveStateByProviderMarketId = new Map<
   }
 >();
 const catalogIdCache = new Map<string, { id: string; expiresAt: number }>();
+const wsSlugToProviderMarketId = new Map<string, string>();
+const wsAddressToProviderMarketId = new Map<string, string>();
+let wsSubscriptionSlugs = new Set<string>();
+let wsSubscriptionAddresses = new Set<string>();
+let wsSubscriptionRevision = 0;
+let wsSubscriptionSentRevision = -1;
+let wsActiveSocket: WebSocket | null = null;
+let wsActiveNamespace = "/markets";
+let wsNamespaceConnected = false;
 
 let lastPollAt = 0;
 let lastFlushAt = 0;
@@ -129,6 +142,68 @@ let runningHeadSnapshot = false;
 let flushing = false;
 let runningPrune = false;
 let lastProbeAt = 0;
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const setsEqual = (a: Set<string>, b: Set<string>): boolean => {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
+};
+
+const refreshWsSubscriptionTargets = (markets: VenueMarket[]) => {
+  const nextSlugs = new Set<string>();
+  const nextAddresses = new Set<string>();
+  const nextSlugMap = new Map<string, string>();
+  const nextAddressMap = new Map<string, string>();
+
+  for (const market of markets) {
+    const providerMarketId = market.providerMarketId.trim();
+    if (!providerMarketId) continue;
+
+    const slug = normalizeSlug(market.slug);
+    if (slug) {
+      nextSlugs.add(slug);
+      nextSlugMap.set(slug, providerMarketId);
+    }
+
+    const addressCandidates = [
+      market.marketAddress,
+      market.providerConditionId,
+      providerMarketId,
+      asRecord(market.providerPayload)?.marketAddress,
+      asRecord(market.providerPayload)?.market_address,
+    ];
+    for (const candidate of addressCandidates) {
+      const address = normalizeHexAddress(candidate);
+      if (!address) continue;
+      nextAddresses.add(address);
+      nextAddressMap.set(address, providerMarketId);
+    }
+  }
+
+  if (!setsEqual(nextSlugs, wsSubscriptionSlugs) || !setsEqual(nextAddresses, wsSubscriptionAddresses)) {
+    wsSubscriptionSlugs = nextSlugs;
+    wsSubscriptionAddresses = nextAddresses;
+    wsSubscriptionRevision += 1;
+  }
+
+  wsSlugToProviderMarketId.clear();
+  for (const [key, value] of nextSlugMap.entries()) {
+    wsSlugToProviderMarketId.set(key, value);
+  }
+  wsAddressToProviderMarketId.clear();
+  for (const [key, value] of nextAddressMap.entries()) {
+    wsAddressToProviderMarketId.set(key, value);
+  }
+
+  if (wsNamespaceConnected) {
+    sendWsSubscription();
+  }
+};
 
 const minuteBucketIso = (tsMs: number): string => {
   const minute = Math.floor(tsMs / 60_000) * 60_000;
@@ -320,6 +395,7 @@ const fingerprintMarket = (market: VenueMarket): string => {
 
   return [
     market.state,
+    market.marketAddress ?? "",
     market.slug,
     market.title,
     market.description ?? "",
@@ -707,6 +783,7 @@ const snapshotSync = async (mode: "head" | "full") => {
     console.log(`[limitless-collector] ${mode} snapshot fetched ${markets.length} markets`);
 
     if (markets.length > 0) {
+      refreshWsSubscriptionTargets(markets);
       const changedMarkets = selectChangedMarkets(markets);
       if (changedMarkets.length > 0) {
         await upsertVenueMarketsToCatalog(supabase, changedMarkets);
@@ -809,47 +886,99 @@ const snapshotSync = async (mode: "head" | "full") => {
   }
 };
 
-const parseWsMarketId = (payload: Record<string, unknown>): string | null => {
-  const candidates = [
+const resolveProviderMarketIdFromWs = (payload: Record<string, unknown>): string | null => {
+  const slugCandidates = [payload.marketSlug, payload.market_slug, payload.slug];
+  for (const candidate of slugCandidates) {
+    const slug = normalizeSlug(candidate);
+    if (!slug) continue;
+    return wsSlugToProviderMarketId.get(slug) ?? slug;
+  }
+
+  const addressCandidates = [
+    payload.marketAddress,
+    payload.market_address,
+    payload.address,
+    payload.market,
     payload.market_id,
     payload.marketId,
-    payload.market,
-    payload.id,
-    payload.condition_id,
-    payload.conditionId,
   ];
-  for (const value of candidates) {
+  for (const candidate of addressCandidates) {
+    const address = normalizeHexAddress(candidate);
+    if (!address) continue;
+    return wsAddressToProviderMarketId.get(address) ?? address;
+  }
+
+  const idCandidates = [payload.id, payload.condition_id, payload.conditionId];
+  for (const value of idCandidates) {
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }
   return null;
 };
 
+const toPriceProb = (value: unknown, fallback: number | null = null): number | null => {
+  const parsed = parseNumber(value);
+  if (parsed === null) return fallback;
+  return clamp01(parsed > 1 ? parsed / 100 : parsed);
+};
+
+const readBookEdgePrice = (levels: unknown, side: "bid" | "ask"): number | null => {
+  if (!Array.isArray(levels)) return null;
+  let edge: number | null = null;
+  for (const level of levels) {
+    const rec = asRecord(level);
+    const rawPrice = Array.isArray(level)
+      ? parseNumber(level[0])
+      : parseNumber(rec?.price) ?? parseNumber(rec?.p);
+    const price = toPriceProb(rawPrice);
+    if (price === null) continue;
+    if (edge === null || (side === "bid" ? price > edge : price < edge)) {
+      edge = price;
+    }
+  }
+  return edge;
+};
+
+const sendWsSubscription = () => {
+  const socket = wsActiveSocket;
+  if (!socket || socket.readyState !== WebSocket.OPEN || !wsNamespaceConnected) return;
+  if (wsSubscriptionSentRevision === wsSubscriptionRevision) return;
+
+  const marketSlugs = Array.from(wsSubscriptionSlugs);
+  const marketAddresses = Array.from(wsSubscriptionAddresses);
+  if (marketSlugs.length === 0 && marketAddresses.length === 0) return;
+
+  const payload: Record<string, unknown> = {};
+  if (marketSlugs.length > 0) payload.marketSlugs = marketSlugs;
+  if (marketAddresses.length > 0) payload.marketAddresses = marketAddresses;
+  try {
+    socket.send(encodeSocketIoEventPacket(wsActiveNamespace, "subscribe_market_prices", payload));
+    wsSubscriptionSentRevision = wsSubscriptionRevision;
+    console.log(
+      `[limitless-collector] ws subscribed slugs=${marketSlugs.length} addresses=${marketAddresses.length}`
+    );
+  } catch {
+    // retry on next tick/reconnect
+  }
+};
+
 const handleWsPayload = (payload: Record<string, unknown>) => {
-  const providerMarketId = parseWsMarketId(payload);
+  const providerMarketId = resolveProviderMarketIdFromWs(payload);
   if (!providerMarketId) return;
 
   const nowIso = new Date().toISOString();
   const sourceTsMs = parseTsMs(payload.source_ts ?? payload.timestamp ?? payload.ts) ?? Date.now();
   const sourceTsIso = new Date(sourceTsMs).toISOString();
 
-  const midRaw =
-    parseNumber(payload.mid) ??
-    parseNumber(payload.price) ??
-    parseNumber(payload.last_trade_price) ??
-    parseNumber(payload.lastPrice) ??
+  const mid =
+    toPriceProb(payload.mid) ??
+    toPriceProb(payload.price) ??
+    toPriceProb(payload.last_trade_price) ??
+    toPriceProb(payload.lastPrice) ??
     0.5;
-
-  const mid = clamp01(midRaw > 1 ? midRaw / 100 : midRaw);
-  const bestBid = clamp01(
-    parseNumber(payload.best_bid) ?? parseNumber(payload.bid) ?? Math.max(0, mid - 0.01)
-  );
-  const bestAsk = clamp01(
-    parseNumber(payload.best_ask) ?? parseNumber(payload.ask) ?? Math.min(1, mid + 0.01)
-  );
-
-  const lastTradePriceRaw =
-    parseNumber(payload.last_trade_price) ?? parseNumber(payload.price) ?? parseNumber(payload.lastPrice) ?? mid;
-  const lastTradePrice = clamp01(lastTradePriceRaw > 1 ? lastTradePriceRaw / 100 : lastTradePriceRaw);
+  const bestBid = toPriceProb(payload.best_bid) ?? toPriceProb(payload.bid) ?? clamp01(mid - 0.01);
+  const bestAsk = toPriceProb(payload.best_ask) ?? toPriceProb(payload.ask) ?? clamp01(mid + 0.01);
+  const lastTradePrice =
+    toPriceProb(payload.last_trade_price) ?? toPriceProb(payload.price) ?? toPriceProb(payload.lastPrice) ?? mid;
   const lastTradeSize = Math.max(0, parseNumber(payload.last_trade_size) ?? parseNumber(payload.size) ?? 0);
   const rolling24h = Math.max(
     0,
@@ -880,61 +1009,111 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
   });
 };
 
+const handleSocketIoEvent = (eventName: string, payload: unknown) => {
+  const rec = asRecord(payload);
+  if (!rec) return;
+
+  if (eventName === "orderbookUpdate") {
+    const book = asRecord(rec.orderbook);
+    const bestBid = readBookEdgePrice(book?.bids ?? rec.bids, "bid");
+    const bestAsk = readBookEdgePrice(book?.asks ?? rec.asks, "ask");
+    const inferredMid =
+      bestBid !== null && bestAsk !== null
+        ? clamp01((bestBid + bestAsk) / 2)
+        : toPriceProb(rec.mid) ?? toPriceProb(rec.price) ?? toPriceProb(rec.lastPrice) ?? 0.5;
+    handleWsPayload({
+      ...rec,
+      best_bid: bestBid ?? rec.best_bid,
+      best_ask: bestAsk ?? rec.best_ask,
+      mid: inferredMid,
+      price: inferredMid,
+      last_trade_price: rec.last_trade_price ?? rec.lastPrice ?? inferredMid,
+      last_trade_size: rec.last_trade_size ?? rec.size ?? 0,
+    });
+    return;
+  }
+
+  if (eventName === "newPriceData") {
+    const updatedPrices = asRecord(rec.updatedPrices) ?? {};
+    const yesPrice =
+      toPriceProb(updatedPrices.yes) ??
+      toPriceProb(rec.yesPrice) ??
+      toPriceProb(rec.price) ??
+      0.5;
+    handleWsPayload({
+      ...rec,
+      mid: yesPrice,
+      price: yesPrice,
+      last_trade_price: yesPrice,
+      last_trade_size: rec.last_trade_size ?? 0,
+    });
+    return;
+  }
+
+  handleWsPayload(rec);
+};
+
 const runWsLoop = async () => {
   if (!LIMITLESS_WS_CONFIG?.url) {
     console.log("[limitless-collector] websocket URL not configured; running in polling mode");
     return;
   }
 
+  const socketIo = resolveSocketIoConnection(LIMITLESS_WS_CONFIG.url);
+  wsActiveNamespace = socketIo.namespace;
   let attempt = 0;
   let ws1002Streak = 0;
   const stableThresholdMs = 30_000;
 
   while (true) {
     try {
-      console.log("[limitless-collector] connecting", LIMITLESS_WS_CONFIG.url);
-      const socket = new WebSocket(LIMITLESS_WS_CONFIG.url);
+      console.log(
+        `[limitless-collector] connecting ${socketIo.transportUrl} namespace=${socketIo.namespace}`
+      );
+      const socket = new WebSocket(socketIo.transportUrl);
+      wsActiveSocket = socket;
+      wsNamespaceConnected = false;
+      wsSubscriptionSentRevision = -1;
 
       const session = await new Promise<{ stableMs: number; closeCode: number; closeReason: string }>((resolve, reject) => {
         const openedAt = Date.now();
         socket.onopen = () => {
           console.log("[limitless-collector] ws connected");
-          for (const channel of LIMITLESS_WS_CONFIG.channels) {
-            try {
-              socket.send(JSON.stringify({ type: "subscribe", channel }));
-            } catch {
-              // ignore
-            }
+          try {
+            const namespacePacket =
+              socketIo.namespace === "/" ? "40" : `40${socketIo.namespace},`;
+            socket.send(namespacePacket);
+          } catch {
+            // handled by reconnect path
           }
         };
 
         socket.onmessage = (event) => {
           lastWsMessageAt = Date.now();
-          const raw = typeof event.data === "string" ? event.data : "";
+          const raw = typeof event.data === "string" ? event.data.trim() : "";
           if (!raw) return;
-          try {
-            const parsed = JSON.parse(raw) as unknown;
-            if (Array.isArray(parsed)) {
-              for (const item of parsed) {
-                if (item && typeof item === "object" && !Array.isArray(item)) {
-                  handleWsPayload(item as Record<string, unknown>);
-                }
-              }
-            } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              const rec = parsed as Record<string, unknown>;
-              if (Array.isArray(rec.data)) {
-                for (const item of rec.data) {
-                  if (item && typeof item === "object" && !Array.isArray(item)) {
-                    handleWsPayload(item as Record<string, unknown>);
-                  }
-                }
-              } else {
-                handleWsPayload(rec);
-              }
+
+          if (raw.startsWith("2")) {
+            const pong = raw === "2" ? "3" : `3${raw.slice(1)}`;
+            try {
+              socket.send(pong);
+            } catch {
+              // ignore
             }
-          } catch {
-            // ignore malformed payload
+            return;
           }
+
+          if (raw.startsWith("40")) {
+            if (raw === "40" || raw.startsWith(`40${socketIo.namespace}`)) {
+              wsNamespaceConnected = true;
+              sendWsSubscription();
+            }
+            return;
+          }
+
+          const parsed = parseSocketIoEventPacket(raw, socketIo.namespace);
+          if (!parsed) return;
+          handleSocketIoEvent(parsed.event, parsed.payload);
         };
 
         socket.onerror = () => {
@@ -942,6 +1121,8 @@ const runWsLoop = async () => {
         };
 
         socket.onclose = (event) => {
+          wsNamespaceConnected = false;
+          wsActiveSocket = null;
           const reason = typeof event.reason === "string" && event.reason.trim().length > 0
             ? event.reason.trim()
             : "no_reason";
@@ -986,6 +1167,8 @@ const runWsLoop = async () => {
       );
       await wait(backoffMs);
     } catch (error) {
+      wsNamespaceConnected = false;
+      wsActiveSocket = null;
       const baseBackoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(attempt, 6)));
       const jitterMs = Math.floor(Math.random() * 700);
       const backoffMs = baseBackoffMs + jitterMs;
@@ -1069,7 +1252,9 @@ const start = async () => {
   await runWsLoop();
 };
 
-void start().catch((error) => {
-  console.error("[limitless-collector] fatal", error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  void start().catch((error) => {
+    console.error("[limitless-collector] fatal", error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

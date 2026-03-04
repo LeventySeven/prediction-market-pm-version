@@ -131,6 +131,67 @@ type MergedMarketCacheEntry = {
 type TelegramWindow = Window & {
   Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
 };
+
+const trimTrailingZeros = (value: string): string => value.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+
+const formatUsdVolume = (value: number): string => {
+  const numeric = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (numeric >= 1_000_000_000) {
+    const compact = numeric >= 10_000_000_000 ? numeric / 1_000_000_000 : Number((numeric / 1_000_000_000).toFixed(1));
+    return `$${trimTrailingZeros(String(compact))}b`;
+  }
+  if (numeric >= 1_000_000) {
+    const compact = numeric >= 10_000_000 ? numeric / 1_000_000 : Number((numeric / 1_000_000).toFixed(1));
+    return `$${trimTrailingZeros(String(compact))}m`;
+  }
+  if (numeric >= 1_000) {
+    return `$${Math.round(numeric / 1_000)}k`;
+  }
+  return `$${Math.round(numeric).toLocaleString("en-US")}`;
+};
+
+const parseUsdVolume = (value: string): number => {
+  const normalized = String(value).trim().toLowerCase().replace(/\$/g, "").replace(/,/g, "");
+  const compactMatch = normalized.match(/^(-?\d+(?:\.\d+)?)([kmb])?$/);
+  if (compactMatch) {
+    const base = Number(compactMatch[1]);
+    const suffix = compactMatch[2];
+    const multiplier = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
+    const out = base * multiplier;
+    return Number.isFinite(out) ? out : 0;
+  }
+  const parsed = Number(normalized.replace(/[^0-9.-]+/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const detectCandleResolutionMs = (candles: PriceCandle[]): number => {
+  if (candles.length < 2) return 60_000;
+  const times = candles
+    .map((c) => Date.parse(c.bucket))
+    .filter((ts) => Number.isFinite(ts))
+    .sort((a, b) => a - b);
+  if (times.length < 2) return 60_000;
+  const deltas: number[] = [];
+  for (let i = 1; i < times.length; i += 1) {
+    const prev = times[i - 1];
+    const next = times[i];
+    if (prev === undefined || next === undefined) continue;
+    const delta = next - prev;
+    if (delta > 0) deltas.push(delta);
+  }
+  if (deltas.length === 0) return 60_000;
+  const minDelta = Math.min(...deltas);
+  if (minDelta >= 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
+  if (minDelta >= 60 * 60 * 1000) return 60 * 60 * 1000;
+  return 60_000;
+};
+
+const alignBucketToResolution = (bucketMs: number, resolutionMs: number): number => {
+  const safeResolution = Math.max(60_000, resolutionMs);
+  if (safeResolution <= 60_000) return bucketMs;
+  return Math.floor(bucketMs / safeResolution) * safeResolution;
+};
+
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
@@ -158,7 +219,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     categoryLabelRu: m.categoryLabelRu ?? null,
     categoryLabelEn: m.categoryLabelEn ?? null,
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
-    volume: `$${volumeRaw.toFixed(2)}`,
+    volume: formatUsdVolume(volumeRaw),
     volumeRaw,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
@@ -191,12 +252,6 @@ const asNumber = (value: number | string | null | undefined): number | null => {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
-};
-
-const formatUsdVolume = (value: number): string => `$${Number(value).toFixed(2)}`;
-const parseUsdVolume = (value: string): number => {
-  const parsed = Number(String(value).replace(/[^0-9.-]+/g, ""));
-  return Number.isFinite(parsed) ? parsed : 0;
 };
 
 const MATERIAL_CHANGE_EPS = 0.0001;
@@ -2307,22 +2362,44 @@ export default function HomePage() {
 
       setMarketCandles((prev) => {
         const byBucket = new Map(prev.map((item) => [item.bucket, item]));
+        const resolutionMs = detectCandleResolutionMs(prev);
         for (const row of rows) {
           if (row.market_id !== activeMarketId) continue;
           const bucketMs = Date.parse(row.bucket_start);
           if (!Number.isFinite(bucketMs)) continue;
-          const bucket = new Date(bucketMs).toISOString();
+          const alignedBucketMs = alignBucketToResolution(bucketMs, resolutionMs);
+          const bucket = new Date(alignedBucketMs).toISOString();
+          const nextOpen = asNumber(row.open) ?? 0;
+          const nextHigh = asNumber(row.high) ?? 0;
+          const nextLow = asNumber(row.low) ?? 0;
+          const nextClose = asNumber(row.close) ?? 0;
+          const nextVolume = asNumber(row.volume) ?? 0;
+          const nextTrades = Math.max(0, Math.floor(asNumber(row.trades_count) ?? 0));
+          const existing = byBucket.get(bucket);
+
+          if (!existing) {
+            byBucket.set(bucket, {
+              bucket,
+              outcomeId: null,
+              outcomeTitle: null,
+              outcomeColor: null,
+              open: nextOpen,
+              high: nextHigh,
+              low: nextLow,
+              close: nextClose,
+              volume: nextVolume,
+              tradesCount: nextTrades,
+            });
+            continue;
+          }
+
           byBucket.set(bucket, {
-            bucket,
-            outcomeId: null,
-            outcomeTitle: null,
-            outcomeColor: null,
-            open: asNumber(row.open) ?? 0,
-            high: asNumber(row.high) ?? 0,
-            low: asNumber(row.low) ?? 0,
-            close: asNumber(row.close) ?? 0,
-            volume: asNumber(row.volume) ?? 0,
-            tradesCount: Math.max(0, Math.floor(asNumber(row.trades_count) ?? 0)),
+            ...existing,
+            high: Math.max(existing.high, nextHigh),
+            low: Math.min(existing.low, nextLow),
+            close: nextClose,
+            volume: Math.max(0, existing.volume + nextVolume),
+            tradesCount: Math.max(0, existing.tradesCount + nextTrades),
           });
         }
         return Array.from(byBucket.values()).sort(

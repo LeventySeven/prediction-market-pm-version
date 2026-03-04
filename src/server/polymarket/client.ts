@@ -590,8 +590,9 @@ export async function getPolymarketPriceHistory(tokenId: string): Promise<Polyma
   const base = getClobBaseUrl();
   const historyWindows: Array<{ interval: string; fidelity: number }> = [
     { interval: "max", fidelity: 60 },
-    { interval: "1m", fidelity: 60 },
+    { interval: "max", fidelity: 15 },
     { interval: "1w", fidelity: 15 },
+    { interval: "1m", fidelity: 60 },
   ];
 
   for (const window of historyWindows) {

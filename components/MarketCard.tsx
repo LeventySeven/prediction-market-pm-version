@@ -1,7 +1,7 @@
 import React from 'react';
 import { Market } from '../types';
 import { Clock } from 'lucide-react';
-import { formatTimeRemaining } from '../lib/time';
+import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 
 interface MarketCardProps {
   market: Market;
@@ -45,9 +45,11 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
     return Number.isFinite(parsed) && parsed < now;
   })();
   const isExpired = isResolved || tradingClosed;
+  const remaining = deadline ? getTimeRemainingInfo(deadline) : null;
+  const isUrgentCountdown = !isResolved && !tradingClosed && Boolean(remaining?.isUnderHour);
   const timeLeft = isResolved
     ? (lang === 'RU' ? 'Завершено' : 'Resolved')
-    : (deadline ? formatTimeRemaining(deadline, 'hours', lang) : '—');
+    : (deadline ? formatTimeRemaining(deadline, isUrgentCountdown ? 'minutes' : 'hours', lang) : '—');
 
   return (
     <div 
@@ -96,8 +98,17 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
             <span className="uppercase tracking-wider">{volLabel}</span>
             <span className="text-zinc-400">{market.volume}</span>
             <span className="ml-auto flex items-center gap-1">
-              <Clock size={12} />
-              <span className="text-zinc-400">{timeLeft}</span>
+              {isUrgentCountdown ? (
+                <span className="relative inline-flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/80" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_14px_rgba(239,68,68,0.9)]" />
+                </span>
+              ) : (
+                <Clock size={12} />
+              )}
+              <span className={isUrgentCountdown ? "text-red-400 font-semibold" : "text-zinc-400"}>
+                {timeLeft}
+              </span>
             </span>
           </div>
         </div>
