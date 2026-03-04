@@ -134,6 +134,65 @@ const fromMirrorPool = async (limit: number): Promise<RecMarket[]> => {
   }
 };
 
+const fromLimitlessCatalogPool = async (limit: number): Promise<RecMarket[]> => {
+  try {
+    const enabled = new Set(listEnabledProviders());
+    if (!enabled.has("limitless")) return [];
+    const supabase = getSupabaseServiceClient();
+
+    const { data: catalogRows } = await (supabase as any)
+      .from("market_catalog")
+      .select("id, provider_market_id, title, category, provider_payload")
+      .eq("provider", "limitless")
+      .eq("state", "open")
+      .order("source_updated_at", { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 1200)));
+
+    const rows = Array.isArray(catalogRows) ? (catalogRows as Array<Record<string, unknown>>) : [];
+    if (rows.length === 0) return [];
+
+    const ids = rows
+      .map((row) => String(row.id ?? "").trim())
+      .filter(Boolean);
+    const liveById = new Map<string, number>();
+
+    if (ids.length > 0) {
+      const { data: liveRows } = await (supabase as any)
+        .from("market_live")
+        .select("market_id, rolling_24h_volume")
+        .in("market_id", ids);
+
+      for (const row of Array.isArray(liveRows) ? liveRows : []) {
+        const rec = row as Record<string, unknown>;
+        const marketId = String(rec.market_id ?? "").trim();
+        if (!marketId) continue;
+        const volumeRaw = Number(rec.rolling_24h_volume ?? 0);
+        liveById.set(marketId, Number.isFinite(volumeRaw) ? Math.max(0, volumeRaw) : 0);
+      }
+    }
+
+    return rows
+      .map((row) => {
+        const id = String(row.provider_market_id ?? "").trim();
+        if (!id) return null;
+        const payload = row.provider_payload as Record<string, unknown> | null;
+        const payloadVolumeRaw = Number(payload?.volume ?? 0);
+        const payloadVolume = Number.isFinite(payloadVolumeRaw) ? Math.max(0, payloadVolumeRaw) : 0;
+        const catalogId = String(row.id ?? "").trim();
+        const liveVolume = liveById.get(catalogId) ?? payloadVolume;
+        return {
+          id: `limitless:${id}`,
+          question: String(row.title ?? id),
+          tags: [String(row.category ?? "")].filter(Boolean),
+          volume: liveVolume,
+        } satisfies RecMarket;
+      })
+      .filter((value): value is RecMarket => Boolean(value));
+  } catch {
+    return [];
+  }
+};
+
 const fromPolymarketLive = async (query: string, limit: number): Promise<RecMarket[]> => {
   try {
     const rows = await searchPolymarketMarkets(query, limit);
@@ -407,22 +466,46 @@ export async function POST(req: Request) {
     });
   }
 
-  const [keywordCandidates, liveCandidatesPolymarket, liveCandidatesLimitless, mirrorPool, latestPoolPolymarket, latestPoolLimitless] = await Promise.all([
+  const [keywordCandidates, mirrorPool, limitlessCatalogPool] = await Promise.all([
     fromMirrorKeyword(query, MAX_KEYWORD_CANDIDATES),
-    fromPolymarketLive(query, MAX_LIVE_SEARCH_CANDIDATES),
-    fromLimitlessLive(query, MAX_LIVE_SEARCH_CANDIDATES),
     fromMirrorPool(MAX_MIRROR_POOL_CANDIDATES),
-    getLatestPolymarketPool(MAX_LATEST_CANDIDATES),
-    getLatestLimitlessPool(MAX_LATEST_CANDIDATES),
+    fromLimitlessCatalogPool(MAX_MIRROR_POOL_CANDIDATES),
   ]);
+
+  const limitlessKeywordCandidates = limitlessCatalogPool
+    .filter((market) => lexicalScore(query, market) > 0)
+    .slice(0, MAX_KEYWORD_CANDIDATES);
+
+  const workerUniqueCount = new Set(
+    [...mirrorPool, ...limitlessCatalogPool, ...keywordCandidates, ...limitlessKeywordCandidates]
+      .map((market) => market.id)
+  ).size;
+  const needLiveFallback = workerUniqueCount < Math.max(limit * 10, 180);
+
+  let liveCandidatesPolymarket: RecMarket[] = [];
+  let liveCandidatesLimitless: RecMarket[] = [];
+  let latestPoolPolymarket: RecMarket[] = [];
+  let latestPoolLimitless: RecMarket[] = [];
+
+  if (needLiveFallback) {
+    [liveCandidatesPolymarket, liveCandidatesLimitless, latestPoolPolymarket, latestPoolLimitless] =
+      await Promise.all([
+        fromPolymarketLive(query, MAX_LIVE_SEARCH_CANDIDATES),
+        fromLimitlessLive(query, MAX_LIVE_SEARCH_CANDIDATES),
+        getLatestPolymarketPool(MAX_LATEST_CANDIDATES),
+        getLatestLimitlessPool(MAX_LATEST_CANDIDATES),
+      ]);
+  }
 
   const liveCandidates = [...liveCandidatesPolymarket, ...liveCandidatesLimitless];
   const latestPool = [...latestPoolPolymarket, ...latestPoolLimitless];
 
   const mergedById = new Map<string, RecMarket>();
   for (const m of mirrorPool) mergedById.set(m.id, m);
+  for (const m of limitlessCatalogPool) mergedById.set(m.id, m);
   for (const m of latestPool) mergedById.set(m.id, m);
   for (const m of keywordCandidates) mergedById.set(m.id, m);
+  for (const m of limitlessKeywordCandidates) mergedById.set(m.id, m);
   for (const m of liveCandidates) mergedById.set(m.id, m);
   for (const m of inputMarkets) mergedById.set(m.id, m);
 

@@ -494,65 +494,42 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
   };
 };
 
-const MARKET_MIRROR_STALE_AFTER_MS = Math.max(
-  60_000,
-  Number(process.env.POLYMARKET_MARKET_STALE_AFTER_MS ?? 60_000)
-);
-const MARKET_MIRROR_FRESHNESS_CACHE_MS = 15_000;
-let mirrorFreshnessSnapshot: { checkedAt: number; isFresh: boolean } | null = null;
-
-const isMirrorFresh = async (supabaseService: SupabaseServiceClient): Promise<boolean> => {
-  const now = Date.now();
-  if (
-    mirrorFreshnessSnapshot &&
-    now - mirrorFreshnessSnapshot.checkedAt < MARKET_MIRROR_FRESHNESS_CACHE_MS
-  ) {
-    return mirrorFreshnessSnapshot.isFresh;
-  }
-
-  try {
-    const { data, error } = await supabaseService
-      .from("polymarket_market_cache")
-      .select("last_synced_at")
-      .order("last_synced_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !data?.last_synced_at) {
-      mirrorFreshnessSnapshot = { checkedAt: now, isFresh: false };
-      return false;
-    }
-
-    const lastSyncedAt = Date.parse(String(data.last_synced_at));
-    const isFresh = Number.isFinite(lastSyncedAt) && now - lastSyncedAt <= MARKET_MIRROR_STALE_AFTER_MS;
-    mirrorFreshnessSnapshot = { checkedAt: now, isFresh };
-    return isFresh;
-  } catch {
-    mirrorFreshnessSnapshot = { checkedAt: now, isFresh: false };
-    return false;
-  }
-};
-
 const getMarketFromMirrorOrLive = async (
   supabaseService: SupabaseServiceClient,
   marketId: string
 ): Promise<PolymarketMarket | null> => {
+  const preferMirror = await isPolymarketWorkerFresh(supabaseService).catch(() => false);
+
+  if (preferMirror) {
+    try {
+      const mirrored = await getMirroredPolymarketMarketById(supabaseService, marketId);
+      if (mirrored) return mirrored;
+    } catch (err) {
+      console.warn("Mirror getMarket failed while worker marked fresh, trying live", err);
+    }
+  }
+
+  try {
+    const live = await getPolymarketMarketById(marketId);
+    if (live) {
+      try {
+        await upsertMirroredPolymarketMarkets(supabaseService, [live]);
+      } catch (err) {
+        console.warn("Mirror upsert after live getMarket failed", err);
+      }
+      return live;
+    }
+  } catch (err) {
+    console.warn("Live getMarket failed, falling back to mirror", err);
+  }
+
   try {
     const mirrored = await getMirroredPolymarketMarketById(supabaseService, marketId);
     if (mirrored) return mirrored;
   } catch (err) {
-    console.warn("Mirror getMarket failed, falling back to Polymarket API", err);
+    console.warn("Mirror getMarket failed", err);
   }
-
-  const live = await getPolymarketMarketById(marketId);
-  if (live) {
-    try {
-      await upsertMirroredPolymarketMarkets(supabaseService, [live]);
-    } catch (err) {
-      console.warn("Mirror upsert after live getMarket failed", err);
-    }
-  }
-  return live;
+  return null;
 };
 
 const listMarketsFromMirrorOrLive = async (
@@ -560,7 +537,7 @@ const listMarketsFromMirrorOrLive = async (
   params: { onlyOpen: boolean; limit: number; sortBy: "newest" | "volume" }
 ): Promise<PolymarketMarket[]> => {
   let mirrored: PolymarketMarket[] = [];
-  let hadMirrorRows = false;
+  const preferMirror = await isPolymarketWorkerFresh(supabaseService).catch(() => false);
 
   try {
     mirrored = await listMirroredPolymarketMarkets(supabaseService, {
@@ -568,13 +545,11 @@ const listMarketsFromMirrorOrLive = async (
       limit: params.limit,
       sortBy: params.sortBy === "newest" ? "created_desc" : "volume",
     });
-    hadMirrorRows = mirrored.length > 0;
-    if (hadMirrorRows) {
-      const fresh = await isMirrorFresh(supabaseService);
-      if (fresh) return mirrored;
+    if (preferMirror && mirrored.length > 0) {
+      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
     }
   } catch (err) {
-    console.warn("Mirror listMarkets failed, falling back to Polymarket API", err);
+    console.warn("Mirror listMarkets prefetch failed", err);
   }
 
   try {
@@ -591,11 +566,14 @@ const listMarketsFromMirrorOrLive = async (
         console.warn("Mirror upsert after live listMarkets failed", err);
       }
     }
+    if (sortedLive.length === 0 && mirrored.length > 0) {
+      return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
+    }
     return params.onlyOpen
       ? sortedLive.filter((m) => m.state === "open")
       : sortedLive;
   } catch (err) {
-    if (hadMirrorRows) {
+    if (mirrored.length > 0) {
       console.warn("Live listMarkets failed, serving stale mirrored markets", err);
       return params.onlyOpen ? mirrored.filter((m) => m.state === "open") : mirrored;
     }
@@ -758,10 +736,6 @@ const mergeMarketWithLive = (
     priceYes: nextYes,
     priceNo: nextNo,
     chance: liveChance,
-    volume:
-      typeof live.rolling24hVolume === "number" && Number.isFinite(live.rolling24hVolume)
-        ? Math.max(market.volume, live.rolling24hVolume)
-        : market.volume,
     bestBid: live.bestBid,
     bestAsk: live.bestAsk,
     mid: live.mid,
@@ -781,6 +755,127 @@ const mergeMarketsWithLive = (
 const asObject = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+};
+
+const WORKER_FRESHNESS_CACHE_MS = Math.max(
+  1_000,
+  Number(process.env.WORKER_FRESHNESS_CACHE_MS ?? 5_000)
+);
+const POLYMARKET_WORKER_STALE_AFTER_MS = Math.max(
+  15_000,
+  Number(process.env.POLYMARKET_WORKER_STALE_AFTER_MS ?? 45_000)
+);
+const LIMITLESS_WORKER_STALE_AFTER_MS = Math.max(
+  15_000,
+  Number(process.env.LIMITLESS_WORKER_STALE_AFTER_MS ?? 90_000)
+);
+
+let polymarketWorkerFreshnessSnapshot: { checkedAt: number; isFresh: boolean } | null = null;
+let limitlessWorkerFreshnessSnapshot: { checkedAt: number; isFresh: boolean } | null = null;
+
+const isTimestampFresh = (
+  isoValue: string | null | undefined,
+  staleAfterMs: number,
+  now = Date.now()
+): boolean => {
+  if (!isoValue) return false;
+  const parsed = Date.parse(isoValue);
+  if (!Number.isFinite(parsed)) return false;
+  return now - parsed <= staleAfterMs;
+};
+
+const isPolymarketWorkerFresh = async (
+  supabaseService: SupabaseServiceClient
+): Promise<boolean> => {
+  const now = Date.now();
+  if (
+    polymarketWorkerFreshnessSnapshot &&
+    now - polymarketWorkerFreshnessSnapshot.checkedAt <= WORKER_FRESHNESS_CACHE_MS
+  ) {
+    return polymarketWorkerFreshnessSnapshot.isFresh;
+  }
+
+  try {
+    const liveHead = await supabaseService
+      .from("polymarket_market_live")
+      .select("source_ts")
+      .order("source_ts", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (isTimestampFresh(liveHead.data?.source_ts ?? null, POLYMARKET_WORKER_STALE_AFTER_MS, now)) {
+      polymarketWorkerFreshnessSnapshot = { checkedAt: now, isFresh: true };
+      return true;
+    }
+  } catch {
+    // Continue to mirror freshness fallback.
+  }
+
+  try {
+    const mirrorHead = await supabaseService
+      .from("polymarket_market_cache")
+      .select("last_synced_at")
+      .order("last_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const isFresh = isTimestampFresh(
+      mirrorHead.data?.last_synced_at ?? null,
+      POLYMARKET_WORKER_STALE_AFTER_MS,
+      now
+    );
+    polymarketWorkerFreshnessSnapshot = { checkedAt: now, isFresh };
+    return isFresh;
+  } catch {
+    polymarketWorkerFreshnessSnapshot = { checkedAt: now, isFresh: false };
+    return false;
+  }
+};
+
+const isLimitlessWorkerFresh = async (
+  supabaseService: SupabaseServiceClient
+): Promise<boolean> => {
+  const now = Date.now();
+  if (
+    limitlessWorkerFreshnessSnapshot &&
+    now - limitlessWorkerFreshnessSnapshot.checkedAt <= WORKER_FRESHNESS_CACHE_MS
+  ) {
+    return limitlessWorkerFreshnessSnapshot.isFresh;
+  }
+
+  try {
+    const providerState = await (supabaseService as any)
+      .from("provider_sync_state")
+      .select("last_success_at")
+      .eq("provider", "limitless")
+      .eq("scope", "open")
+      .maybeSingle();
+
+    const syncIso = String(providerState.data?.last_success_at ?? "").trim() || null;
+    if (isTimestampFresh(syncIso, LIMITLESS_WORKER_STALE_AFTER_MS, now)) {
+      limitlessWorkerFreshnessSnapshot = { checkedAt: now, isFresh: true };
+      return true;
+    }
+  } catch {
+    // Continue to market_live fallback.
+  }
+
+  try {
+    const liveHead = await (supabaseService as any)
+      .from("market_live")
+      .select("source_ts")
+      .order("source_ts", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const sourceTs = String(liveHead.data?.source_ts ?? "").trim() || null;
+    const isFresh = isTimestampFresh(sourceTs, LIMITLESS_WORKER_STALE_AFTER_MS, now);
+    limitlessWorkerFreshnessSnapshot = { checkedAt: now, isFresh };
+    return isFresh;
+  } catch {
+    limitlessWorkerFreshnessSnapshot = { checkedAt: now, isFresh: false };
+    return false;
+  }
 };
 
 const readIsoFromPayload = (
@@ -855,6 +950,7 @@ const listCanonicalProviderMarkets = async (
     provider: VenueProvider;
     onlyOpen: boolean;
     limit: number;
+    providerMarketId?: string;
   }
 ): Promise<Array<z.infer<typeof marketOutput>>> => {
   let query = (supabaseService as any)
@@ -865,6 +961,10 @@ const listCanonicalProviderMarkets = async (
     .eq("provider", params.provider)
     .order("source_updated_at", { ascending: false })
     .limit(params.limit);
+
+  if (params.providerMarketId) {
+    query = query.eq("provider_market_id", params.providerMarketId);
+  }
 
   if (params.onlyOpen) {
     query = query.eq("state", "open");
@@ -967,6 +1067,7 @@ const listCanonicalProviderMarkets = async (
     const yes = outcomes[0];
     const no = outcomes[1];
     const live = liveByMarketId.get(marketRefId);
+    const payloadVolume = toFiniteNumber(payload?.volume as any);
     const liveMid = toFiniteNumber(live?.mid as any);
     const useLiveMid = typeof liveMid === "number" && liveMid >= 0 && liveMid <= 1;
     const priceYes = useLiveMid ? liveMid : yes ? yes.price : 0.5;
@@ -1005,7 +1106,7 @@ const listCanonicalProviderMarkets = async (
       liquidityB: null,
       priceYes,
       priceNo,
-      volume: Math.max(0, toFiniteNumber(live?.rolling_24h_volume as any) ?? 0),
+      volume: Math.max(0, payloadVolume ?? toFiniteNumber(live?.rolling_24h_volume as any) ?? 0),
       chance: Math.round(priceYes * 100),
       creatorName: null,
       creatorAvatarUrl: null,
@@ -1731,6 +1832,13 @@ export const marketRouter = router({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
       });
+      const polymarketWorkerFresh = selectedProviders.includes("polymarket")
+        ? await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
+        : true;
+      const limitlessWorkerFresh = selectedProviders.includes("limitless")
+        ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
+        : true;
+      const workersFreshForSelection = polymarketWorkerFresh && limitlessWorkerFresh;
       const selectedCacheProviders = selectedProviders
         .filter((provider): provider is "polymarket" | "limitless" => provider === "polymarket" || provider === "limitless")
         .sort();
@@ -1742,13 +1850,15 @@ export const marketRouter = router({
         sortBy,
         providers: selectedCacheProviders,
       });
-      const cachedList = await readUpstashCache(listCacheKey, z.array(marketOutput));
-      if (cachedList) {
-        incrementRealtimeMetricCounter("upstash.cache.marketList.hit");
-        recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
-        return cachedList;
+      if (workersFreshForSelection) {
+        const cachedList = await readUpstashCache(listCacheKey, z.array(marketOutput));
+        if (cachedList) {
+          incrementRealtimeMetricCounter("upstash.cache.marketList.hit");
+          recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
+          return cachedList;
+        }
+        incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
       }
-      incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
 
       const responseRows: Array<z.infer<typeof marketOutput>> = [];
 
@@ -1768,22 +1878,27 @@ export const marketRouter = router({
       }
 
       if (selectedProviders.includes("limitless")) {
-        const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
-          provider: "limitless",
-          onlyOpen,
-          limit: candidateLimit,
-        });
-
-        if (canonicalRows.length > 0) {
-          responseRows.push(...canonicalRows);
-        } else {
-          const adapter = getVenueAdapter("limitless");
-          if (adapter.isEnabled()) {
+        let hasLiveLimitlessRows = false;
+        if (limitlessWorkerFresh) {
+          const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+            provider: "limitless",
+            onlyOpen,
+            limit: candidateLimit,
+          });
+          if (canonicalRows.length > 0) {
+            hasLiveLimitlessRows = true;
+            responseRows.push(...canonicalRows);
+          }
+        }
+        const adapter = getVenueAdapter("limitless");
+        if (!hasLiveLimitlessRows && adapter.isEnabled()) {
+          try {
             const rows = await adapter.listMarketsSnapshot({
               onlyOpen,
               limit: candidateLimit,
             });
             if (rows.length > 0) {
+              hasLiveLimitlessRows = true;
               if (ENABLE_CATALOG_SYNC_ON_READ) {
                 void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
                   // Best effort only for canonical table sync.
@@ -1791,6 +1906,19 @@ export const marketRouter = router({
               }
               responseRows.push(...rows.map((row) => mapVenueMarketToMarketOutput(row)));
             }
+          } catch (err) {
+            console.warn("Limitless live listMarkets failed, falling back to canonical cache", err);
+          }
+        }
+
+        if (!hasLiveLimitlessRows) {
+          const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+            provider: "limitless",
+            onlyOpen,
+            limit: candidateLimit,
+          });
+          if (canonicalRows.length > 0) {
+            responseRows.push(...canonicalRows);
           }
         }
       }
@@ -1798,19 +1926,16 @@ export const marketRouter = router({
       const deduped = new Map<string, z.infer<typeof marketOutput>>();
       for (const row of responseRows) {
         const key = row.canonicalMarketId ?? `${row.provider ?? "polymarket"}:${row.id}`;
-        const existing = deduped.get(key);
-        if (!existing) {
-          deduped.set(key, row);
-          continue;
-        }
-        if ((row.volume ?? 0) > (existing.volume ?? 0)) {
+        if (!deduped.has(key)) {
           deduped.set(key, row);
         }
       }
 
       const sorted = sortMarketRows(Array.from(deduped.values()), sortBy);
       const out = sorted.slice(offset, offset + pageSize);
-      void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
+      if (workersFreshForSelection) {
+        void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
+      }
       recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
       return out;
     }),
@@ -1822,17 +1947,25 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getMarket.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
+      const workerFreshForProvider =
+        ref.provider === "polymarket"
+          ? await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
+          : ref.provider === "limitless"
+            ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
+            : false;
       const detailCacheKey = buildMarketDetailCacheKey({
         provider: ref.provider,
         providerMarketId: ref.providerMarketId,
       });
-      const cachedDetail = await readUpstashCache(detailCacheKey, marketOutput);
-      if (cachedDetail) {
-        incrementRealtimeMetricCounter("upstash.cache.marketDetail.hit");
-        recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-        return cachedDetail;
+      if (workerFreshForProvider) {
+        const cachedDetail = await readUpstashCache(detailCacheKey, marketOutput);
+        if (cachedDetail) {
+          incrementRealtimeMetricCounter("upstash.cache.marketDetail.hit");
+          recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
+          return cachedDetail;
+        }
+        incrementRealtimeMetricCounter("upstash.cache.marketDetail.miss");
       }
-      incrementRealtimeMetricCounter("upstash.cache.marketDetail.miss");
 
       if (ref.provider === "polymarket") {
         const row = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
@@ -1845,6 +1978,21 @@ export const marketRouter = router({
         void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
         recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
         return out;
+      }
+
+      if (workerFreshForProvider) {
+        const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+          provider: ref.provider,
+          onlyOpen: false,
+          limit: 1,
+          providerMarketId: ref.providerMarketId,
+        });
+        const canonical = canonicalRows[0] ?? null;
+        if (canonical) {
+          void writeUpstashCache(detailCacheKey, canonical, upstashMarketDetailTtlSec);
+          recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
+          return canonical;
+        }
       }
 
       const adapter = getVenueAdapter(ref.provider);
@@ -1886,6 +2034,9 @@ export const marketRouter = router({
         providers: input.providers,
         providerFilter: input.providerFilter,
       });
+      const limitlessWorkerFresh = selectedProviders.includes("limitless")
+        ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
+        : false;
       if (query.length < 2) {
         return { apiVersion: "v1", items: [] };
       }
@@ -1947,31 +2098,60 @@ export const marketRouter = router({
       }
 
       if (selectedProviders.includes("limitless")) {
-        const adapter = getVenueAdapter("limitless");
-        if (adapter.isEnabled()) {
-          const rows = await adapter.searchMarkets(query, Math.max(limit * 6, 60));
-          const filtered = onlyOpen ? rows.filter((row) => row.state === "open") : rows;
-          if (ENABLE_CATALOG_SYNC_ON_READ && filtered.length > 0) {
-            void upsertVenueMarketsToCatalog(ctx.supabaseService, filtered).catch(() => {
-              // Best effort sync.
-            });
+        let usedWorkerSearch = false;
+        if (limitlessWorkerFresh) {
+          const workerRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+            provider: "limitless",
+            onlyOpen,
+            limit: Math.max(limit * 10, 200),
+          });
+          if (workerRows.length > 0) {
+            usedWorkerSearch = true;
+            scoredItems.push(
+              ...workerRows.map((market) => {
+                const lex = lexicalScoreText(
+                  query,
+                  `${market.titleEn} ${market.description ?? ""} ${market.categoryLabelEn ?? market.categoryLabelRu ?? ""} ${(market.outcomes ?? [])
+                    .map((outcome) => outcome.title)
+                    .join(" ")}`
+                );
+                const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
+                return {
+                  market,
+                  score: clamp01(lex * 0.8 + volumeBoost * 0.2),
+                };
+              })
+            );
           }
-          scoredItems.push(
-            ...filtered.map((row) => {
-              const market = mapVenueMarketToMarketOutput(row);
-              const lex = lexicalScoreText(
-                query,
-                `${row.title} ${row.description ?? ""} ${row.category ?? ""} ${row.outcomes
-                  .map((outcome) => outcome.title)
-                  .join(" ")}`
-              );
-              const volumeBoost = clamp01(Math.log10(Math.max(0, row.volume) + 1) / 6);
-              return {
-                market,
-                score: clamp01(lex * 0.8 + volumeBoost * 0.2),
-              };
-            })
-          );
+        }
+
+        if (!usedWorkerSearch) {
+          const adapter = getVenueAdapter("limitless");
+          if (adapter.isEnabled()) {
+            const rows = await adapter.searchMarkets(query, Math.max(limit * 6, 60));
+            const filtered = onlyOpen ? rows.filter((row) => row.state === "open") : rows;
+            if (ENABLE_CATALOG_SYNC_ON_READ && filtered.length > 0) {
+              void upsertVenueMarketsToCatalog(ctx.supabaseService, filtered).catch(() => {
+                // Best effort sync.
+              });
+            }
+            scoredItems.push(
+              ...filtered.map((row) => {
+                const market = mapVenueMarketToMarketOutput(row);
+                const lex = lexicalScoreText(
+                  query,
+                  `${row.title} ${row.description ?? ""} ${row.category ?? ""} ${row.outcomes
+                    .map((outcome) => outcome.title)
+                    .join(" ")}`
+                );
+                const volumeBoost = clamp01(Math.log10(Math.max(0, row.volume) + 1) / 6);
+                return {
+                  market,
+                  score: clamp01(lex * 0.8 + volumeBoost * 0.2),
+                };
+              })
+            );
+          }
         }
       }
 
@@ -2347,7 +2527,7 @@ export const marketRouter = router({
       z.object({
         marketId: z.string().min(1),
         provider: z.enum(["polymarket", "limitless"]).optional(),
-        limit: z.number().int().positive().max(1000).optional(),
+        limit: z.number().int().positive().max(20000).optional(),
       })
     )
     .output(z.array(priceCandleOutput))
@@ -2359,9 +2539,6 @@ export const marketRouter = router({
         const limit = input.limit ?? 200;
 
         if (ref.provider === "polymarket") {
-          const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-          if (!market) return [];
-
           const marketRefId = await resolveMarketCatalogRefId(
             ctx.supabaseService,
             ref.provider,
@@ -2372,8 +2549,11 @@ export const marketRouter = router({
             if (canonical.length > 0) return canonical;
           }
 
-          const localCandles = await listLocalCandles(ctx.supabaseService, market.id, limit);
+          const localCandles = await listLocalCandles(ctx.supabaseService, ref.providerMarketId, limit);
           if (localCandles.length > 0) return localCandles;
+
+          const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+          if (!market) return [];
 
           const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
           if (withToken.length === 0) {
@@ -2441,8 +2621,6 @@ export const marketRouter = router({
 
         const adapter = getVenueAdapter(ref.provider);
         if (!adapter.isEnabled()) return [];
-        const market = await adapter.getMarketById(ref.providerMarketId);
-        if (!market) return [];
 
         const marketRefId = await resolveMarketCatalogRefId(
           ctx.supabaseService,
@@ -2453,6 +2631,9 @@ export const marketRouter = router({
           const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, limit);
           if (canonical.length > 0) return canonical;
         }
+
+        const market = await adapter.getMarketById(ref.providerMarketId);
+        if (!market) return [];
 
         const history = await adapter.getPriceHistory(market, limit * 3);
         if (history.length === 0) {
@@ -2521,13 +2702,9 @@ export const marketRouter = router({
         return [];
       }
 
-      const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-      if (!market) {
-        recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
-        return [];
-      }
+      const marketId = ref.providerMarketId;
 
-      const redisTicks = await readUpstashActivityTicks(market.id, limit);
+      const redisTicks = await readUpstashActivityTicks(marketId, limit);
       if (redisTicks.length > 0) {
         incrementRealtimeMetricCounter("upstash.cache.liveActivity.hit");
         const mappedRedisTicks = redisTicks.map((tick) => ({
@@ -2547,7 +2724,7 @@ export const marketRouter = router({
       }
       incrementRealtimeMetricCounter("upstash.cache.liveActivity.miss");
 
-      const rows = await listLocalLiveActivityTicks(ctx.supabaseService, market.id, limit);
+      const rows = await listLocalLiveActivityTicks(ctx.supabaseService, marketId, limit);
       recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
       return rows;
     }),
@@ -2580,11 +2757,92 @@ export const marketRouter = router({
       incrementRealtimeMetricCounter("upstash.cache.marketTrades.miss");
 
       if (ref.provider === "polymarket") {
+        const marketId = ref.providerMarketId;
+        const workerFresh = await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false);
+        if (workerFresh) {
+          const mapTickToTrade = (
+            tick: {
+              id: string;
+              marketId: string;
+              tradeId: string | null;
+              side: "BUY" | "SELL" | "UNKNOWN";
+              outcome: string | null;
+              price: number;
+              size: number;
+              sourceTs: string;
+              createdAt: string;
+            }
+          ) => {
+            const normalizedOutcome = (tick.outcome ?? "").trim().toLowerCase();
+            const yn =
+              normalizedOutcome === "yes"
+                ? ("YES" as const)
+                : normalizedOutcome === "no"
+                  ? ("NO" as const)
+                  : null;
+            const action: "buy" | "sell" = tick.side === "SELL" ? "sell" : "buy";
+            return {
+              id: tick.tradeId ?? tick.id,
+              marketId: tick.marketId,
+              action,
+              outcome: yn,
+              outcomeId: null,
+              outcomeTitle: tick.outcome,
+              collateralGross: tick.size * tick.price,
+              sharesDelta: tick.size,
+              priceBefore: tick.price,
+              priceAfter: tick.price,
+              createdAt: tick.sourceTs || tick.createdAt,
+            } satisfies z.output<typeof publicTradeOutput>;
+          };
+
+          const redisTicks = await readUpstashActivityTicks(marketId, limit);
+          if (redisTicks.length > 0) {
+            const out = redisTicks.map((tick) =>
+              mapTickToTrade({
+                id: tick.id,
+                marketId: tick.marketId,
+                tradeId: tick.tradeId,
+                side: tick.side,
+                outcome: tick.outcome,
+                price: tick.price,
+                size: tick.size,
+                sourceTs: tick.sourceTs,
+                createdAt: tick.createdAt,
+              })
+            );
+            void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
+            recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+            return out;
+          }
+
+          const localTicks = await listLocalLiveActivityTicks(ctx.supabaseService, marketId, limit);
+          if (localTicks.length > 0) {
+            const out = localTicks.map((tick) =>
+              mapTickToTrade({
+                id: tick.id,
+                marketId: tick.marketId,
+                tradeId: tick.tradeId,
+                side: tick.side,
+                outcome: tick.outcome,
+                price: tick.price,
+                size: tick.size,
+                sourceTs: tick.sourceTs,
+                createdAt: tick.createdAt,
+              })
+            );
+            void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
+            recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+            return out;
+          }
+        }
+
         const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
         if (!market) {
           recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
           return [];
         }
+
         const rows = await getPolymarketPublicTrades(market.conditionId, limit);
         const outcomesByTitle = new Map(
           market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)

@@ -588,26 +588,37 @@ export async function getPolymarketPriceHistory(tokenId: string): Promise<Polyma
   const clean = tokenId.trim();
   if (!clean) return [];
   const base = getClobBaseUrl();
-  const url = `${base}/prices-history?market=${encodeURIComponent(clean)}&interval=1w&fidelity=15`;
-  try {
-    const res = await fetch(url, { next: { revalidate: 20 } });
-    if (!res.ok) return [];
-    const payload = await res.json();
-    const obj = asRecord(payload);
-    const history = obj?.history;
-    if (!Array.isArray(history)) return [];
-    return history
-      .map((row) => {
-        const rec = asRecord(row);
-        const t = asNumber(rec?.t);
-        const p = asNumber(rec?.p);
-        if (t === null || p === null) return null;
-        return { ts: t, price: Math.max(0, Math.min(1, p)) };
-      })
-      .filter((v): v is PolymarketPricePoint => Boolean(v));
-  } catch {
-    return [];
+  const historyWindows: Array<{ interval: string; fidelity: number }> = [
+    { interval: "max", fidelity: 60 },
+    { interval: "1m", fidelity: 60 },
+    { interval: "1w", fidelity: 15 },
+  ];
+
+  for (const window of historyWindows) {
+    const url = `${base}/prices-history?market=${encodeURIComponent(clean)}&interval=${window.interval}&fidelity=${window.fidelity}`;
+    try {
+      const res = await fetch(url, { next: { revalidate: 20 } });
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const obj = asRecord(payload);
+      const history = obj?.history;
+      if (!Array.isArray(history)) continue;
+      const points = history
+        .map((row) => {
+          const rec = asRecord(row);
+          const t = asNumber(rec?.t);
+          const p = asNumber(rec?.p);
+          if (t === null || p === null) return null;
+          return { ts: t, price: Math.max(0, Math.min(1, p)) };
+        })
+        .filter((v): v is PolymarketPricePoint => Boolean(v));
+      if (points.length > 0) return points;
+    } catch {
+      // Continue trying narrower windows.
+    }
   }
+
+  return [];
 }
 
 export type PolymarketPublicTrade = {

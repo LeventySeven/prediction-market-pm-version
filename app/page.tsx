@@ -47,6 +47,7 @@ import {
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 50;
+const MARKET_CANDLE_LIMIT = 5000;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
@@ -134,11 +135,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
   const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
-  const displayVolume =
-    typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
-      ? m.rolling24hVolume
-      : m.volume;
-  const volumeRaw = Number.isFinite(Number(displayVolume)) ? Math.max(0, Number(displayVolume)) : 0;
+  const volumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
@@ -169,7 +166,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     noPrice: Number(m.priceNo),
     chance,
     description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
-    source: normalizeExternalMarketUrl(m.source) ?? (m.source ?? null),
+    source: normalizeExternalMarketUrl(m.source, m.provider ?? "polymarket") ?? (m.source ?? null),
     history: [],
     comments: [],
     liquidityB: m.liquidityB ?? undefined,
@@ -232,20 +229,12 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
   const yesPrice = useMid ? patch.mid : market.yesPrice;
   const noPrice = useMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
   const chance = useMid ? Math.round(yesPrice * 100) : market.chance;
-  const volumeRaw =
-    typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
-      ? Math.max(0, patch.rolling24hVolume)
-      : typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw)
-        ? market.volumeRaw
-        : parseUsdVolume(market.volume);
 
   return {
     ...market,
     yesPrice,
     noPrice,
     chance,
-    volumeRaw,
-    volume: formatUsdVolume(volumeRaw),
     bestBid: patch.bestBid,
     bestAsk: patch.bestAsk,
     mid: patch.mid,
@@ -322,6 +311,8 @@ const MARKET_ID_REGEX = /^[A-Za-z0-9:_-]{6,}$/;
 const HAS_PRIVY_PROVIDER = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const POLYMARKET_CLOB_URL = (process.env.NEXT_PUBLIC_POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
 const POLYMARKET_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || "137");
+const POLYMARKET_SITE_URL = "https://polymarket.com";
+const LIMITLESS_SITE_URL = "https://limitless.exchange";
 
 const usePrivySession = HAS_PRIVY_PROVIDER
   ? () => usePrivy()
@@ -346,20 +337,27 @@ const slugifyTitle = (raw: string) =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-const normalizeExternalMarketUrl = (raw: string | null | undefined): string | null => {
+const defaultExternalMarketUrl = (provider?: Market["provider"]): string =>
+  provider === "limitless" ? LIMITLESS_SITE_URL : POLYMARKET_SITE_URL;
+
+const normalizeExternalMarketUrl = (
+  raw: string | null | undefined,
+  provider?: Market["provider"]
+): string | null => {
   const value = (raw ?? "").trim();
+  const fallbackBase = defaultExternalMarketUrl(provider);
   if (!value) return null;
   if (/^https?:\/\//i.test(value)) return value;
   if (/^\/\//.test(value)) return `https:${value}`;
-  if (value.startsWith("/")) return `https://polymarket.com${value}`;
-  if (/^event\//i.test(value)) return `https://polymarket.com/${value}`;
+  if (value.startsWith("/")) return `${fallbackBase}${value}`;
+  if (/^event\//i.test(value)) return `${fallbackBase}/${value}`;
   if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/|$)/i.test(value)) return `https://${value}`;
   return null;
 };
 
 const getExternalMarketUrl = (market: Market | null | undefined): string => {
-  const normalized = normalizeExternalMarketUrl(market?.source);
-  return normalized ?? "https://polymarket.com";
+  const normalized = normalizeExternalMarketUrl(market?.source, market?.provider);
+  return normalized ?? defaultExternalMarketUrl(market?.provider);
 };
 
 const buildMarketPath = (marketId: string, title?: string | null) => {
@@ -419,11 +417,18 @@ export default function HomePage() {
   const [profileSetupSaving, setProfileSetupSaving] = useState(false);
   const [profileSetupError, setProfileSetupError] = useState<string | null>(null);
   const [reloginRequired, setReloginRequired] = useState(false);
-  type CatalogSort = "ENDING_SOON" | "CREATED_DESC" | "CREATED_ASC" | "VOLUME_DESC" | "VOLUME_ASC";
+  type CatalogSort =
+    | "ENDING_SOON"
+    | "CREATED_DESC"
+    | "CREATED_ASC"
+    | "VOLUME_DESC"
+    | "VOLUME_ASC"
+    | "CATEGORY_ASC"
+    | "CATEGORY_DESC";
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
   type CatalogStatus = "ALL" | "ONGOING" | "ENDED";
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
-  type CatalogTimeFilter = "ANY" | "HOUR" | "DAY";
+  type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
   type ProviderFilter = "all" | "polymarket" | "limitless";
   const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>("all");
@@ -1798,6 +1803,14 @@ export default function HomePage() {
       typeof m.volumeRaw === "number" && Number.isFinite(m.volumeRaw)
         ? m.volumeRaw
         : parseUsdVolume(m.volume);
+    const categoryLabel = (m: Market) => {
+      const raw =
+        lang === "RU"
+          ? (m.categoryLabelRu ?? m.categoryLabelEn ?? "")
+          : (m.categoryLabelEn ?? m.categoryLabelRu ?? "");
+      const label = raw.trim();
+      return label.length > 0 ? label : "\uFFFF";
+    };
     const ts = (iso?: string | null) => {
       if (!iso) return Number.POSITIVE_INFINITY;
       const t = Date.parse(iso);
@@ -1827,7 +1840,9 @@ export default function HomePage() {
       const cutoff =
         catalogTimeFilter === "HOUR"
           ? now + 60 * 60 * 1000
-          : now + 24 * 60 * 60 * 1000;
+          : catalogTimeFilter === "DAY"
+            ? now + 24 * 60 * 60 * 1000
+            : now + 7 * 24 * 60 * 60 * 1000;
       return arr.filter((m) => {
         if (isEnded(m)) return false;
         const t = endTs(m);
@@ -1869,6 +1884,28 @@ export default function HomePage() {
         case "VOLUME_DESC":
           sorted.sort((a, b) => parseVol(b) - parseVol(a));
           break;
+        case "CATEGORY_ASC":
+          sorted.sort((a, b) => {
+            const cmp = categoryLabel(a).localeCompare(
+              categoryLabel(b),
+              lang === "RU" ? "ru" : "en",
+              { sensitivity: "base" }
+            );
+            if (cmp !== 0) return cmp;
+            return ts(b.createdAt) - ts(a.createdAt);
+          });
+          break;
+        case "CATEGORY_DESC":
+          sorted.sort((a, b) => {
+            const cmp = categoryLabel(b).localeCompare(
+              categoryLabel(a),
+              lang === "RU" ? "ru" : "en",
+              { sensitivity: "base" }
+            );
+            if (cmp !== 0) return cmp;
+            return ts(b.createdAt) - ts(a.createdAt);
+          });
+          break;
         default:
           break;
       }
@@ -1889,7 +1926,7 @@ export default function HomePage() {
         ? [...ended].sort((a, b) => endTs(b) - endTs(a))
         : sortGroup(ended);
     return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
-  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter, searchQuery, semanticSearchScores]);
+  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter, searchQuery, semanticSearchScores, lang]);
 
   // Feed: markets where the user currently has bets (positions).
   const myBetMarketIds = useMemo(() => {
@@ -2428,7 +2465,7 @@ export default function HomePage() {
         const candlesRaw = await trpcClient.market.getPriceCandles.query({
           marketId: activeMarketId,
           provider: selectedProvider,
-          limit: 200,
+          limit: MARKET_CANDLE_LIMIT,
         });
         if (cancelled) return;
         const candlesParsed = priceCandlesSchema.parse(candlesRaw);
@@ -3721,8 +3758,9 @@ export default function HomePage() {
             <div role="radiogroup" className="space-y-2 mb-4">
               {([
                 { id: "ANY" as const, labelRu: "Любое", labelEn: "Any" },
-                { id: "HOUR" as const, labelRu: "Закончится в течение часа", labelEn: "Ends within an hour" },
-                { id: "DAY" as const, labelRu: "Закончится в течение дня", labelEn: "Ends within a day" },
+                { id: "HOUR" as const, labelRu: "Закончится за 1 час", labelEn: "Ends in 1 hour" },
+                { id: "DAY" as const, labelRu: "Закончится за 24 часа", labelEn: "Ends in 24 hours" },
+                { id: "WEEK" as const, labelRu: "Закончится за 7 дней", labelEn: "Ends in 7 days" },
               ]).map((opt) => {
                 const selected = catalogTimeFilter === opt.id;
                 return (
@@ -3750,11 +3788,13 @@ export default function HomePage() {
 
             <div role="radiogroup" className="space-y-2">
               {([
-                { id: "CREATED_DESC" as const, labelRu: "Дата создания ↓", labelEn: "Creation date ↓" },
-                { id: "CREATED_ASC" as const, labelRu: "Дата создания ↑", labelEn: "Creation date ↑" },
-                { id: "ENDING_SOON" as const, labelRu: "Скоро закончится", labelEn: "Ending soon" },
-                { id: "VOLUME_DESC" as const, labelRu: "Объём ↓", labelEn: "Volume ↓" },
-                { id: "VOLUME_ASC" as const, labelRu: "Объём ↑", labelEn: "Volume ↑" },
+                { id: "CREATED_DESC" as const, labelRu: "Новые события", labelEn: "New events first" },
+                { id: "CREATED_ASC" as const, labelRu: "Старые события", labelEn: "Old events first" },
+                { id: "ENDING_SOON" as const, labelRu: "Скоро закончится", labelEn: "Will end soon" },
+                { id: "VOLUME_DESC" as const, labelRu: "Объём: по убыванию", labelEn: "Volume: descending" },
+                { id: "VOLUME_ASC" as const, labelRu: "Объём: по возрастанию", labelEn: "Volume: ascending" },
+                { id: "CATEGORY_ASC" as const, labelRu: "Категория: A → Z", labelEn: "Category: A → Z" },
+                { id: "CATEGORY_DESC" as const, labelRu: "Категория: Z → A", labelEn: "Category: Z → A" },
               ]).map((opt) => {
                 const selected = catalogSort === opt.id;
                 return (
@@ -3778,6 +3818,18 @@ export default function HomePage() {
                 );
               })}
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCatalogStatus("ALL");
+                setCatalogTimeFilter("ANY");
+                setCatalogSort("CREATED_DESC");
+                setCatalogPage(1);
+              }}
+              className="mt-3 w-full h-10 rounded-full border border-zinc-800 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-200 text-sm font-semibold transition-colors"
+            >
+              {lang === "RU" ? "Сбросить фильтры" : "Reset filters"}
+            </button>
 
             <button
               type="button"

@@ -128,6 +128,7 @@ export const upsertVenueMarketsToCatalog = async (
       created_at: market.createdAt,
       closes_at: market.closesAt,
       expires_at: market.expiresAt,
+      volume: market.volume,
     },
   }));
 

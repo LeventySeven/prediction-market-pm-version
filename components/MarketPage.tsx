@@ -539,6 +539,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const sourceValue = (market.source ?? "").trim();
   const sourceIsUrl = /^https?:\/\//i.test(sourceValue);
   const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
+  const externalVenueLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
 
   const renderOutcomeBadge = () => {
     if (!winningSide) return null;
@@ -934,7 +935,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
                           onClick={() => onOpenExternalTrade(market.id)}
                           className="text-xs font-medium text-zinc-400 underline underline-offset-2 hover:text-white"
                         >
-                          {lang === 'RU' ? 'Открыть рынок на Polymarket' : 'Open market on Polymarket'}
+                          {lang === 'RU'
+                            ? `Открыть рынок на ${externalVenueLabel}`
+                            : `Open on ${externalVenueLabel}`}
                         </button>
                       )}
                     </div>
@@ -1235,7 +1238,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 <div className="h-[84%]">
                   <TradingViewCandles
                     mode="candles"
-                    data={chartSeries.data.slice(-300).map((row) => ({
+                    data={chartSeries.data.map((row) => ({
                       ts: row.ts,
                       open: Number(row.open ?? row.value ?? 0),
                       high: Number(row.high ?? row.value ?? 0),
