@@ -1009,8 +1009,6 @@ const readVolumeFromPayload = (payload: Record<string, unknown> | null): number 
     "volumeUSD",
     "usdVolume",
     "usd_volume",
-    "highValue",
-    "high_value",
     "volume24h",
     "volume_24h",
     "dailyVolume",
@@ -1018,13 +1016,17 @@ const readVolumeFromPayload = (payload: Record<string, unknown> | null): number 
     "volume",
   ];
 
+  let fallback: number | null = null;
   for (const row of candidates) {
     for (const key of keys) {
       const parsed = readNumericValue(row[key]);
-      if (parsed !== null) return Math.max(0, parsed);
+      if (parsed === null) continue;
+      const normalized = Math.max(0, parsed);
+      if (normalized > 0) return normalized;
+      if (fallback === null) fallback = normalized;
     }
   }
-  return null;
+  return fallback;
 };
 
 const readCapabilitiesFromPayload = (

@@ -30,7 +30,6 @@ import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
-import { marketCategoriesSchema } from "@/src/schemas/marketCategories";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
@@ -179,6 +178,9 @@ const alignBucketToResolution = (bucketMs: number, resolutionMs: number): number
   return Math.floor(bucketMs / safeResolution) * safeResolution;
 };
 
+const isCsrfTokenInvalidErrorMessage = (msg?: string) =>
+  String(msg ?? "").toUpperCase().includes("CSRF_TOKEN_INVALID");
+
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
@@ -281,6 +283,10 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
       ? Math.max(0, patch.rolling24hVolume)
       : null;
+  const nextVolumeRaw =
+    (typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw) ? Math.max(0, market.volumeRaw) : 0) > 0
+      ? Math.max(0, market.volumeRaw)
+      : Math.max(0, nextRolling24h ?? 0);
 
   return {
     ...market,
@@ -295,6 +301,8 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     rolling24hVolume: nextRolling24h,
     volume24hRaw: nextRolling24h,
     volume24h: nextRolling24h === null ? market.volume24h ?? null : formatUsdVolume(nextRolling24h),
+    volumeRaw: nextVolumeRaw,
+    volume: formatUsdVolume(nextVolumeRaw),
     openInterest: patch.openInterest,
     liveUpdatedAt: patch.liveUpdatedAt,
   };
@@ -510,12 +518,14 @@ export default function HomePage() {
   const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
   const sessionIdRef = useRef<string>(createSessionId());
   const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
+  const semanticHydratedMarketIdsRef = useRef<Set<string>>(new Set());
   const mergedMarketCacheRef = useRef<Map<string, MergedMarketCacheEntry>>(new Map());
   const marketOpenStartedAtRef = useRef<number | null>(null);
   const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
+  const marketsRef = useRef<Market[]>([]);
   const [marketLivePatchById, setMarketLivePatchById] = useState<Record<string, MarketLivePatch>>({});
   const [visibleCatalogMarketIds, setVisibleCatalogMarketIds] = useState<string[]>([]);
   const [documentVisible, setDocumentVisible] = useState(true);
@@ -738,8 +748,6 @@ export default function HomePage() {
   const publicProfileRequestIdRef = useRef(0);
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
   const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
-  const [loadingMarketCategories, setLoadingMarketCategories] = useState(false);
-  const lastCategoriesProviderRef = useRef<ProviderFilter | null>(null);
   const [myComments, setMyComments] = useState<Array<{
     id: string;
     marketId: string;
@@ -810,6 +818,10 @@ export default function HomePage() {
     mergedMarketCacheRef.current = nextCache;
     return merged;
   }, [markets, marketLivePatchById]);
+
+  useEffect(() => {
+    marketsRef.current = markets;
+  }, [markets]);
 
   const loadLeaderboard = useCallback(async (sortBy: LeaderboardSort = leaderboardSort) => {
     setLoadingLeaderboard(true);
@@ -1085,15 +1097,28 @@ export default function HomePage() {
             ? undefined
             : sanitizeAvatarPalette(avatarPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
 
-        const updated = await trpcClient.user.completeProfileSetup.mutate({
-          username: payload.username.trim(),
-          displayName: payload.displayName.trim(),
-          email: payload.email.trim().length > 0 ? payload.email.trim() : undefined,
-          profileDescription:
-            payload.profileDescription.trim().length > 0 ? payload.profileDescription.trim() : null,
-          avatarUrl,
-          avatarPalette: normalizedPalette,
-        });
+        const submitProfileSetup = () =>
+          trpcClient.user.completeProfileSetup.mutate({
+            username: payload.username.trim(),
+            displayName: payload.displayName.trim(),
+            email: payload.email.trim().length > 0 ? payload.email.trim() : undefined,
+            profileDescription:
+              payload.profileDescription.trim().length > 0 ? payload.profileDescription.trim() : null,
+            avatarUrl,
+            avatarPalette: normalizedPalette,
+          });
+
+        let updated: Awaited<ReturnType<typeof submitProfileSetup>>;
+        try {
+          updated = await submitProfileSetup();
+        } catch (err) {
+          if (!isCsrfTokenInvalidErrorMessage(getErrorMessage(err))) throw err;
+          await fetch("/api/auth/csrf", {
+            method: "POST",
+            credentials: "include",
+          }).catch(() => undefined);
+          updated = await submitProfileSetup();
+        }
 
         if (!updated || typeof updated.id !== "string") {
           throw new Error("PROFILE_SETUP_INVALID_RESPONSE");
@@ -1118,6 +1143,11 @@ export default function HomePage() {
         setProfileSetupError(null);
       } catch (err) {
         const msg = String(getErrorMessage(err) ?? "").toUpperCase();
+        const recoveredUser = await refreshUser().catch(() => null);
+        if (recoveredUser && !recoveredUser.needsProfileSetup) {
+          setProfileSetupError(null);
+          return;
+        }
         if (msg.includes("USERNAME_TAKEN")) {
           setProfileSetupError(lang === "RU" ? "Этот handle уже занят." : "This handle is already taken.");
         } else if (msg.includes("INVALID_USERNAME")) {
@@ -1155,7 +1185,7 @@ export default function HomePage() {
         setProfileSetupSaving(false);
       }
     },
-    [applyPublicUser, lang, user]
+    [applyPublicUser, lang, refreshUser, user]
   );
 
   const handleCreateReferralLink = useCallback(async () => {
@@ -1382,17 +1412,19 @@ export default function HomePage() {
     const cacheKey = buildCatalogFetchKey(fetchParams);
     const cached = catalogPageCacheRef.current.get(cacheKey);
     const hasCached = Boolean(cached);
+    const hasCurrentMarkets = marketsRef.current.length > 0;
 
     setMarketsError(null);
-    if (!hasCached) {
+    if (!hasCached && !hasCurrentMarkets) {
       setLoadingMarkets(true);
       setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
     } else {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
-      setHasNextCatalogPage(cached.hasMore);
-      setMarkets(cached.rows.map((m) => mapMarketApiToMarket(m, lang)));
-      setMarketLivePatchById({});
+      if (cached) {
+        setHasNextCatalogPage(cached.hasMore);
+        setMarkets(cached.rows.map((m) => mapMarketApiToMarket(m, lang)));
+      }
     }
 
     try {
@@ -1400,49 +1432,70 @@ export default function HomePage() {
       setHasNextCatalogPage(result.hasMore);
       const mapped: Market[] = result.rows.map((m) => mapMarketApiToMarket(m, lang));
       setMarkets(mapped);
-      setMarketLivePatchById({});
+      setMarketLivePatchById((prev) => {
+        const allowedIds = new Set(mapped.map((row) => row.id));
+        let changed = false;
+        const next: Record<string, MarketLivePatch> = {};
+        for (const [marketId, patch] of Object.entries(prev)) {
+          if (!allowedIds.has(marketId)) {
+            changed = true;
+            continue;
+          }
+          next[marketId] = patch;
+        }
+        return changed ? next : prev;
+      });
     } catch (err) {
       console.error("Failed to load markets", err);
       setMarketsError(
         lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets."
       );
-      setMarkets([]);
-      setHasNextCatalogPage(false);
     } finally {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
       observeClientTiming("catalog.loadMarkets.ms", Date.now() - startedAt);
     }
-  }, [activeProviderFilter, buildCatalogFetchKey, catalogPage, catalogSort, fetchCatalogPage, lang]);
-  const loadMarketsRef = useRef(loadMarkets);
+  }, [
+    activeProviderFilter,
+    buildCatalogFetchKey,
+    catalogPage,
+    catalogSort,
+    fetchCatalogPage,
+    lang,
+  ]);
   useEffect(() => {
-    loadMarketsRef.current = loadMarkets;
-  }, [loadMarkets]);
-
-  const loadMarketCategories = useCallback(async () => {
-    setLoadingMarketCategories(true);
-    try {
-      const rowsRaw = await trpcClient.market.listCategories.query({
-        providerFilter: activeProviderFilter,
-        providers:
-          activeProviderFilter === "all"
-            ? ["polymarket", "limitless"]
-            : [activeProviderFilter],
+    const byId = new Map<string, MarketCategoryStrict>();
+    for (const market of markets) {
+      const provider = market.provider ?? "polymarket";
+      if (activeProviderFilter !== "all" && provider !== activeProviderFilter) continue;
+      const categoryId = String(market.categoryId ?? "").trim();
+      if (!categoryId) continue;
+      const labelRu = String(market.categoryLabelRu ?? market.categoryLabelEn ?? categoryId).trim();
+      const labelEn = String(market.categoryLabelEn ?? market.categoryLabelRu ?? categoryId).trim();
+      if (byId.has(categoryId)) continue;
+      byId.set(categoryId, {
+        id: categoryId,
+        labelRu: labelRu || categoryId,
+        labelEn: labelEn || labelRu || categoryId,
       });
-      const rowsParsed = marketCategoriesSchema.parse(rowsRaw);
-      const rows: MarketCategoryStrict[] = rowsParsed.map((c) => ({
-        id: requireValue(c.id, "CATEGORY_ID_MISSING"),
-        labelRu: requireValue(c.labelRu, "CATEGORY_LABEL_RU_MISSING"),
-        labelEn: requireValue(c.labelEn, "CATEGORY_LABEL_EN_MISSING"),
-      }));
-      setMarketCategories(rows);
-    } catch (err) {
-      console.error("Failed to load market categories", err);
-      setMarketCategories([]);
-    } finally {
-      setLoadingMarketCategories(false);
     }
-  }, [activeProviderFilter]);
+    const nextRows = Array.from(byId.values()).sort((a, b) =>
+      a.labelEn.localeCompare(b.labelEn, "en", { sensitivity: "base" })
+    );
+    setMarketCategories((prev) => {
+      if (prev.length === nextRows.length && prev.every((row, idx) => {
+        const next = nextRows[idx];
+        return next && row.id === next.id && row.labelRu === next.labelRu && row.labelEn === next.labelEn;
+      })) {
+        return prev;
+      }
+      return nextRows;
+    });
+    setActiveCategoryId((prev) => {
+      if (prev === "all") return prev;
+      return byId.has(prev) ? prev : "all";
+    });
+  }, [activeProviderFilter, markets]);
 
   const loadMyComments = useCallback(async () => {
     if (!user) return;
@@ -1498,23 +1551,6 @@ export default function HomePage() {
   useEffect(() => {
     void loadMarkets();
   }, [loadMarkets]);
-
-  useEffect(() => {
-    if (loadingMarketCategories) return;
-    if (
-      lastCategoriesProviderRef.current === activeProviderFilter &&
-      marketCategories.length > 0
-    ) {
-      return;
-    }
-    lastCategoriesProviderRef.current = activeProviderFilter;
-    void loadMarketCategories();
-  }, [
-    activeProviderFilter,
-    loadMarketCategories,
-    loadingMarketCategories,
-    marketCategories.length,
-  ]);
 
   const prefetchCatalogPage = useCallback(
     async (providerFilter: ProviderFilter, page: number) => {
@@ -1712,7 +1748,6 @@ export default function HomePage() {
         ) {
           fallbackTriggered = true;
           incrementClientCounter("catalog.realtime.channelRecovery");
-          void loadMarketsRef.current();
         }
       });
 
@@ -1811,7 +1846,6 @@ export default function HomePage() {
           fallbackTriggered = true;
           incrementClientCounter("catalog.realtime.channelRecovery");
           activateSupabaseFallback();
-          void loadMarketsRef.current();
         }
       };
 
@@ -1913,11 +1947,13 @@ export default function HomePage() {
   useEffect(() => {
     const q = searchQuery.trim();
     if (q.length < 2) {
+      semanticHydratedMarketIdsRef.current.clear();
       setSemanticSearchScores({});
       setSemanticSearchIds([]);
       setSemanticSearchLoading(false);
       return;
     }
+    semanticHydratedMarketIdsRef.current.clear();
 
     const controller = new AbortController();
     const timer = setTimeout(async () => {
@@ -1982,8 +2018,14 @@ export default function HomePage() {
   useEffect(() => {
     if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
     const existing = new Set(mergedMarkets.map((m) => m.id));
-    const missing = semanticSearchIds.filter((id) => !existing.has(id)).slice(0, 12);
+    const missing = semanticSearchIds
+      .filter(
+        (id) =>
+          !existing.has(id) && !semanticHydratedMarketIdsRef.current.has(id)
+      )
+      .slice(0, 12);
     if (missing.length === 0) return;
+    missing.forEach((id) => semanticHydratedMarketIdsRef.current.add(id));
     let cancelled = false;
     void (async () => {
       const rows = await Promise.all(
@@ -3718,7 +3760,10 @@ export default function HomePage() {
                         <input
                           type="text"
                           value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
+                          onChange={(e) => {
+                            setCatalogPage(1);
+                            setSearchQuery(e.target.value);
+                          }}
                           placeholder={lang === "RU" ? "Поиск..." : "Search..."}
                           className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 pl-10 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
                         />
@@ -3731,7 +3776,10 @@ export default function HomePage() {
                       <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
                         <button
                           type="button"
-                          onClick={() => setActiveCategoryId("all")}
+                          onClick={() => {
+                            setCatalogPage(1);
+                            setActiveCategoryId("all");
+                          }}
                           className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                             activeCategoryId === "all"
                               ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
@@ -3747,7 +3795,10 @@ export default function HomePage() {
                             <button
                               key={c.id}
                               type="button"
-                              onClick={() => setActiveCategoryId(c.id)}
+                              onClick={() => {
+                                setCatalogPage(1);
+                                setActiveCategoryId(c.id);
+                              }}
                               className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
                                   ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"

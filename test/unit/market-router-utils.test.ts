@@ -63,6 +63,13 @@ describe("market router utility behavior", () => {
         liquidity: 90_000,
       })
     ).toBeNull();
+
+    expect(
+      readVolumeFromPayload({
+        high_value: 0,
+        volumeUsd: 777,
+      })
+    ).toBe(777);
   });
 
   it("normalizes candle resolution from explicit interval", () => {
