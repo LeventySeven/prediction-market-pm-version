@@ -16,6 +16,8 @@
     "collector:limitless": "bun --env-file .env scripts/collector/limitless-collector.ts",
     "test:unit": "bun test test/unit",
     "test:unit:watch": "bun test --watch test/unit",
+    "test:e2e": "playwright test",
+    "test:app": "bun run test:unit && bun run test:e2e",
     "supabase:schema": "bun --env-file .env scripts/supabase/pull-schema.ts",
     "supabase:context:cli": "bun --env-file .env scripts/supabase/pull-db-context-cli.ts",
     "supabase:context:ci": "SUPABASE_CONTEXT_REQUIRE_SQL_DUMP=true bun --env-file .env scripts/supabase/pull-db-context-cli.ts",

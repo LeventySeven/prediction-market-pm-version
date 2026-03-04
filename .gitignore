@@ -167,3 +167,7 @@ wallets/
 *.mnemonic
 *.seed
 seed.txt
+
+# Playwright artifacts
+playwright-report/
+test-results/

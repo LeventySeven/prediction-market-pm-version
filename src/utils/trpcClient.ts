@@ -1,4 +1,4 @@
-import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
+import { createTRPCProxyClient, httpBatchLink, httpLink } from "@trpc/client";
 import superjson from "superjson";
 import type { AppRouter } from "@/src/server/trpc/router";
 import { getCsrfCookieName, getCsrfHeaderName } from "@/src/server/security/csrf";
@@ -30,37 +30,50 @@ const getBaseUrl = () => {
 
 export const trpcClient = createTRPCProxyClient<AppRouter>({
   transformer: superjson,
-  links: [
-    httpBatchLink({
-      url: `${getBaseUrl()}/api/trpc`,
-      // Ensure auth cookies are always sent (important for WebViews / cross-origin edge cases).
-      fetch(url, options = {}) {
-        const headers: HeadersInit = {
-          ...options.headers,
-        };
+  links: (() => {
+    const disableBatch = process.env.NEXT_PUBLIC_DISABLE_TRPC_BATCH === "true";
+    const endpoint = `${getBaseUrl()}/api/trpc`;
+    const withCredentialsFetch = (url: string | URL, options: RequestInit = {}) => {
+      const headers: HeadersInit = {
+        ...options.headers,
+      };
 
-        if (typeof window !== "undefined") {
-          const cookieName = getCsrfCookieName();
-          const csrfValue = document.cookie
-            .split(";")
-            .map((entry) => entry.trim())
-            .find((entry) => entry.startsWith(`${cookieName}=`))
-            ?.split("=")
-            .slice(1)
-            .join("=")
-            .trim();
+      if (typeof window !== "undefined") {
+        const cookieName = getCsrfCookieName();
+        const csrfValue = document.cookie
+          .split(";")
+          .map((entry) => entry.trim())
+          .find((entry) => entry.startsWith(`${cookieName}=`))
+          ?.split("=")
+          .slice(1)
+          .join("=")
+          .trim();
 
-          if (csrfValue) {
-            (headers as Record<string, string>)[getCsrfHeaderName()] = csrfValue;
-          }
+        if (csrfValue) {
+          (headers as Record<string, string>)[getCsrfHeaderName()] = csrfValue;
         }
+      }
 
-        return fetch(url, {
-          ...options,
-          credentials: "include",
-          headers,
-        });
-      },
-    }),
-  ],
+      return fetch(url, {
+        ...options,
+        credentials: "include",
+        headers,
+      });
+    };
+
+    return disableBatch
+      ? [
+          httpLink({
+            url: endpoint,
+            fetch: withCredentialsFetch,
+          }),
+        ]
+      : [
+          httpBatchLink({
+            url: endpoint,
+            // Ensure auth cookies are always sent (important for WebViews / cross-origin edge cases).
+            fetch: withCredentialsFetch,
+          }),
+        ];
+  })(),
 });

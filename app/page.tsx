@@ -1177,10 +1177,13 @@ export default function HomePage() {
 
   useEffect(() => {
     void loadMarkets();
+  }, [loadMarkets]);
+
+  useEffect(() => {
     if (marketCategories.length === 0 && !loadingMarketCategories) {
       void loadMarketCategories();
     }
-  }, [loadMarkets, loadMarketCategories, marketCategories.length, loadingMarketCategories]);
+  }, [loadMarketCategories, marketCategories.length, loadingMarketCategories]);
 
   useEffect(() => {
     if (selectedMarketId || currentView !== "CATALOG") return;
@@ -1891,6 +1894,174 @@ export default function HomePage() {
         ? "Временно не удалось проверить доступ к торговле."
         : "Temporarily unable to verify trading access.");
   }, [lang, selectedMarketId, tradeAccessLoading, tradeAccessState]);
+
+  useEffect(() => {
+    if (!selectedMarketId) return;
+
+    const streamMarketId = (selectedMarket?.id ?? selectedMarketId).trim();
+    if (!streamMarketId) return;
+
+    const pendingPatches = new Map<string, MarketLivePatch>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushPatches = () => {
+      flushTimer = null;
+      if (pendingPatches.size === 0) return;
+      const batch = Array.from(pendingPatches.entries());
+      pendingPatches.clear();
+      incrementClientCounter("market.realtime.selected.rowsApplied", batch.length);
+
+      setMarketLivePatchById((prev) => {
+        let changed = false;
+        const next = { ...prev };
+
+        for (const [marketId, patch] of batch) {
+          if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
+          next[marketId] = patch;
+          changed = true;
+        }
+
+        return changed ? next : prev;
+      });
+    };
+
+    const queuePatch = (marketId: string, patch: MarketLivePatch) => {
+      const cleanMarketId = marketId.trim();
+      if (!cleanMarketId) return;
+      pendingPatches.set(cleanMarketId, patch);
+      incrementClientCounter("market.realtime.selected.rowsReceived");
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushPatches, 120);
+      }
+    };
+
+    const startPolymarketSupabaseFallback = () => {
+      if (selectedProvider !== "polymarket") return () => undefined;
+      const supabase = getBrowserSupabaseClient();
+      if (!supabase) return () => undefined;
+
+      const polymarketMarketId = streamMarketId.startsWith("polymarket:")
+        ? streamMarketId.slice("polymarket:".length)
+        : streamMarketId;
+
+      const channel = supabase.channel(`market-live-selected-${polymarketMarketId}`);
+      channel.on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "polymarket_market_live",
+          filter: `market_id=eq.${polymarketMarketId}`,
+        },
+        (payload) => {
+          if (!payload.new || typeof payload.new !== "object") return;
+          const row = payload.new as MarketLiveRow;
+          queuePatch(streamMarketId, {
+            bestBid: asNumber(row.best_bid),
+            bestAsk: asNumber(row.best_ask),
+            mid: asNumber(row.mid),
+            lastTradePrice: asNumber(row.last_trade_price),
+            lastTradeSize: asNumber(row.last_trade_size),
+            rolling24hVolume: asNumber(row.rolling_24h_volume),
+            openInterest: asNumber(row.open_interest),
+            liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
+          });
+        }
+      );
+      channel.on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "polymarket_market_live",
+          filter: `market_id=eq.${polymarketMarketId}`,
+        },
+        (payload) => {
+          if (!payload.new || typeof payload.new !== "object") return;
+          const row = payload.new as MarketLiveRow;
+          queuePatch(streamMarketId, {
+            bestBid: asNumber(row.best_bid),
+            bestAsk: asNumber(row.best_ask),
+            mid: asNumber(row.mid),
+            lastTradePrice: asNumber(row.last_trade_price),
+            lastTradeSize: asNumber(row.last_trade_size),
+            rolling24hVolume: asNumber(row.rolling_24h_volume),
+            openInterest: asNumber(row.open_interest),
+            liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
+          });
+        }
+      );
+      channel.subscribe();
+
+      return () => {
+        void supabase.removeChannel(channel);
+      };
+    };
+
+    if (ENABLE_UPSTASH_STREAM) {
+      let fallbackActive = false;
+      let stopSupabaseFallback: (() => void) | null = null;
+      const stream = new EventSource(`/api/stream/markets?ids=${encodeURIComponent(streamMarketId)}`);
+
+      stream.addEventListener("live", (evt) => {
+        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+        if (!payloadRaw) return;
+        try {
+          const payload = JSON.parse(payloadRaw) as {
+            patches?: Array<{
+              marketId?: string;
+              bestBid?: number | null;
+              bestAsk?: number | null;
+              mid?: number | null;
+              lastTradePrice?: number | null;
+              lastTradeSize?: number | null;
+              rolling24hVolume?: number | null;
+              openInterest?: number | null;
+              sourceTs?: string | null;
+            }>;
+          };
+          const patches = Array.isArray(payload.patches) ? payload.patches : [];
+          for (const patchRow of patches) {
+            const marketId = String(patchRow.marketId ?? "").trim();
+            if (!marketId) continue;
+            queuePatch(marketId, {
+              bestBid: asNumber(patchRow.bestBid),
+              bestAsk: asNumber(patchRow.bestAsk),
+              mid: asNumber(patchRow.mid),
+              lastTradePrice: asNumber(patchRow.lastTradePrice),
+              lastTradeSize: asNumber(patchRow.lastTradeSize),
+              rolling24hVolume: asNumber(patchRow.rolling24hVolume),
+              openInterest: asNumber(patchRow.openInterest),
+              liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
+            });
+          }
+        } catch {
+          // Ignore malformed stream payloads and keep listening.
+        }
+      });
+
+      stream.onerror = () => {
+        if (fallbackActive) return;
+        fallbackActive = true;
+        incrementClientCounter("market.realtime.selected.channelRecovery");
+        stopSupabaseFallback = startPolymarketSupabaseFallback();
+      };
+
+      return () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        pendingPatches.clear();
+        stream.close();
+        if (stopSupabaseFallback) stopSupabaseFallback();
+      };
+    }
+
+    const stopSupabaseFallback = startPolymarketSupabaseFallback();
+    return () => {
+      if (flushTimer) clearTimeout(flushTimer);
+      pendingPatches.clear();
+      stopSupabaseFallback();
+    };
+  }, [selectedMarketId, selectedMarket?.id, selectedProvider]);
 
   const goToView = useCallback(
     (view: ViewType) => {

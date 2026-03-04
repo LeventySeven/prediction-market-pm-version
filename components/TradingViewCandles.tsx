@@ -5,6 +5,7 @@ import {
   CandlestickSeries,
   LineSeries,
   ColorType,
+  LastPriceAnimationMode,
   type IChartApi,
   type ISeriesApi,
   createChart,
@@ -316,6 +317,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
           priceLineColor: line.color,
           crosshairMarkerVisible: true,
           priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+          lastPriceAnimation: LastPriceAnimationMode.OnDataUpdate,
         });
         lineSeriesRef.current.set(line.id, series);
         lineDataRef.current.set(line.id, []);
