@@ -18,6 +18,9 @@ export type Database = {
           username: string;
           display_name: string | null;
           avatar_url: string | null;
+          profile_description: string | null;
+          avatar_palette: Json | null;
+          profile_setup_completed_at: string | null;
           telegram_id: number | null;
           telegram_username: string | null;
           telegram_first_name: string | null;
@@ -39,6 +42,9 @@ export type Database = {
           username: string;
           display_name?: string | null;
           avatar_url?: string | null;
+          profile_description?: string | null;
+          avatar_palette?: Json | null;
+          profile_setup_completed_at?: string | null;
           telegram_id?: number | null;
           telegram_username?: string | null;
           telegram_first_name?: string | null;
@@ -60,6 +66,9 @@ export type Database = {
           username?: string;
           display_name?: string | null;
           avatar_url?: string | null;
+          profile_description?: string | null;
+          avatar_palette?: Json | null;
+          profile_setup_completed_at?: string | null;
           telegram_id?: number | null;
           telegram_username?: string | null;
           telegram_first_name?: string | null;

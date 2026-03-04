@@ -184,6 +184,12 @@ export interface User {
   name?: string; // Display name
   avatarUrl?: string | null; // user-controlled avatar URL
   telegramPhotoUrl?: string | null; // Telegram-provided photo URL (fallback)
+  profileDescription?: string | null;
+  avatarPalette?: {
+    primary: string;
+    secondary: string;
+  } | null;
+  needsProfileSetup?: boolean;
   referralCode?: string | null;
   referralCommissionRate?: number | null;
   referralEnabled?: boolean | null;

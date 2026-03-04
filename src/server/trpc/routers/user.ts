@@ -3,6 +3,14 @@ import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { publicProcedure, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
+import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
+
+const PRIVY_PLACEHOLDER_DOMAIN = "@privy.local";
+const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
+const avatarPaletteShape = z.object({
+  primary: z.string().regex(hexColorRegex),
+  secondary: z.string().regex(hexColorRegex),
+});
 
 const userShape = z.object({
   id: z.string(),
@@ -10,6 +18,9 @@ const userShape = z.object({
   username: z.string(),
   displayName: z.string().nullable(),
   avatarUrl: z.string().nullable(),
+  profileDescription: z.string().nullable(),
+  avatarPalette: avatarPaletteShape.nullable(),
+  needsProfileSetup: z.boolean(),
   telegramPhotoUrl: z.string().nullable(),
   referralCode: z.string().nullable(),
   referralCommissionRate: z.number().nullable(),
@@ -20,6 +31,15 @@ const userShape = z.object({
 });
 
 const normalizeDisplayName = (value: string) => value.trim().replace(/\s+/g, " ");
+const normalizeDescription = (value: string | null | undefined) => {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+const normalizeEmail = (value: string | undefined) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+const isPrivyPlaceholderEmail = (value: string) => value.trim().toLowerCase().endsWith(PRIVY_PLACEHOLDER_DOMAIN);
 const buildReferralCode = () => randomBytes(6).toString("hex").toUpperCase();
 
 const mapUser = (row: any) => ({
@@ -28,6 +48,9 @@ const mapUser = (row: any) => ({
   username: String(row.username ?? ""),
   displayName: row.display_name ? String(row.display_name) : null,
   avatarUrl: row.avatar_url ? String(row.avatar_url) : null,
+  profileDescription: row.profile_description ? String(row.profile_description) : null,
+  avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
+  needsProfileSetup: String(row.auth_provider ?? "").toLowerCase() === "privy" && !row.profile_setup_completed_at,
   telegramPhotoUrl: row.telegram_photo_url ? String(row.telegram_photo_url) : null,
   referralCode: row.referral_code ? String(row.referral_code) : null,
   referralCommissionRate:
@@ -160,18 +183,100 @@ export const userRouter = router({
     }),
 
   updateAvatarUrl: publicProcedure
-    .input(z.object({ avatarUrl: z.string().url().nullable() }))
+    .input(z.object({ avatarUrl: z.string().url().nullable(), avatarPalette: avatarPaletteShape.nullable().optional() }))
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      const updatePayload: Record<string, unknown> = {
+        avatar_url: input.avatarUrl,
+      };
+      if (input.avatarUrl === null) {
+        updatePayload.avatar_palette = null;
+      } else if (input.avatarPalette !== undefined) {
+        updatePayload.avatar_palette = input.avatarPalette;
+      }
       const updated = await (supabaseService as any)
         .from("users")
-        .update({ avatar_url: input.avatarUrl })
+        .update(updatePayload)
         .eq("id", authUser.id)
         .select("*")
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update avatar" });
+      return mapUser(updated.data);
+    }),
+
+  completeProfileSetup: publicProcedure
+    .input(
+      z.object({
+        displayName: z.string().min(2).max(32),
+        email: z.string().trim().email().max(254).optional(),
+        profileDescription: z.string().max(280).nullable().optional(),
+        avatarUrl: z.string().url().nullable().optional(),
+        avatarPalette: avatarPaletteShape.nullable().optional(),
+      })
+    )
+    .output(userShape)
+    .mutation(async ({ ctx, input }) => {
+      const { supabaseService, authUser } = ctx;
+      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+
+      const displayName = normalizeDisplayName(input.displayName);
+      const nextEmail = normalizeEmail(input.email);
+      const description = normalizeDescription(input.profileDescription);
+      const existing = await (supabaseService as any)
+        .from("users")
+        .select("email")
+        .eq("id", authUser.id)
+        .maybeSingle();
+
+      if (existing.error || !existing.data) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: existing.error?.message ?? "User not found",
+        });
+      }
+
+      const currentEmail = String(existing.data.email ?? "");
+      const updatePayload: Record<string, unknown> = {
+        display_name: displayName,
+        profile_description: description,
+        profile_setup_completed_at: new Date().toISOString(),
+        email:
+          nextEmail ??
+          (isPrivyPlaceholderEmail(currentEmail)
+            ? currentEmail
+            : currentEmail.toLowerCase()),
+      };
+
+      if (input.avatarUrl !== undefined) {
+        updatePayload.avatar_url = input.avatarUrl;
+        if (input.avatarUrl === null) {
+          updatePayload.avatar_palette = null;
+        } else if (input.avatarPalette !== undefined) {
+          updatePayload.avatar_palette = input.avatarPalette;
+        }
+      } else if (input.avatarPalette !== undefined) {
+        updatePayload.avatar_palette = input.avatarPalette;
+      }
+
+      const updated = await (supabaseService as any)
+        .from("users")
+        .update(updatePayload)
+        .eq("id", authUser.id)
+        .select("*")
+        .single();
+
+      if (updated.error || !updated.data) {
+        const code = String((updated.error as any)?.code ?? "");
+        if (code === "23505") {
+          throw new TRPCError({ code: "CONFLICT", message: "EMAIL_ALREADY_IN_USE" });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: updated.error?.message ?? "Failed to complete profile setup",
+        });
+      }
       return mapUser(updated.data);
     }),
 

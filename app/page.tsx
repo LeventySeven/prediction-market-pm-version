@@ -5,6 +5,7 @@ import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import OnboardingModal from "@/components/OnboardingModal";
+import ProfileSetupModal, { type ProfileSetupSubmitPayload } from "@/components/ProfileSetupModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
 import ProfilePage from "@/components/ProfilePage";
 import PublicUserProfileModal from "@/components/PublicUserProfileModal";
@@ -36,32 +37,18 @@ import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { buildSignedBuyOrder, type EphemeralApiCreds, type PrivyWalletLike } from "@/src/lib/polymarket/tradingClient";
 import { getBrowserSupabaseClient } from "@/src/utils/supabase/browser";
 import type { Database } from "@/src/types/database";
+import {
+  buildAvatarPaletteFromSeed,
+  extractAvatarPaletteFromFile,
+  extractAvatarPaletteFromImageSource,
+  sanitizeAvatarPalette,
+} from "@/src/lib/avatarPalette";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 50;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
-
-type ErrorLike = string | Error | { message?: string; data?: { message?: string } } | null | undefined;
-const getErrorMessage = (error: ErrorLike): string => {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error) {
-    const msg = error.message;
-    if (typeof msg === "string") return msg;
-  }
-  if (error && typeof error === "object" && "data" in error && error.data && typeof error.data === "object" && "message" in error.data) {
-    const dataMsg = error.data.message;
-    if (typeof dataMsg === "string") return dataMsg;
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return "Unknown error";
-  }
-};
-
 
 type MarketApiRow = {
   id: string;
@@ -429,6 +416,8 @@ export default function HomePage() {
   const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
   const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [profileSetupSaving, setProfileSetupSaving] = useState(false);
+  const [profileSetupError, setProfileSetupError] = useState<string | null>(null);
   const [reloginRequired, setReloginRequired] = useState(false);
   type CatalogSort = "ENDING_SOON" | "CREATED_DESC" | "CREATED_ASC" | "VOLUME_DESC" | "VOLUME_ASC";
   const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
@@ -757,6 +746,9 @@ export default function HomePage() {
     displayName?: string | null;
     createdAt?: string | null;
     avatarUrl?: string | null;
+    profileDescription?: string | null;
+    avatarPalette?: { primary: string; secondary: string } | null;
+    needsProfileSetup?: boolean | null;
     telegramPhotoUrl?: string | null;
     balance: number;
     isAdmin?: boolean | null;
@@ -773,6 +765,9 @@ export default function HomePage() {
       name: me.displayName ?? me.username ?? undefined,
       createdAt: me.createdAt ?? undefined,
       avatarUrl: me.avatarUrl ?? null,
+      profileDescription: me.profileDescription ?? null,
+      avatarPalette: sanitizeAvatarPalette(me.avatarPalette),
+      needsProfileSetup: Boolean(me.needsProfileSetup),
       telegramPhotoUrl: me.telegramPhotoUrl ?? null,
       avatar: me.avatarUrl ?? me.telegramPhotoUrl ?? undefined,
       balance: me.balance,
@@ -827,6 +822,12 @@ export default function HomePage() {
     }
     setUser(null);
   }, [privyReady, privyAuthenticated, refreshUser]);
+
+  useEffect(() => {
+    if (user?.needsProfileSetup) return;
+    setProfileSetupSaving(false);
+    setProfileSetupError(null);
+  }, [user?.needsProfileSetup]);
 
   const attemptSilentRefresh = useCallback(async () => {
     if (privyReady && privyAuthenticated) {
@@ -885,21 +886,122 @@ export default function HomePage() {
     []
   );
 
-  const handleUpdateAvatarUrl = useCallback(async (nextAvatarUrl: string | null) => {
-    const updated = await trpcClient.user.updateAvatarUrl.mutate({
-      avatarUrl: nextAvatarUrl,
-    });
-    setUser((prev) =>
-      prev
-        ? {
-            ...prev,
-            avatarUrl: updated.avatarUrl ?? null,
-            telegramPhotoUrl: updated.telegramPhotoUrl ?? null,
-            avatar: updated.avatarUrl ?? updated.telegramPhotoUrl ?? undefined,
+  const handleUpdateAvatarUrl = useCallback(
+    async (nextAvatarUrl: string | null, nextAvatarPalette?: { primary: string; secondary: string } | null) => {
+      const updated = await trpcClient.user.updateAvatarUrl.mutate({
+        avatarUrl: nextAvatarUrl,
+        avatarPalette: nextAvatarPalette === undefined ? undefined : nextAvatarPalette,
+      });
+      const normalizedPalette = sanitizeAvatarPalette(updated.avatarPalette);
+      setUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              avatarUrl: updated.avatarUrl ?? null,
+              avatarPalette: normalizedPalette,
+              needsProfileSetup: updated.needsProfileSetup ?? prev.needsProfileSetup,
+              telegramPhotoUrl: updated.telegramPhotoUrl ?? null,
+              avatar: updated.avatarUrl ?? updated.telegramPhotoUrl ?? undefined,
+            }
+          : prev
+      );
+    },
+    []
+  );
+
+  const handleCompleteProfileSetup = useCallback(
+    async (payload: ProfileSetupSubmitPayload) => {
+      if (!user) return;
+      setProfileSetupError(null);
+      setProfileSetupSaving(true);
+      const paletteSeed = String(user.id || user.username || payload.displayName || "user");
+
+      try {
+        let avatarUrl: string | null | undefined;
+        let avatarPalette: { primary: string; secondary: string } | null | undefined;
+
+        if (payload.avatarMode === "upload") {
+          if (!payload.avatarFile) {
+            throw new Error("MISSING_AVATAR_FILE");
           }
-        : prev
-    );
-  }, []);
+
+          avatarPalette = await extractAvatarPaletteFromFile(payload.avatarFile, paletteSeed);
+          const formData = new FormData();
+          formData.append("file", payload.avatarFile);
+          const uploadResponse = await fetch("/api/avatar/upload", { method: "POST", body: formData });
+          const uploadPayload = (await uploadResponse.json()) as { avatarUrl?: string; error?: string };
+          if (!uploadResponse.ok || !uploadPayload.avatarUrl) {
+            throw new Error(uploadPayload.error || "UPLOAD_FAILED");
+          }
+          avatarUrl = uploadPayload.avatarUrl;
+        } else if (payload.avatarMode === "import_telegram") {
+          if (!user.telegramPhotoUrl) {
+            throw new Error("NO_TELEGRAM_AVATAR");
+          }
+          avatarUrl = user.telegramPhotoUrl;
+          avatarPalette = await extractAvatarPaletteFromImageSource(user.telegramPhotoUrl, paletteSeed);
+        } else if (payload.avatarMode === "clear") {
+          avatarUrl = null;
+          avatarPalette = null;
+        } else {
+          avatarUrl = undefined;
+          avatarPalette = undefined;
+        }
+
+        const normalizedPalette =
+          avatarPalette === undefined
+            ? undefined
+            : sanitizeAvatarPalette(avatarPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
+
+        const updated = await trpcClient.user.completeProfileSetup.mutate({
+          displayName: payload.displayName.trim(),
+          email: payload.email.trim().length > 0 ? payload.email.trim() : undefined,
+          profileDescription:
+            payload.profileDescription.trim().length > 0 ? payload.profileDescription.trim() : null,
+          avatarUrl,
+          avatarPalette: normalizedPalette,
+        });
+
+        if (!updated || typeof updated.id !== "string") {
+          throw new Error("PROFILE_SETUP_INVALID_RESPONSE");
+        }
+        applyPublicUser({
+          id: updated.id,
+          email: updated.email,
+          username: updated.username,
+          displayName: updated.displayName,
+          createdAt: updated.createdAt,
+          avatarUrl: updated.avatarUrl,
+          profileDescription: updated.profileDescription,
+          avatarPalette: sanitizeAvatarPalette(updated.avatarPalette),
+          needsProfileSetup: updated.needsProfileSetup,
+          telegramPhotoUrl: updated.telegramPhotoUrl,
+          balance: typeof updated.balance === "number" ? updated.balance : user.balance,
+          isAdmin: updated.isAdmin,
+          referralCode: updated.referralCode,
+          referralCommissionRate: updated.referralCommissionRate,
+          referralEnabled: updated.referralEnabled,
+        });
+        setProfileSetupError(null);
+      } catch (err) {
+        const msg = String(getErrorMessage(err) ?? "").toUpperCase();
+        if (msg.includes("EMAIL_ALREADY_IN_USE") || msg.includes("CONFLICT")) {
+          setProfileSetupError(lang === "RU" ? "Этот email уже используется." : "This email is already in use.");
+        } else if (msg.includes("INVALID_FILE_TYPE")) {
+          setProfileSetupError(lang === "RU" ? "Неверный формат аватара." : "Invalid avatar file type.");
+        } else if (msg.includes("FILE_TOO_LARGE")) {
+          setProfileSetupError(lang === "RU" ? "Файл аватара слишком большой." : "Avatar file is too large.");
+        } else if (msg.includes("NO_TELEGRAM_AVATAR")) {
+          setProfileSetupError(lang === "RU" ? "В Telegram нет аватара." : "No Telegram avatar found.");
+        } else {
+          setProfileSetupError(lang === "RU" ? "Не удалось сохранить профиль." : "Failed to save profile.");
+        }
+      } finally {
+        setProfileSetupSaving(false);
+      }
+    },
+    [applyPublicUser, lang, user]
+  );
 
   const handleCreateReferralLink = useCallback(async () => {
     const { referralCode, referralCommissionRate, referralEnabled } =
@@ -3744,6 +3846,14 @@ export default function HomePage() {
         </div>
       )}
 
+      <ProfileSetupModal
+        isOpen={Boolean(user?.needsProfileSetup)}
+        user={user}
+        lang={lang}
+        saving={profileSetupSaving}
+        error={profileSetupError}
+        onSubmit={handleCompleteProfileSetup}
+      />
       <OnboardingModal
         isOpen={showOnboarding}
         onClose={handleCloseOnboarding}

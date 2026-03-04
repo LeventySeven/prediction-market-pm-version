@@ -4,6 +4,9 @@ export type PublicUser = {
   username: string;
   displayName: string | null;
   avatarUrl: string | null;
+  profileDescription: string | null;
+  avatarPalette: { primary: string; secondary: string } | null;
+  needsProfileSetup: boolean;
   telegramPhotoUrl: string | null;
   referralCode: string | null;
   referralCommissionRate: number | null;

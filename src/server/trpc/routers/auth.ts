@@ -7,9 +7,10 @@ import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
 import { verifyPrivyAccessToken } from "../../auth/privy";
 import { assertCsrfForMutation } from "../../security/csrf";
+import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
 
 const publicColumns =
-  "id, email, username, display_name, avatar_url, telegram_photo_url, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin, privy_user_id, privy_wallet_address, auth_provider";
+  "id, email, username, display_name, avatar_url, profile_description, avatar_palette, profile_setup_completed_at, telegram_photo_url, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin, privy_user_id, privy_wallet_address, auth_provider";
 
 type DbUserRow = Database["public"]["Tables"]["users"]["Row"];
 type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
@@ -34,6 +35,9 @@ const toPublicUser = (row: DbUserRow): PublicUser => ({
   username: row.username,
   displayName: row.display_name,
   avatarUrl: row.avatar_url ?? null,
+  profileDescription: row.profile_description ?? null,
+  avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
+  needsProfileSetup: row.auth_provider === "privy" && !row.profile_setup_completed_at,
   telegramPhotoUrl: row.telegram_photo_url ?? null,
   referralCode: row.referral_code,
   referralCommissionRate:
@@ -128,7 +132,7 @@ const upsertPrivyUser = async (
       .insert({
         email,
         username,
-        display_name: username,
+        display_name: null,
         is_admin: false,
         privy_user_id: identity.privyUserId,
         privy_wallet_address: identity.walletAddress,

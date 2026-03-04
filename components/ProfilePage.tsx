@@ -1,9 +1,16 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Mail, User as UserIcon, Shield, Pencil, X, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { LogOut, Mail, User as UserIcon, Shield, Pencil, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
+import {
+  buildAvatarPaletteFromSeed,
+  extractAvatarPaletteFromFile,
+  extractAvatarPaletteFromImageSource,
+  paletteToAccentPair,
+  sanitizeAvatarPalette,
+} from '@/src/lib/avatarPalette';
 
 type ProfilePageProps = {
   user: User | null;
@@ -11,7 +18,10 @@ type ProfilePageProps = {
   onLogin: () => void;
   onLogout: () => void;
   onUpdateDisplayName: (nextDisplayName: string) => Promise<void>;
-  onUpdateAvatarUrl: (nextAvatarUrl: string | null) => Promise<void>;
+  onUpdateAvatarUrl: (
+    nextAvatarUrl: string | null,
+    nextAvatarPalette?: { primary: string; secondary: string } | null
+  ) => Promise<void>;
   balanceMajor: number;
   pnlMajor: number;
   bets: Bet[];
@@ -47,86 +57,6 @@ const formatDate = (iso?: string, lang: 'RU' | 'EN' = 'RU') => {
     month: 'short',
     day: '2-digit',
   });
-};
-
-const hashStringToInt = (value: string) => {
-  let h = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-};
-
-const accentPairFromSeed = (seed: string) => {
-  const h = hashStringToInt(seed);
-  const hueA = h % 360;
-  const hueB = (hueA + 32 + ((h >> 8) % 48)) % 360;
-  return {
-    a: `hsla(${hueA}, 85%, 58%, 0.20)`,
-    b: `hsla(${hueB}, 85%, 58%, 0.16)`,
-    edgeA: `hsla(${hueA}, 85%, 58%, 0.75)`,
-    edgeB: `hsla(${hueB}, 85%, 58%, 0.65)`,
-  };
-};
-
-const accentPairFromHue = (hueA: number) => {
-  const hueB = (hueA + 28) % 360;
-  return {
-    a: `hsla(${hueA}, 85%, 58%, 0.20)`,
-    b: `hsla(${hueB}, 85%, 58%, 0.16)`,
-    edgeA: `hsla(${hueA}, 85%, 58%, 0.75)`,
-    edgeB: `hsla(${hueB}, 85%, 58%, 0.65)`,
-  };
-};
-
-const hueFromRgb = (r: number, g: number, b: number) => {
-  const rn = r / 255;
-  const gn = g / 255;
-  const bn = b / 255;
-  const max = Math.max(rn, gn, bn);
-  const min = Math.min(rn, gn, bn);
-  const d = max - min;
-  if (d < 1e-9) return 0;
-  let h = 0;
-  if (max === rn) h = ((gn - bn) / d) % 6;
-  else if (max === gn) h = (bn - rn) / d + 2;
-  else h = (rn - gn) / d + 4;
-  h *= 60;
-  if (h < 0) h += 360;
-  return h;
-};
-
-const sampleAvatarHue = async (src: string): Promise<number | null> => {
-  try {
-    const img = new window.Image();
-    img.crossOrigin = "anonymous";
-    img.decoding = "async";
-    img.referrerPolicy = "no-referrer";
-
-    const loaded = new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("AVATAR_LOAD_FAILED"));
-    });
-
-    img.src = src;
-    await loaded;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.drawImage(img, 0, 0, 1, 1);
-    const data = ctx.getImageData(0, 0, 1, 1).data;
-    const r = data[0] ?? 0;
-    const g = data[1] ?? 0;
-    const b = data[2] ?? 0;
-    return hueFromRgb(r, g, b);
-  } catch {
-    // If the image is cross-origin without CORS, canvas read will fail (tainted).
-    return null;
-  }
 };
 
 const buildSparklinePath = (values: number[]) => {
@@ -251,28 +181,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
   const formatPct = (value: number) => `${value.toFixed(1)}%`;
   const formatSignedMoney = (value: number) => `${value >= 0 ? '+' : '-'}$${Math.abs(value).toFixed(2)}`;
 
-  const accentSeed = String(user?.avatarUrl ?? user?.telegramPhotoUrl ?? user?.id ?? displayName);
-  const [accent, setAccent] = useState(() => accentPairFromSeed(accentSeed));
-  const avatarForAccent = avatarPreviewUrl ?? user?.avatar ?? null;
-
-  useEffect(() => {
-    const src = typeof avatarForAccent === "string" && avatarForAccent.trim().length > 0 ? avatarForAccent : null;
-    if (!src) {
-      setAccent(accentPairFromSeed(accentSeed));
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      const hue = await sampleAvatarHue(src);
-      if (cancelled) return;
-      setAccent(hue === null ? accentPairFromSeed(accentSeed) : accentPairFromHue(hue));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [avatarForAccent, accentSeed]);
+  const accentSeed = String(user?.id ?? user?.username ?? displayName);
+  const accent = useMemo(
+    () => paletteToAccentPair(sanitizeAvatarPalette(user?.avatarPalette), accentSeed),
+    [accentSeed, user?.avatarPalette]
+  );
 
   const pnlSparkline = useMemo(() => {
     const trades = [...soldTrades].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -364,6 +277,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                 <div className="text-[11px] uppercase tracking-wider text-zinc-500">
                   {lang === 'RU' ? 'Создан' : 'Joined'}: {joined}
                 </div>
+              )}
+              {user.profileDescription && (
+                <p className="pt-1 text-sm text-zinc-300/90 leading-snug line-clamp-2">
+                  {user.profileDescription}
+                </p>
               )}
             </div>
           </div>
@@ -492,11 +410,15 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
 
                     setSaving(true);
                     try {
+                      const paletteSeed = String(user.id ?? user.username ?? nextName);
                       if (nextName !== displayName) {
                         await onUpdateDisplayName(nextName);
                       }
 
                       if (avatarMode === 'upload' && avatarFile) {
+                        const extractedPalette = await extractAvatarPaletteFromFile(avatarFile, paletteSeed);
+                        const normalizedPalette =
+                          sanitizeAvatarPalette(extractedPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
                         const fd = new FormData();
                         fd.append('file', avatarFile);
                         const resp = await fetch('/api/avatar/upload', { method: 'POST', body: fd });
@@ -504,14 +426,20 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                         if (!resp.ok || !data.avatarUrl) {
                           throw new Error(data.error || 'UPLOAD_FAILED');
                         }
-                        await onUpdateAvatarUrl(data.avatarUrl);
+                        await onUpdateAvatarUrl(data.avatarUrl, normalizedPalette);
                       } else if (avatarMode === 'import_telegram') {
                         if (!user.telegramPhotoUrl) {
                           throw new Error('NO_TELEGRAM_AVATAR');
                         }
-                        await onUpdateAvatarUrl(user.telegramPhotoUrl);
+                        const extractedPalette = await extractAvatarPaletteFromImageSource(
+                          user.telegramPhotoUrl,
+                          paletteSeed
+                        );
+                        const normalizedPalette =
+                          sanitizeAvatarPalette(extractedPalette) ?? buildAvatarPaletteFromSeed(paletteSeed);
+                        await onUpdateAvatarUrl(user.telegramPhotoUrl, normalizedPalette);
                       } else if (avatarMode === 'clear') {
-                        await onUpdateAvatarUrl(null);
+                        await onUpdateAvatarUrl(null, null);
                       }
 
                       setIsEditing(false);
