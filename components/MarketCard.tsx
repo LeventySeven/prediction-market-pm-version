@@ -43,7 +43,8 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
     lang === "RU"
       ? market.categoryLabelRu ?? market.categoryLabelEn
       : market.categoryLabelEn ?? market.categoryLabelRu;
-  const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
+  const providerAlt = market.provider === "limitless" ? "Limitless" : "Polymarket";
+  const providerLogoSrc = market.provider === "limitless" ? "/venues/limitless.svg" : "/venues/polymarket.svg";
   const highlightClass =
     highlightState === "new"
       ? "market-card-highlight-new"
@@ -111,8 +112,12 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
             {localizedTitle}
           </h3>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
-            <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-900/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-200">
-              {providerLabel}
+            <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-900/50 p-1">
+              <img
+                src={providerLogoSrc}
+                alt={providerAlt}
+                className="h-4 w-4 rounded object-contain"
+              />
             </span>
             {categoryLabel && (
               <>

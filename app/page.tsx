@@ -514,15 +514,27 @@ const sanitizeEnabledProviders = (
 
 const buildProviderOptions = (
   enabledProviders: Array<"polymarket" | "limitless">
-): Array<{ id: ProviderFilter; labelRu: string; labelEn: string }> => {
-  const out: Array<{ id: ProviderFilter; labelRu: string; labelEn: string }> = [
+): Array<{ id: ProviderFilter; labelRu: string; labelEn: string; logoSrc?: string; ariaLabel?: string }> => {
+  const out: Array<{ id: ProviderFilter; labelRu: string; labelEn: string; logoSrc?: string; ariaLabel?: string }> = [
     { id: "all", labelRu: "Все площадки", labelEn: "All venues" },
   ];
   if (enabledProviders.includes("polymarket")) {
-    out.push({ id: "polymarket", labelRu: "Polymarket", labelEn: "Polymarket" });
+    out.push({
+      id: "polymarket",
+      labelRu: "Polymarket",
+      labelEn: "Polymarket",
+      logoSrc: "/venues/polymarket.svg",
+      ariaLabel: "Polymarket",
+    });
   }
   if (enabledProviders.includes("limitless")) {
-    out.push({ id: "limitless", labelRu: "Limitless", labelEn: "Limitless" });
+    out.push({
+      id: "limitless",
+      labelRu: "Limitless",
+      labelEn: "Limitless",
+      logoSrc: "/venues/limitless.svg",
+      ariaLabel: "Limitless",
+    });
   }
   return out;
 };
@@ -4239,6 +4251,8 @@ export default function HomePage() {
                             <button
                               key={provider.id}
                               type="button"
+                              aria-label={provider.ariaLabel ?? label}
+                              title={provider.ariaLabel ?? label}
                               onClick={() => {
                                 setCatalogPage(1);
                                 setActiveProviderFilter(provider.id);
@@ -4249,13 +4263,25 @@ export default function HomePage() {
                                   }
                                 }
                               }}
-                              className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                              className={`shrink-0 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                                provider.id === "all"
+                                  ? "px-3 py-1.5"
+                                  : "h-9 w-9 p-0 inline-flex items-center justify-center"
+                              } ${
                                 selected
                                   ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
                                   : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
                               }`}
                             >
-                              {label}
+                              {provider.id === "all" || !provider.logoSrc ? (
+                                label
+                              ) : (
+                                <img
+                                  src={provider.logoSrc}
+                                  alt={provider.ariaLabel ?? label}
+                                  className="h-5 w-5 rounded-md object-contain"
+                                />
+                              )}
                             </button>
                           );
                         })}
