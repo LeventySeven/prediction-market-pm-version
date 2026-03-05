@@ -1781,6 +1781,41 @@ type TradeAccessStatus = {
 const accessStatusCache = new Map<string, { expiresAt: number; value: TradeAccessStatus }>();
 const relayRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
+const toBooleanLike = (value: JsonValue | undefined): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) return null;
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "y" ||
+      normalized === "blocked" ||
+      normalized === "deny" ||
+      normalized === "denied"
+    ) {
+      return true;
+    }
+    if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "n" ||
+      normalized === "allowed" ||
+      normalized === "ok" ||
+      normalized === "eligible"
+    ) {
+      return false;
+    }
+  }
+  return null;
+};
+
 const normalizeAccessStatus = (payload: JsonValue | null): TradeAccessStatus => {
   const nowIso = new Date().toISOString();
   const rec: Record<string, JsonValue | undefined> =
@@ -1796,15 +1831,20 @@ const normalizeAccessStatus = (payload: JsonValue | null): TradeAccessStatus => 
   );
 
   const explicitBoolean =
-    typeof rec.allowed === "boolean"
-      ? rec.allowed
-      : typeof rec.canTrade === "boolean"
-        ? rec.canTrade
-        : typeof rec.tradingAllowed === "boolean"
-          ? rec.tradingAllowed
-          : null;
+    toBooleanLike(rec.allowed) ??
+    toBooleanLike(rec.canTrade) ??
+    toBooleanLike(rec.tradingAllowed) ??
+    toBooleanLike(rec.isAllowed) ??
+    null;
 
-  const rawStatus = typeof rec.status === "string" ? rec.status : typeof rec.result === "string" ? rec.result : "";
+  const rawStatus =
+    typeof rec.status === "string"
+      ? rec.status
+      : typeof rec.result === "string"
+        ? rec.result
+        : typeof rec.accessStatus === "string"
+          ? rec.accessStatus
+          : "";
   const reasonCode =
     typeof rec.reasonCode === "string"
       ? rec.reasonCode
@@ -1813,7 +1853,12 @@ const normalizeAccessStatus = (payload: JsonValue | null): TradeAccessStatus => 
         : typeof rec.error === "string"
           ? rec.error
           : null;
-  const message = typeof rec.message === "string" ? rec.message : null;
+  const message =
+    typeof rec.message === "string"
+      ? rec.message
+      : typeof rec.detail === "string"
+        ? rec.detail
+        : null;
 
   if (
     explicitBoolean === true ||
@@ -1872,11 +1917,11 @@ const getTradeAccessStatus = async (cacheKey: string, clientIp?: string | null):
           ? (geoPayload as Record<string, JsonValue | undefined>)
           : {};
       const blocked =
-        typeof geoRec.blocked === "boolean"
-          ? geoRec.blocked
-          : typeof geoRec.isBlocked === "boolean"
-            ? geoRec.isBlocked
-            : null;
+        toBooleanLike(geoRec.blocked) ??
+        toBooleanLike(geoRec.isBlocked) ??
+        toBooleanLike(geoRec.is_blocked) ??
+        toBooleanLike(geoRec.geoBlocked) ??
+        null;
       if (blocked === true) {
         const blockedValue: TradeAccessStatus = {
           status: "BLOCKED_REGION",
@@ -1906,6 +1951,12 @@ const getTradeAccessStatus = async (cacheKey: string, clientIp?: string | null):
         };
         accessStatusCache.set(cacheKey, { value: allowedValue, expiresAt: now + ttlMs });
         return allowedValue;
+      }
+
+      const normalizedGeo = normalizeAccessStatus(geoPayload);
+      if (normalizedGeo.status !== "UNKNOWN_TEMP_ERROR") {
+        accessStatusCache.set(cacheKey, { value: normalizedGeo, expiresAt: now + ttlMs });
+        return normalizedGeo;
       }
     }
 

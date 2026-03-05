@@ -87,27 +87,69 @@ type JsonLike =
 
 const statusCache = new Map<string, { expiresAt: number; value: VenueTradeAccessStatus }>();
 
+const toBooleanLike = (value: JsonLike | undefined): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) return null;
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "y" ||
+      normalized === "blocked" ||
+      normalized === "deny" ||
+      normalized === "denied"
+    ) {
+      return true;
+    }
+    if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "n" ||
+      normalized === "allowed" ||
+      normalized === "ok" ||
+      normalized === "eligible"
+    ) {
+      return false;
+    }
+  }
+  return null;
+};
+
 const normalizeAccessStatus = (payload: JsonLike | null): VenueTradeAccessStatus => {
   const nowIso = new Date().toISOString();
   const rec =
     payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, JsonLike | undefined>)
       : {};
+  const values = Object.values(rec);
+  const containsAllowedKeyword = values.some(
+    (v) => typeof v === "string" && /(allow|approved|pass|ok|eligible)/i.test(v)
+  );
+  const containsBlockedKeyword = values.some(
+    (v) => typeof v === "string" && /(block|forbid|deny|restricted|unavailable|geo)/i.test(v)
+  );
 
   const explicitBoolean =
-    typeof rec.allowed === "boolean"
-      ? rec.allowed
-      : typeof rec.canTrade === "boolean"
-        ? rec.canTrade
-        : typeof rec.tradingAllowed === "boolean"
-          ? rec.tradingAllowed
-          : null;
+    toBooleanLike(rec.allowed) ??
+    toBooleanLike(rec.canTrade) ??
+    toBooleanLike(rec.tradingAllowed) ??
+    toBooleanLike(rec.isAllowed) ??
+    null;
 
   const rawStatus =
     typeof rec.status === "string"
       ? rec.status
       : typeof rec.result === "string"
         ? rec.result
+        : typeof rec.accessStatus === "string"
+          ? rec.accessStatus
         : "";
 
   const reasonCode =
@@ -119,9 +161,18 @@ const normalizeAccessStatus = (payload: JsonLike | null): VenueTradeAccessStatus
           ? rec.error
           : null;
 
-  const message = typeof rec.message === "string" ? rec.message : null;
+  const message =
+    typeof rec.message === "string"
+      ? rec.message
+      : typeof rec.detail === "string"
+        ? rec.detail
+        : null;
 
-  if (explicitBoolean === true || /allow|approved|pass|ok|eligible/i.test(rawStatus)) {
+  if (
+    explicitBoolean === true ||
+    /allow|approved|pass|ok|eligible/i.test(rawStatus) ||
+    (containsAllowedKeyword && !containsBlockedKeyword)
+  ) {
     return {
       status: "ALLOWED",
       allowed: true,
@@ -131,7 +182,11 @@ const normalizeAccessStatus = (payload: JsonLike | null): VenueTradeAccessStatus
     };
   }
 
-  if (explicitBoolean === false || /block|forbid|deny|restrict|geo/i.test(rawStatus)) {
+  if (
+    explicitBoolean === false ||
+    /block|forbid|deny|restrict|geo/i.test(rawStatus) ||
+    containsBlockedKeyword
+  ) {
     return {
       status: "BLOCKED_REGION",
       allowed: false,
@@ -205,11 +260,11 @@ const checkTradeAccess = async (params: {
           ? (payload as Record<string, JsonLike | undefined>)
           : {};
       const blocked =
-        typeof rec.blocked === "boolean"
-          ? rec.blocked
-          : typeof rec.isBlocked === "boolean"
-            ? rec.isBlocked
-            : null;
+        toBooleanLike(rec.blocked) ??
+        toBooleanLike(rec.isBlocked) ??
+        toBooleanLike(rec.is_blocked) ??
+        toBooleanLike(rec.geoBlocked) ??
+        null;
 
       if (blocked === true) {
         const value: VenueTradeAccessStatus = {
@@ -241,6 +296,12 @@ const checkTradeAccess = async (params: {
         };
         statusCache.set(params.cacheKey, { value, expiresAt: now + ttlMs });
         return value;
+      }
+
+      const normalizedGeo = normalizeAccessStatus(payload);
+      if (normalizedGeo.status !== "UNKNOWN_TEMP_ERROR") {
+        statusCache.set(params.cacheKey, { value: normalizedGeo, expiresAt: now + ttlMs });
+        return normalizedGeo;
       }
     }
 

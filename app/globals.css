@@ -154,6 +154,7 @@ body {
   box-shadow:
     0 0 0 1px rgba(245, 68, 166, 0.65),
     0 0 18px rgba(245, 68, 166, 0.2);
+  animation: marketCardHighlightNew 2s ease-out forwards;
 }
 
 .market-card-highlight-updated {
@@ -161,4 +162,37 @@ body {
   box-shadow:
     0 0 0 1px rgba(214, 47, 138, 0.48),
     0 0 14px rgba(214, 47, 138, 0.16);
+  animation: marketCardHighlightUpdated 1s ease-out forwards;
+}
+
+@keyframes marketCardHighlightNew {
+  0% {
+    border-color: rgba(245, 68, 166, 1);
+    box-shadow:
+      0 0 0 1px rgba(245, 68, 166, 0.9),
+      0 0 26px rgba(245, 68, 166, 0.42),
+      0 0 42px rgba(245, 68, 166, 0.24);
+  }
+  100% {
+    border-color: rgba(245, 68, 166, 0.92);
+    box-shadow:
+      0 0 0 1px rgba(245, 68, 166, 0.65),
+      0 0 18px rgba(245, 68, 166, 0.2);
+  }
+}
+
+@keyframes marketCardHighlightUpdated {
+  0% {
+    border-color: rgba(214, 47, 138, 0.95);
+    box-shadow:
+      0 0 0 1px rgba(214, 47, 138, 0.68),
+      0 0 18px rgba(214, 47, 138, 0.28),
+      0 0 28px rgba(214, 47, 138, 0.18);
+  }
+  100% {
+    border-color: rgba(214, 47, 138, 0.86);
+    box-shadow:
+      0 0 0 1px rgba(214, 47, 138, 0.48),
+      0 0 14px rgba(214, 47, 138, 0.16);
+  }
 }

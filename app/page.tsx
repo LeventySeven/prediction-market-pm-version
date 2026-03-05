@@ -61,8 +61,8 @@ const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === 
 const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v2";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_HIGHLIGHT_MS = {
-  new: 4_000,
-  updated: 2_000,
+  new: 2_000,
+  updated: 1_000,
 } as const;
 type MarketHighlightKind = keyof typeof MARKET_HIGHLIGHT_MS;
 type ProviderFilter = "all" | "polymarket" | "limitless";
