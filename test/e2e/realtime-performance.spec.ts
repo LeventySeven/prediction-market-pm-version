@@ -10,6 +10,20 @@ const readClientCounters = async (page: Page) =>
   });
 
 test.describe("Realtime-first frontend performance", () => {
+  test("cold start catalog renders cards without blocking loading copy", async ({
+    page,
+  }) => {
+    await installTrpcMock(page, {
+      listMarketsDelayMs: 120,
+    });
+
+    await page.goto("/catalog");
+    await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+      timeout: 8_000,
+    });
+    await expect(page.getByText(/Loading markets|Загрузка рынков/i).first()).toBeHidden();
+  });
+
   test("catalog loads quickly and does not trigger constant list refetch while idle", async ({
     page,
   }) => {
@@ -85,6 +99,38 @@ test.describe("Realtime-first frontend performance", () => {
       | { providerFilter?: string }
       | undefined;
     expect(limitlessInput?.providerFilter).toBe("limitless");
+  });
+
+  test("fast provider tab switching does not produce false empty state", async ({
+    page,
+  }) => {
+    await installTrpcMock(page, {
+      listMarketsDelayMs: 130,
+    });
+
+    const routes = ["/catalog", "/markets/limitless", "/markets/polymarket", "/catalog"];
+    for (const route of routes) {
+      await page.goto(route);
+      await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+        timeout: 8_000,
+      });
+      await expect(page.getByText(/Nothing found|Ничего не найдено/i)).toHaveCount(0);
+    }
+  });
+
+  test("disabled provider tab is hidden and disabled route falls back to /catalog", async ({
+    page,
+  }) => {
+    await installTrpcMock(page, {
+      enabledProviders: ["polymarket"],
+    });
+
+    await page.goto("/markets/limitless");
+    await expect(page).toHaveURL(/\/catalog(\?|$)/, { timeout: 8_000 });
+    await expect(page.getByRole("button", { name: /^Limitless$/i })).toHaveCount(0);
+    await expect(page.locator("[data-market-card-id]").first()).toBeVisible({
+      timeout: 8_000,
+    });
   });
 
   test("market open reaches chart first paint before slow comments complete", async ({

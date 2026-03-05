@@ -65,7 +65,7 @@ const MAX_TRACKED_ASSET_IDS = Math.max(100, Number(process.env.COLLECTOR_MAX_TRA
 const LIVE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_UPSERT_CHUNK_SIZE ?? 400)));
 const CANDLE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_CANDLE_UPSERT_CHUNK_SIZE ?? 400)));
 const ENABLE_SNAPSHOT_REALTIME_SEED =
-  (process.env.COLLECTOR_ENABLE_SNAPSHOT_REALTIME_SEED || "false").trim().toLowerCase() === "true";
+  (process.env.COLLECTOR_ENABLE_SNAPSHOT_REALTIME_SEED || "true").trim().toLowerCase() === "true";
 const ENABLE_CANONICAL_REALTIME_MIRROR =
   (process.env.COLLECTOR_ENABLE_CANONICAL_REALTIME_MIRROR || "false").trim().toLowerCase() === "true";
 

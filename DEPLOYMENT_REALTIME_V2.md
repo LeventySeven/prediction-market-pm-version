@@ -1,12 +1,12 @@
 # Realtime + Multi-Venue Deployment Guide v2
 
-Last updated: 2026-03-02
+Last updated: 2026-03-05
 
 This runbook deploys the current production architecture:
 - Next.js + tRPC app on Vercel
 - Supabase Postgres + Realtime
 - Polymarket collector worker (required)
-- Limitless collector worker (optional, feature-flagged)
+- Limitless collector worker (required for instant all-venues catalog)
 
 The platform remains non-custodial:
 - order signing stays client-side
@@ -21,7 +21,7 @@ The platform remains non-custodial:
 4. Verify schema, RLS, realtime publication, and backfill state.
 5. Deploy web app on Vercel.
 6. Deploy `collector:polymarket` worker.
-7. Optionally deploy `collector:limitless` worker behind feature flag.
+7. Deploy `collector:limitless` worker.
 8. Run smoke tests and security checks.
 
 ## 2. Prerequisites
@@ -122,13 +122,13 @@ Set these in the worker service that runs `bun run collector:polymarket`:
 - `COLLECTOR_MISSING_MARKET_MISS_THRESHOLD=3`
 - `COLLECTOR_MAX_TRACKED_MARKETS=500`
 - `COLLECTOR_MAX_TRACKED_ASSET_IDS=1200`
-- `COLLECTOR_ENABLE_SNAPSHOT_REALTIME_SEED=false`
+- `COLLECTOR_ENABLE_SNAPSHOT_REALTIME_SEED=true`
 - `COLLECTOR_ENABLE_CANONICAL_REALTIME_MIRROR=false`
 - `COLLECTOR_UPSERT_CHUNK_SIZE=400`
 - `COLLECTOR_CANDLE_UPSERT_CHUNK_SIZE=400`
 - `COLLECTOR_HEALTH_PORT=8080`
 
-### 3.3 Limitless Collector Worker Optional
+### 3.3 Limitless Collector Worker Required (for all-venues mode)
 
 Set these in the worker service that runs `bun run collector:limitless`:
 - `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`)
@@ -277,7 +277,7 @@ Health endpoints:
 - `/health`
 - `/ready`
 
-### 8.2 Limitless Collector (Optional)
+### 8.2 Limitless Collector (Required for instant all-venues catalog)
 
 Start command:
 
@@ -287,11 +287,23 @@ bun run collector:limitless
 
 Important:
 - If `ENABLE_LIMITLESS=false`, this process exits immediately by design.
-- Deploy it only when enabling Limitless read path.
+- For instant all-venues behavior, run this process continuously with `ENABLE_LIMITLESS=true`.
 
 Health endpoints:
 - `/health`
 - `/ready`
+
+### 8.3 Always-On Readiness + Restart Policy
+
+For both collectors, configure:
+1. Restart policy: `always` (or equivalent), max restart backoff <= 30s.
+2. Liveness probe: `GET /health`, interval 10s, timeout 3s, failure threshold 3.
+3. Readiness probe: `GET /ready`, interval 10s, timeout 3s, failure threshold 3.
+4. Alerting: page when `/ready` fails for > 2 minutes or `provider_sync_state.last_success_at` is stale.
+
+Staleness thresholds:
+1. Polymarket stale if `last_success_at` older than 90s.
+2. Limitless stale if `last_success_at` older than 180s.
 
 ## 9. Feature Flag Rollout
 
@@ -371,6 +383,18 @@ Check:
 1. `ENABLE_LIMITLESS=true` in Vercel runtime.
 2. `LIMITLESS_API_BASE_URL` reachable from web runtime.
 3. Limitless collector deployed (for realtime freshness).
+4. `provider_sync_state` row for `limitless` has recent `last_success_at`.
+
+Degraded behavior if collector is stale/down:
+1. Limitless tabs may be hidden by enabled-provider query.
+2. `/catalog` still serves active providers and remains usable.
+3. Live patches for stale provider stop updating until worker recovers.
+
+Fast recovery:
+1. Restart the affected collector.
+2. Verify `/ready` is `200`.
+3. Confirm `provider_sync_state.last_success_at` moves forward within one poll cycle.
+4. Reload `/catalog` and validate provider tab + market rows repopulate.
 
 ### 12.3 Trade access always blocked
 

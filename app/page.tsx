@@ -43,6 +43,7 @@ import {
   extractAvatarPaletteFromImageSource,
   sanitizeAvatarPalette,
 } from "@/src/lib/avatarPalette";
+import { applyStableCatalogOrder } from "@/src/lib/catalogStableOrder";
 import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
 
 // VCOIN decimals for display
@@ -57,6 +58,14 @@ const MARKET_CANDLE_LIMIT_BY_INTERVAL: Record<CandleInterval, number> = {
   "1h": 720,
 };
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
+const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v2";
+const CATALOG_WARM_CACHE_TTL_MS = 90_000;
+const MARKET_HIGHLIGHT_MS = {
+  new: 4_000,
+  updated: 2_000,
+} as const;
+type MarketHighlightKind = keyof typeof MARKET_HIGHLIGHT_MS;
+type ProviderFilter = "all" | "polymarket" | "limitless";
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 type MarketApiRow = {
@@ -116,6 +125,22 @@ type MarketApiRow = {
     supportsPublicTrades: boolean;
     chainId: number | null;
   } | null;
+};
+
+type CatalogBootstrapEntry = {
+  cacheKey: string;
+  providerFilter: ProviderFilter;
+  page: number;
+  sortBy: "newest" | "volume";
+  rows: MarketApiRow[];
+  hasMore: boolean;
+  updatedAt: number;
+};
+
+type InitialCatalogBootstrap = {
+  fetchedAt: number;
+  enabledProviders: Array<"polymarket" | "limitless">;
+  entries: CatalogBootstrapEntry[];
 };
 
 type MarketLiveRow = Database["public"]["Tables"]["polymarket_market_live"]["Row"];
@@ -272,6 +297,20 @@ const hasMaterialPatchChange = (prev: MarketLivePatch | undefined, next: MarketL
   );
 };
 
+const mergeMarketLivePatch = (
+  prev: MarketLivePatch | undefined,
+  incoming: MarketLivePatch
+): MarketLivePatch => ({
+  bestBid: incoming.bestBid ?? prev?.bestBid ?? null,
+  bestAsk: incoming.bestAsk ?? prev?.bestAsk ?? null,
+  mid: incoming.mid ?? prev?.mid ?? null,
+  lastTradePrice: incoming.lastTradePrice ?? prev?.lastTradePrice ?? null,
+  lastTradeSize: incoming.lastTradeSize ?? prev?.lastTradeSize ?? null,
+  rolling24hVolume: incoming.rolling24hVolume ?? prev?.rolling24hVolume ?? null,
+  openInterest: incoming.openInterest ?? prev?.openInterest ?? null,
+  liveUpdatedAt: incoming.liveUpdatedAt ?? prev?.liveUpdatedAt ?? null,
+});
+
 const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market => {
   if (!patch) return market;
   const isBinary = (market.marketType ?? "binary") === "binary";
@@ -283,10 +322,12 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
       ? Math.max(0, patch.rolling24hVolume)
       : null;
+  const currentVolumeRaw =
+    typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw) ? Math.max(0, market.volumeRaw) : 0;
   const nextVolumeRaw =
-    (typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw) ? Math.max(0, market.volumeRaw) : 0) > 0
-      ? Math.max(0, market.volumeRaw)
-      : Math.max(0, nextRolling24h ?? 0);
+    nextRolling24h === null
+      ? currentVolumeRaw
+      : Math.max(currentVolumeRaw, Math.max(0, nextRolling24h));
 
   return {
     ...market,
@@ -457,6 +498,89 @@ const getMarketIdFromLocation = () => {
   return null;
 };
 
+const sanitizeEnabledProviders = (
+  input: Array<"polymarket" | "limitless"> | null | undefined
+): Array<"polymarket" | "limitless"> => {
+  const out = Array.from(
+    new Set(
+      (input ?? []).filter(
+        (provider): provider is "polymarket" | "limitless" =>
+          provider === "polymarket" || provider === "limitless"
+      )
+    )
+  );
+  return out.length > 0 ? out : ["polymarket"];
+};
+
+const buildProviderOptions = (
+  enabledProviders: Array<"polymarket" | "limitless">
+): Array<{ id: ProviderFilter; labelRu: string; labelEn: string }> => {
+  const out: Array<{ id: ProviderFilter; labelRu: string; labelEn: string }> = [
+    { id: "all", labelRu: "Все площадки", labelEn: "All venues" },
+  ];
+  if (enabledProviders.includes("polymarket")) {
+    out.push({ id: "polymarket", labelRu: "Polymarket", labelEn: "Polymarket" });
+  }
+  if (enabledProviders.includes("limitless")) {
+    out.push({ id: "limitless", labelRu: "Limitless", labelEn: "Limitless" });
+  }
+  return out;
+};
+
+const buildCatalogStableContextKey = (params: {
+  providerFilter: ProviderFilter;
+  page: number;
+  sort: string;
+  status: string;
+  time: string;
+  categoryId: string;
+  searchQuery: string;
+}) =>
+  [
+    `provider:${params.providerFilter}`,
+    `page:${params.page}`,
+    `sort:${params.sort}`,
+    `status:${params.status}`,
+    `time:${params.time}`,
+    `category:${params.categoryId}`,
+    `search:${params.searchQuery.trim().toLowerCase()}`,
+  ].join("|");
+
+const readWarmCatalogBootstrap = (): InitialCatalogBootstrap | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(CATALOG_WARM_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as InitialCatalogBootstrap;
+    if (!parsed || !Array.isArray(parsed.entries) || typeof parsed.fetchedAt !== "number") return null;
+    if (Date.now() - parsed.fetchedAt > CATALOG_WARM_CACHE_TTL_MS) return null;
+    return {
+      fetchedAt: parsed.fetchedAt,
+      enabledProviders: sanitizeEnabledProviders(parsed.enabledProviders),
+      entries: parsed.entries.filter((entry) => {
+        if (!entry || typeof entry !== "object") return false;
+        if (typeof entry.cacheKey !== "string" || !entry.cacheKey) return false;
+        if (!Array.isArray(entry.rows)) return false;
+        if (typeof entry.hasMore !== "boolean") return false;
+        if (typeof entry.updatedAt !== "number") return false;
+        if (entry.page !== 1) return false;
+        return true;
+      }),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const persistWarmCatalogBootstrap = (payload: InitialCatalogBootstrap) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CATALOG_WARM_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Best-effort warm cache write only.
+  }
+};
+
 export default function HomePage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -480,9 +604,8 @@ export default function HomePage() {
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
-  type ProviderFilter = "all" | "polymarket" | "limitless";
   const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>(() =>
-    getCatalogProviderFromLocation()
+    typeof window === "undefined" ? "all" : getCatalogProviderFromLocation()
   );
   const [catalogPage, setCatalogPage] = useState(1);
   const [hasNextCatalogPage, setHasNextCatalogPage] = useState(false);
@@ -524,13 +647,81 @@ export default function HomePage() {
   const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
-  const [markets, setMarkets] = useState<Market[]>([]);
+  const bootstrapRef = useRef<InitialCatalogBootstrap | null>(readWarmCatalogBootstrap());
+  const [enabledProviders, setEnabledProviders] = useState<Array<"polymarket" | "limitless">>(() =>
+    sanitizeEnabledProviders(bootstrapRef.current?.enabledProviders)
+  );
+  const [enabledProvidersResolved, setEnabledProvidersResolved] = useState<boolean>(
+    Boolean(bootstrapRef.current)
+  );
+  const [marketHighlightById, setMarketHighlightById] = useState<
+    Record<string, { kind: MarketHighlightKind; expiresAt: number }>
+  >({});
+  const marketHighlightTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const catalogStableOrderByContextRef = useRef<Map<string, string[]>>(new Map());
+  const seenCatalogIdsByContextRef = useRef<Map<string, Set<string>>>(new Map());
+  const activeCatalogContextKeyRef = useRef<string>("");
+  const activeCatalogMarketIdsRef = useRef<Set<string>>(new Set());
+  const [markets, setMarkets] = useState<Market[]>(() => {
+    const bootstrap = bootstrapRef.current;
+    if (!bootstrap) return [];
+    const desiredProvider = typeof window === "undefined" ? "all" : getCatalogProviderFromLocation();
+    const key = `provider:${desiredProvider}:page:1:sort:newest`;
+    const entry = bootstrap.entries.find((row) => row.cacheKey === key);
+    if (!entry) return [];
+    return entry.rows.map((row) => mapMarketApiToMarket(row, "EN"));
+  });
   const marketsRef = useRef<Market[]>([]);
   const [marketLivePatchById, setMarketLivePatchById] = useState<Record<string, MarketLivePatch>>({});
   const [visibleCatalogMarketIds, setVisibleCatalogMarketIds] = useState<string[]>([]);
   const [documentVisible, setDocumentVisible] = useState(true);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
+  const setMarketHighlight = useCallback((marketId: string, kind: MarketHighlightKind) => {
+    const cleanMarketId = marketId.trim();
+    if (!cleanMarketId) return;
+    const expiresAt = Date.now() + MARKET_HIGHLIGHT_MS[kind];
+
+    setMarketHighlightById((prev) => {
+      const existing = prev[cleanMarketId];
+      if (existing) {
+        const stillActive = existing.expiresAt > Date.now();
+        if (existing.kind === "new" && stillActive && kind === "updated") {
+          return prev;
+        }
+        if (existing.kind === kind && existing.expiresAt >= expiresAt - 50) {
+          return prev;
+        }
+      }
+      return {
+        ...prev,
+        [cleanMarketId]: { kind, expiresAt },
+      };
+    });
+
+    const previousTimer = marketHighlightTimerRef.current.get(cleanMarketId);
+    if (previousTimer) clearTimeout(previousTimer);
+    const timer = setTimeout(() => {
+      setMarketHighlightById((prev) => {
+        const current = prev[cleanMarketId];
+        if (!current) return prev;
+        if (current.expiresAt > Date.now()) return prev;
+        const next = { ...prev };
+        delete next[cleanMarketId];
+        return next;
+      });
+      marketHighlightTimerRef.current.delete(cleanMarketId);
+    }, MARKET_HIGHLIGHT_MS[kind] + 50);
+    marketHighlightTimerRef.current.set(cleanMarketId, timer);
+  }, []);
+  useEffect(() => {
+    return () => {
+      for (const timer of marketHighlightTimerRef.current.values()) {
+        clearTimeout(timer);
+      }
+      marketHighlightTimerRef.current.clear();
+    };
+  }, []);
 
   const getMarketIdFromUrl = () => getMarketIdFromLocation();
 
@@ -1346,6 +1537,54 @@ export default function HomePage() {
     void loadUser();
   }, [attemptSilentRefresh, privyAuthenticated, privyReady, refreshUser]);
 
+  useEffect(() => {
+    const bootstrap = bootstrapRef.current;
+    if (!bootstrap || bootstrap.entries.length === 0) return;
+    persistWarmCatalogBootstrap({
+      fetchedAt: Date.now(),
+      enabledProviders: sanitizeEnabledProviders(enabledProviders),
+      entries: bootstrap.entries,
+    });
+  }, [enabledProviders]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = await trpcClient.market.listEnabledProviders.query();
+        if (cancelled) return;
+        setEnabledProviders(sanitizeEnabledProviders(payload?.providers));
+      } catch {
+        if (cancelled) return;
+        setEnabledProviders((prev) => sanitizeEnabledProviders(prev));
+      } finally {
+        if (!cancelled) setEnabledProvidersResolved(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const providerOptions = useMemo(() => buildProviderOptions(enabledProviders), [enabledProviders]);
+  const enabledProviderSet = useMemo(() => new Set(enabledProviders), [enabledProviders]);
+
+  useEffect(() => {
+    if (selectedMarketId || currentView !== "CATALOG") return;
+    if (!enabledProvidersResolved) return;
+    if (activeProviderFilter === "all") return;
+    if (enabledProviderSet.has(activeProviderFilter)) return;
+    setCatalogPage(1);
+    setActiveProviderFilter("all");
+    if (typeof window !== "undefined") {
+      const next = `/catalog${window.location.search}`;
+      const current = `${window.location.pathname}${window.location.search}`;
+      if (next !== current) {
+        window.history.replaceState({ view: "CATALOG" }, "", next);
+      }
+    }
+  }, [activeProviderFilter, currentView, enabledProviderSet, enabledProvidersResolved, selectedMarketId]);
+
   type CatalogFetchParams = {
     page: number;
     providerFilter: ProviderFilter;
@@ -1361,8 +1600,96 @@ export default function HomePage() {
     return `provider:${params.providerFilter}:page:${params.page}:sort:${params.sortBy}`;
   }, []);
 
-  const catalogPageCacheRef = useRef<Map<string, CatalogPageCacheEntry>>(new Map());
+  const initialBootstrapCacheKey =
+    bootstrapRef.current?.entries.find(
+      (entry) =>
+        entry.page === 1 &&
+        entry.sortBy === "newest" &&
+        entry.providerFilter === activeProviderFilter
+    )?.cacheKey ?? null;
+  const displayedCatalogCacheKeyRef = useRef<string | null>(initialBootstrapCacheKey);
+  const loadMarketsRequestSeqRef = useRef(0);
+  const [loadedCatalogKeys, setLoadedCatalogKeys] = useState<Record<string, boolean>>(() => {
+    const out: Record<string, boolean> = {};
+    for (const entry of bootstrapRef.current?.entries ?? []) {
+      out[entry.cacheKey] = true;
+    }
+    return out;
+  });
+  const catalogPageCacheRef = useRef<Map<string, CatalogPageCacheEntry>>(
+    new Map(
+      (bootstrapRef.current?.entries ?? []).map((entry) => [
+        entry.cacheKey,
+        {
+          rows: entry.rows,
+          hasMore: entry.hasMore,
+          updatedAt: entry.updatedAt,
+        },
+      ])
+    )
+  );
   const catalogInFlightRef = useRef<Map<string, Promise<CatalogFetchResult>>>(new Map());
+  const markCatalogKeyLoaded = useCallback((cacheKey: string) => {
+    setLoadedCatalogKeys((prev) => (prev[cacheKey] ? prev : { ...prev, [cacheKey]: true }));
+  }, []);
+  const writeWarmCatalogCache = useCallback(() => {
+    const entries: CatalogBootstrapEntry[] = [];
+    const providersToPersist = Array.from(new Set<ProviderFilter>(["all", ...enabledProviders]));
+    for (const providerFilter of providersToPersist) {
+      const cacheKey = buildCatalogFetchKey({
+        providerFilter,
+        page: 1,
+        sortBy: "newest",
+      });
+      const cached = catalogPageCacheRef.current.get(cacheKey);
+      if (!cached) continue;
+      entries.push({
+        cacheKey,
+        providerFilter,
+        page: 1,
+        sortBy: "newest",
+        rows: cached.rows,
+        hasMore: cached.hasMore,
+        updatedAt: cached.updatedAt,
+      });
+    }
+    if (entries.length === 0) return;
+    persistWarmCatalogBootstrap({
+      fetchedAt: Date.now(),
+      enabledProviders: sanitizeEnabledProviders(enabledProviders),
+      entries,
+    });
+  }, [buildCatalogFetchKey, enabledProviders]);
+  const activeCatalogFetchKey = useMemo(() => {
+    const backendSortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
+    return buildCatalogFetchKey({
+      page: catalogPage,
+      providerFilter: activeProviderFilter,
+      sortBy: backendSortBy,
+    });
+  }, [activeProviderFilter, buildCatalogFetchKey, catalogPage, catalogSort]);
+  const hasLoadedActiveCatalogKey = Boolean(loadedCatalogKeys[activeCatalogFetchKey]);
+  const activeCatalogContextKey = useMemo(
+    () =>
+      buildCatalogStableContextKey({
+        providerFilter: activeProviderFilter,
+        page: catalogPage,
+        sort: catalogSort,
+        status: catalogStatus,
+        time: catalogTimeFilter,
+        categoryId: activeCategoryId,
+        searchQuery,
+      }),
+    [
+      activeCategoryId,
+      activeProviderFilter,
+      catalogPage,
+      catalogSort,
+      catalogStatus,
+      catalogTimeFilter,
+      searchQuery,
+    ]
+  );
 
   const fetchCatalogPage = useCallback(async (params: CatalogFetchParams): Promise<CatalogFetchResult> => {
     const cacheKey = buildCatalogFetchKey(params);
@@ -1370,6 +1697,15 @@ export default function HomePage() {
     if (inFlight) return inFlight;
 
     const fetchPromise = (async () => {
+      const selectedProviders: Array<"polymarket" | "limitless"> =
+        params.providerFilter === "all"
+          ? enabledProviders
+          : params.providerFilter === "polymarket" || params.providerFilter === "limitless"
+            ? [params.providerFilter]
+            : enabledProviders;
+      if (selectedProviders.length === 0) {
+        return { rows: [], hasMore: false };
+      }
       const fetchSize = CATALOG_PAGE_SIZE + 1;
       const response = await trpcClient.market.listMarkets.query({
         onlyOpen: false,
@@ -1377,10 +1713,7 @@ export default function HomePage() {
         pageSize: fetchSize,
         sortBy: params.sortBy,
         providerFilter: params.providerFilter,
-        providers:
-          params.providerFilter === "all"
-            ? ["polymarket", "limitless"]
-            : [params.providerFilter],
+        providers: selectedProviders,
       });
       const hasMore = (response?.length ?? 0) > CATALOG_PAGE_SIZE;
       const rows = ((response ?? []).slice(0, CATALOG_PAGE_SIZE) as MarketApiRow[]);
@@ -1389,6 +1722,10 @@ export default function HomePage() {
         hasMore,
         updatedAt: Date.now(),
       });
+      markCatalogKeyLoaded(cacheKey);
+      if (params.page === 1 && params.sortBy === "newest") {
+        writeWarmCatalogCache();
+      }
       return { rows, hasMore };
     })();
 
@@ -1398,7 +1735,7 @@ export default function HomePage() {
     } finally {
       catalogInFlightRef.current.delete(cacheKey);
     }
-  }, [buildCatalogFetchKey]);
+  }, [buildCatalogFetchKey, enabledProviders, markCatalogKeyLoaded, writeWarmCatalogCache]);
 
   const loadMarkets = useCallback(async () => {
     const startedAt = Date.now();
@@ -1410,28 +1747,36 @@ export default function HomePage() {
       sortBy: backendSortBy,
     };
     const cacheKey = buildCatalogFetchKey(fetchParams);
+    const requestSeq = loadMarketsRequestSeqRef.current + 1;
+    loadMarketsRequestSeqRef.current = requestSeq;
     const cached = catalogPageCacheRef.current.get(cacheKey);
     const hasCached = Boolean(cached);
-    const hasCurrentMarkets = marketsRef.current.length > 0;
+    const hasCurrentMarketsForActiveKey =
+      displayedCatalogCacheKeyRef.current === cacheKey && marketsRef.current.length > 0;
+    const hasActiveKeyData = hasCached || hasCurrentMarketsForActiveKey || hasLoadedActiveCatalogKey;
 
     setMarketsError(null);
-    if (!hasCached && !hasCurrentMarkets) {
+    if (!hasActiveKeyData) {
       setLoadingMarkets(true);
-      setMarketsLoadingMessage(lang === "RU" ? "Загрузка рынков..." : "Loading markets...");
+      setMarketsLoadingMessage(null);
     } else {
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
       if (cached) {
         setHasNextCatalogPage(cached.hasMore);
         setMarkets(cached.rows.map((m) => mapMarketApiToMarket(m, lang)));
+        displayedCatalogCacheKeyRef.current = cacheKey;
       }
     }
 
     try {
       const result = await fetchCatalogPage(fetchParams);
+      if (requestSeq !== loadMarketsRequestSeqRef.current) return;
       setHasNextCatalogPage(result.hasMore);
       const mapped: Market[] = result.rows.map((m) => mapMarketApiToMarket(m, lang));
       setMarkets(mapped);
+      displayedCatalogCacheKeyRef.current = cacheKey;
+      markCatalogKeyLoaded(cacheKey);
       setMarketLivePatchById((prev) => {
         const allowedIds = new Set(mapped.map((row) => row.id));
         let changed = false;
@@ -1447,10 +1792,12 @@ export default function HomePage() {
       });
     } catch (err) {
       console.error("Failed to load markets", err);
+      if (requestSeq !== loadMarketsRequestSeqRef.current) return;
       setMarketsError(
         lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets."
       );
     } finally {
+      if (requestSeq !== loadMarketsRequestSeqRef.current) return;
       setLoadingMarkets(false);
       setMarketsLoadingMessage(null);
       observeClientTiming("catalog.loadMarkets.ms", Date.now() - startedAt);
@@ -1461,7 +1808,9 @@ export default function HomePage() {
     catalogPage,
     catalogSort,
     fetchCatalogPage,
+    hasLoadedActiveCatalogKey,
     lang,
+    markCatalogKeyLoaded,
   ]);
   useEffect(() => {
     const byId = new Map<string, MarketCategoryStrict>();
@@ -1572,12 +1921,12 @@ export default function HomePage() {
     if (selectedMarketId) return;
     const timer = setTimeout(() => {
       void prefetchCatalogPage("all", 1);
-      void prefetchCatalogPage("polymarket", 1);
-      void prefetchCatalogPage("limitless", 1);
+      if (enabledProviderSet.has("polymarket")) void prefetchCatalogPage("polymarket", 1);
+      if (enabledProviderSet.has("limitless")) void prefetchCatalogPage("limitless", 1);
       void prefetchCatalogPage(activeProviderFilter, 2);
     }, 150);
     return () => clearTimeout(timer);
-  }, [activeProviderFilter, currentView, prefetchCatalogPage, selectedMarketId]);
+  }, [activeProviderFilter, currentView, enabledProviderSet, prefetchCatalogPage, selectedMarketId]);
 
   useEffect(() => {
     if (selectedMarketId || currentView !== "CATALOG") return;
@@ -1690,7 +2039,7 @@ export default function HomePage() {
           for (const row of batch) {
             const marketId = row.market_id.trim();
             if (!marketId) continue;
-            const patch: MarketLivePatch = {
+            const incomingPatch: MarketLivePatch = {
               bestBid: asNumber(row.best_bid),
               bestAsk: asNumber(row.best_ask),
               mid: asNumber(row.mid),
@@ -1700,9 +2049,17 @@ export default function HomePage() {
               openInterest: asNumber(row.open_interest),
               liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
             };
-            if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
-            next[marketId] = patch;
+            const prevPatch = prev[marketId];
+            const mergedPatch = mergeMarketLivePatch(prevPatch, incomingPatch);
+            if (!hasMaterialPatchChange(prevPatch, mergedPatch)) continue;
+            next[marketId] = mergedPatch;
             changed = true;
+
+            const activeContextKey = activeCatalogContextKeyRef.current;
+            const seenForContext = seenCatalogIdsByContextRef.current.get(activeContextKey);
+            if (!seenForContext?.has(marketId)) continue;
+            if (!activeCatalogMarketIdsRef.current.has(marketId)) continue;
+            setMarketHighlight(marketId, "updated");
           }
 
           return changed ? next : prev;
@@ -1777,9 +2134,17 @@ export default function HomePage() {
           const next = { ...prev };
 
           for (const [marketId, patch] of batch) {
-            if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
-            next[marketId] = patch;
+            const prevPatch = prev[marketId];
+            const mergedPatch = mergeMarketLivePatch(prevPatch, patch);
+            if (!hasMaterialPatchChange(prevPatch, mergedPatch)) continue;
+            next[marketId] = mergedPatch;
             changed = true;
+
+            const activeContextKey = activeCatalogContextKeyRef.current;
+            const seenForContext = seenCatalogIdsByContextRef.current.get(activeContextKey);
+            if (!seenForContext?.has(marketId)) continue;
+            if (!activeCatalogMarketIdsRef.current.has(marketId)) continue;
+            setMarketHighlight(marketId, "updated");
           }
 
           return changed ? next : prev;
@@ -1789,7 +2154,8 @@ export default function HomePage() {
       const queuePatch = (marketId: string, patch: MarketLivePatch) => {
         const cleanMarketId = marketId.trim();
         if (!cleanMarketId) return;
-        pendingPatches.set(cleanMarketId, patch);
+        const pending = pendingPatches.get(cleanMarketId);
+        pendingPatches.set(cleanMarketId, mergeMarketLivePatch(pending, patch));
         incrementClientCounter("catalog.realtime.rowsReceived");
         if (!flushTimer) {
           flushTimer = setTimeout(flushLivePatches, 120);
@@ -1968,8 +2334,10 @@ export default function HomePage() {
             providerFilter: activeProviderFilter,
             providers:
               activeProviderFilter === "all"
-                ? ["polymarket", "limitless"]
-                : [activeProviderFilter],
+                ? enabledProviders
+                : activeProviderFilter === "polymarket" || activeProviderFilter === "limitless"
+                  ? [activeProviderFilter]
+                  : enabledProviders,
           });
           rows = (semantic.items ?? []).map((item) => ({
             market: { id: item.market.id },
@@ -2013,7 +2381,7 @@ export default function HomePage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [activeProviderFilter, searchQuery]);
+  }, [activeProviderFilter, enabledProviders, searchQuery]);
 
   useEffect(() => {
     if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
@@ -2207,19 +2575,65 @@ export default function HomePage() {
 
     // For ENDING_SOON, ended should always be at bottom (even when status=ALL).
     // For other sorts, also keep ended at bottom when status=ALL for UX consistency.
-    if (catalogStatus === "ENDED") {
-      // Ended-only view: sort within ended group (descending end time for "ending soon" feels more natural)
-      const sortedEnded = [...ended].sort((a, b) => endTs(b) - endTs(a));
-      return catalogSort === "ENDING_SOON" ? sortedEnded : sortGroup(sortedEnded);
+    const sortedCatalog = (() => {
+      if (catalogStatus === "ENDED") {
+        const sortedEnded = [...ended].sort((a, b) => endTs(b) - endTs(a));
+        return catalogSort === "ENDING_SOON" ? sortedEnded : sortGroup(sortedEnded);
+      }
+
+      const sortedOngoing = sortGroup(ongoing);
+      const sortedEnded =
+        catalogSort === "ENDING_SOON"
+          ? [...ended].sort((a, b) => endTs(b) - endTs(a))
+          : sortGroup(ended);
+      return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
+    })();
+
+    const previousOrder = catalogStableOrderByContextRef.current.get(activeCatalogContextKey);
+    const stable = applyStableCatalogOrder(previousOrder, sortedCatalog);
+    catalogStableOrderByContextRef.current.set(activeCatalogContextKey, stable.order);
+    while (catalogStableOrderByContextRef.current.size > 24) {
+      const oldestKey = catalogStableOrderByContextRef.current.keys().next().value;
+      if (!oldestKey) break;
+      catalogStableOrderByContextRef.current.delete(oldestKey);
     }
 
-    const sortedOngoing = sortGroup(ongoing);
-    const sortedEnded =
-      catalogSort === "ENDING_SOON"
-        ? [...ended].sort((a, b) => endTs(b) - endTs(a))
-        : sortGroup(ended);
-    return catalogStatus === "ALL" ? [...sortedOngoing, ...sortedEnded] : sortedOngoing;
-  }, [filteredMarkets, catalogSort, catalogStatus, catalogTimeFilter, searchQuery, semanticSearchScores, lang]);
+    return stable.orderedRows;
+  }, [
+    activeCatalogContextKey,
+    catalogSort,
+    catalogStatus,
+    catalogTimeFilter,
+    filteredMarkets,
+    lang,
+    searchQuery,
+    semanticSearchScores,
+  ]);
+
+  useEffect(() => {
+    activeCatalogContextKeyRef.current = activeCatalogContextKey;
+    activeCatalogMarketIdsRef.current = new Set(catalogMarkets.map((market) => market.id));
+
+    const existingSeen = seenCatalogIdsByContextRef.current.get(activeCatalogContextKey);
+    if (!existingSeen) {
+      seenCatalogIdsByContextRef.current.set(
+        activeCatalogContextKey,
+        new Set(catalogMarkets.map((market) => market.id))
+      );
+    } else if (hasLoadedActiveCatalogKey) {
+      for (const market of catalogMarkets) {
+        if (existingSeen.has(market.id)) continue;
+        existingSeen.add(market.id);
+        setMarketHighlight(market.id, "new");
+      }
+    }
+
+    while (seenCatalogIdsByContextRef.current.size > 24) {
+      const oldestKey = seenCatalogIdsByContextRef.current.keys().next().value;
+      if (!oldestKey) break;
+      seenCatalogIdsByContextRef.current.delete(oldestKey);
+    }
+  }, [activeCatalogContextKey, catalogMarkets, hasLoadedActiveCatalogKey, setMarketHighlight]);
 
   // Feed: markets where the user currently has bets (positions).
   const myBetMarketIds = useMemo(() => {
@@ -2357,8 +2771,10 @@ export default function HomePage() {
         const next = { ...prev };
 
         for (const [marketId, patch] of batch) {
-          if (!hasMaterialPatchChange(prev[marketId], patch)) continue;
-          next[marketId] = patch;
+          const prevPatch = prev[marketId];
+          const mergedPatch = mergeMarketLivePatch(prevPatch, patch);
+          if (!hasMaterialPatchChange(prevPatch, mergedPatch)) continue;
+          next[marketId] = mergedPatch;
           changed = true;
         }
 
@@ -2369,7 +2785,8 @@ export default function HomePage() {
     const queuePatch = (marketId: string, patch: MarketLivePatch) => {
       const cleanMarketId = marketId.trim();
       if (!cleanMarketId) return;
-      pendingPatches.set(cleanMarketId, patch);
+      const pending = pendingPatches.get(cleanMarketId);
+      pendingPatches.set(cleanMarketId, mergeMarketLivePatch(pending, patch));
       incrementClientCounter("market.realtime.selected.rowsReceived");
       if (!flushTimer) {
         flushTimer = setTimeout(flushPatches, 120);
@@ -3815,11 +4232,7 @@ export default function HomePage() {
                     {/* Providers */}
                     <div className="px-4 pt-3 border-b border-zinc-900">
                       <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
-                        {[
-                          { id: "all" as const, labelRu: "Все площадки", labelEn: "All venues" },
-                          { id: "polymarket" as const, labelRu: "Polymarket", labelEn: "Polymarket" },
-                          { id: "limitless" as const, labelRu: "Limitless", labelEn: "Limitless" },
-                        ].map((provider) => {
+                        {providerOptions.map((provider) => {
                           const selected = activeProviderFilter === provider.id;
                           const label = lang === "RU" ? provider.labelRu : provider.labelEn;
                           return (
@@ -3872,17 +4285,14 @@ export default function HomePage() {
                     </div>
 
                     <div className="px-4 pt-3">
-                      {loadingMarkets ? (
-                        <div className="text-center py-10 text-zinc-500">
-                          {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
-                        </div>
-                      ) : catalogMarkets.length > 0 ? (
+                      {catalogMarkets.length > 0 ? (
                         <>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
                             {catalogMarkets.map((market) => (
                               <div key={market.id} data-market-card-id={market.id}>
                                 <MarketCard
                                   market={market}
+                                  highlightState={marketHighlightById[market.id]?.kind ?? null}
                                   bookmarked={bookmarkedMarketIds.has(market.id)}
                                   onClick={() => {
                                     setMarketBetIntent(null);
@@ -3920,6 +4330,8 @@ export default function HomePage() {
                         <div className="text-center py-20 text-zinc-500 px-4">
                           <p className="text-sm">{marketsError}</p>
                         </div>
+                      ) : !hasLoadedActiveCatalogKey ? (
+                        <div className="py-8" aria-hidden="true" />
                       ) : (
                         <div className="text-center py-20 text-zinc-500 px-4">
                           <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>

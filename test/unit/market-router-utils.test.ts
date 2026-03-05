@@ -6,8 +6,10 @@ const {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
+  mergeMarketVolumeWithRolling24h,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
+  normalizePublicEnabledProviders,
 } = __marketRouterTestUtils;
 
 describe("market router utility behavior", () => {
@@ -70,6 +72,11 @@ describe("market router utility behavior", () => {
         volumeUsd: 777,
       })
     ).toBe(777);
+  });
+
+  it("promotes market volume to max(base, rolling24h)", () => {
+    expect(mergeMarketVolumeWithRolling24h(0, 1234)).toBe(1234);
+    expect(mergeMarketVolumeWithRolling24h(987, 0)).toBe(987);
   });
 
   it("normalizes candle resolution from explicit interval", () => {
@@ -152,5 +159,15 @@ describe("market router utility behavior", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.bucket).toBe("2026-03-01T10:01:00.000Z");
     expect(rows[1]?.bucket).toBe("2026-03-01T10:02:00.000Z");
+  });
+
+  it("filters enabled providers to public venues only", () => {
+    expect(
+      normalizePublicEnabledProviders([
+        "polymarket",
+        "limitless",
+        "disabled-provider",
+      ] as any)
+    ).toEqual(["polymarket", "limitless"]);
   });
 });

@@ -21,7 +21,7 @@ import {
 import type { Database } from "../../../types/database";
 import {
   getVenueAdapter,
-  listEnabledProviders,
+  listEnabledProviders as listEnabledVenueProviders,
 } from "../../venues/registry";
 import {
   parseVenueMarketRef,
@@ -56,6 +56,10 @@ const marketCategoryOutput = z.object({
   id: z.string(),
   labelRu: z.string(),
   labelEn: z.string(),
+});
+
+const enabledProvidersOutput = z.object({
+  providers: z.array(z.enum(["polymarket", "limitless"])),
 });
 
 const marketOutcomeOutput = z.object({
@@ -761,6 +765,18 @@ const fetchMarketLiveSnapshots = async (
   return map;
 };
 
+const mergeMarketVolumeWithRolling24h = (
+  baseVolumeRaw: number | string | null | undefined,
+  rolling24hRaw: number | null | undefined
+): number => {
+  const baseVolume = Number.isFinite(Number(baseVolumeRaw)) ? Math.max(0, Number(baseVolumeRaw)) : 0;
+  const rolling24h =
+    typeof rolling24hRaw === "number" && Number.isFinite(rolling24hRaw)
+      ? Math.max(0, rolling24hRaw)
+      : null;
+  return rolling24h === null ? baseVolume : Math.max(baseVolume, rolling24h);
+};
+
 const mergeMarketWithLive = (
   market: MappedMarket,
   live: MarketLiveSnapshot | undefined
@@ -771,6 +787,7 @@ const mergeMarketWithLive = (
   const nextYes = useMid ? live.mid ?? market.priceYes : market.priceYes;
   const nextNo = useMid ? Math.max(0, Math.min(1, 1 - nextYes)) : market.priceNo;
   const liveChance = useMid ? Math.round(nextYes * 100) : market.chance;
+  const effectiveVolume = mergeMarketVolumeWithRolling24h(market.volume, live.rolling24hVolume);
 
   return {
     ...market,
@@ -782,6 +799,7 @@ const mergeMarketWithLive = (
     mid: live.mid,
     lastTradePrice: live.lastTradePrice,
     lastTradeSize: live.lastTradeSize,
+    volume: effectiveVolume,
     rolling24hVolume: live.rolling24hVolume,
     openInterest: live.openInterest,
     liveUpdatedAt: live.sourceTs,
@@ -1565,8 +1583,10 @@ export const __marketRouterTestUtils = {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
+  mergeMarketVolumeWithRolling24h,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
+  normalizePublicEnabledProviders,
 };
 
 const listLocalLiveActivityTicks = async (
@@ -2074,11 +2094,25 @@ const getCachedDynamicCategoryRows = async (
   return rows;
 };
 
+function normalizePublicEnabledProviders(
+  providers: Array<VenueProvider | string | null | undefined>
+): Array<"polymarket" | "limitless"> {
+  const out = Array.from(
+    new Set(
+      providers.filter(
+        (provider): provider is "polymarket" | "limitless" =>
+          provider === "polymarket" || provider === "limitless"
+      )
+    )
+  );
+  return out.length > 0 ? out : ["polymarket"];
+}
+
 const parseProviderSelection = (input?: {
   providers?: Array<VenueProvider> | undefined;
   providerFilter?: "all" | VenueProvider | undefined;
 }): VenueProvider[] => {
-  const enabled = new Set<VenueProvider>(listEnabledProviders());
+  const enabled = new Set<VenueProvider>(listEnabledVenueProviders());
   if (enabled.size === 0) return ["polymarket"];
 
   const fromFilter =
@@ -2222,6 +2256,15 @@ export const marketRouter = router({
       });
       const rows = await getCachedDynamicCategoryRows(ctx.supabaseService, selectedProviders);
       return rows;
+    }),
+
+  listEnabledProviders: publicProcedure
+    .output(enabledProvidersOutput)
+    .query(() => {
+      const providers = normalizePublicEnabledProviders(listEnabledVenueProviders());
+      return {
+        providers,
+      };
     }),
 
   listMarkets: publicProcedure

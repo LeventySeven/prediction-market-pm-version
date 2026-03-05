@@ -80,8 +80,9 @@ Key file: `app/page.tsx`
    - provider
    - page
    - backend sort mode
-3. Balanced prefetch:
-   - page 1 for all providers
+3. Warm bootstrap cache is persisted in `localStorage` (short TTL) and reused on revisit/hard reload.
+4. Balanced prefetch:
+   - page 1 for enabled providers
    - page 2 for active provider
 4. In-flight dedupe prevents duplicate network requests for same page key.
 
@@ -91,28 +92,15 @@ Key file: `app/page.tsx`
 2. Failed refresh no longer clears existing markets.
 3. Realtime channel/SSE failures no longer force full catalog reload loops.
 4. Live patch map is pruned only for markets no longer present; not fully reset every refresh.
+5. Empty state is only shown after the active provider/page key finishes at least one fetch cycle.
 
-## 4.3 Catalog entry speed-up (removed blocking market loading)
+## 4.3 Provider tabs and request safety
 
-What changed:
-1. Entering/re-entering catalog no longer blocks on full fetch when markets are already in memory or page cache.
-2. The old behavior showed a blocking `"Loading markets..."` state more often; now it is shown mainly on true cold start.
-3. We use stale-while-refresh UX:
-   - render existing cached/current market list immediately,
-   - fetch fresh page data in background,
-   - patch UI silently when response arrives.
+1. Provider chips are built from `market.listEnabledProviders` only.
+2. Disabled providers are hidden from tabs.
+3. URL on disabled provider auto-falls back to `/catalog`.
+4. `loadMarkets` uses request-sequence guards so stale responses cannot overwrite newer tab/page requests.
 
-Implementation details:
-1. `loadMarkets` checks:
-   - page cache hit (`catalogPageCacheRef`), and
-   - existing in-memory markets (`marketsRef.current.length > 0`).
-2. If either is present, it skips blocking loading state and keeps rendered cards visible.
-3. On refresh error, list is preserved (we set error banner but do not drop current markets).
-4. Live patches are retained and only pruned for market IDs that disappeared from refreshed page.
-
-Result:
-1. Catalog feels instant after first warm pass.
-2. User no longer waits on repeated `"Loading markets..."` transitions when navigating back to catalog or changing realtime state.
 ## 4.4 Search behavior
 
 1. Search input drives semantic search and lexical matching.
@@ -133,7 +121,17 @@ Result:
    - Upstash SSE (`/api/stream/markets`) when enabled
    - Supabase realtime fallback otherwise
 3. Patches are batched and applied only on material numeric change.
-4. Market cards animate value changes; list order remains stable unless user sort requires reorder.
+4. Patch normalization merges with prior patch state, so null partial payloads do not erase valid rolling volume.
+5. Display volume uses `max(baseVolume, rolling24hVolume)` and should not regress to zero when valid prior data exists.
+
+## 4.7 Stable catalog ordering + highlights
+
+1. Catalog order is locked per context key (`provider/page/sort/status/time/category/search`).
+2. Existing IDs keep prior on-screen order across live updates.
+3. New IDs insert at sorted slot and shift only where inserted.
+4. Highlight states:
+   - `new`: 4s bright pink outline/glow
+   - `updated`: 2s darker pink outline/glow
 
 ## 5) Market Detail Loading
 
@@ -252,6 +250,9 @@ Responsibilities:
 4. Write Upstash live patches using canonical market IDs.
 5. Keep catalog fresh via `upsertVenueMarketsToCatalog`.
 6. Update `provider_sync_state` consistently.
+
+Operational requirement:
+1. For instant all-venues catalog behavior, run both collectors continuously.
 
 ## 9) Health, Diagnostics, and Degraded Mode
 

@@ -9,9 +9,17 @@ interface MarketCardProps {
   onQuickBet?: (side: 'YES' | 'NO') => void;
   bookmarked?: boolean;
   lang?: 'RU' | 'EN';
+  highlightState?: "new" | "updated" | null;
 }
 
-const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet, bookmarked = false, lang = 'EN' }) => {
+const MarketCardBase: React.FC<MarketCardProps> = ({
+  market,
+  onClick,
+  onQuickBet,
+  bookmarked = false,
+  lang = 'EN',
+  highlightState = null,
+}) => {
   const localizedTitle =
     lang === 'RU'
       ? market.titleRu ?? market.titleEn ?? market.title
@@ -36,6 +44,12 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
       ? market.categoryLabelRu ?? market.categoryLabelEn
       : market.categoryLabelEn ?? market.categoryLabelRu;
   const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
+  const highlightClass =
+    highlightState === "new"
+      ? "market-card-highlight-new"
+      : highlightState === "updated"
+        ? "market-card-highlight-updated"
+        : "";
 
   // Use closesAt for trading deadline, fall back to expiresAt
   const deadline = market.closesAt || market.expiresAt;
@@ -67,7 +81,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({ market, onClick, onQuickBet
   return (
     <div 
         onClick={() => onClick?.()}
-        className={`group relative rounded-2xl border bg-black hover:bg-zinc-950/60 transition-all flex flex-col h-full cursor-pointer overflow-hidden p-4 ${
+        className={`group relative rounded-2xl border bg-black hover:bg-zinc-950/60 transition-all flex flex-col h-full cursor-pointer overflow-hidden p-4 ${highlightClass} ${
           bookmarked ? 'border-[rgba(245,68,166,0.55)]' : 'border-zinc-900'
         }`}
     >
@@ -208,7 +222,8 @@ const MarketCard = React.memo(
   (prev, next) =>
     prev.market === next.market &&
     prev.bookmarked === next.bookmarked &&
-    prev.lang === next.lang
+    prev.lang === next.lang &&
+    prev.highlightState === next.highlightState
 );
 
 export default MarketCard;

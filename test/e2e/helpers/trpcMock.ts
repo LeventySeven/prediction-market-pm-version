@@ -7,6 +7,7 @@ type TrpcMockOptions = {
   getLiveActivityDelayMs?: number;
   getPublicTradesDelayMs?: number;
   getMarketCommentsDelayMs?: number;
+  enabledProviders?: Array<"polymarket" | "limitless">;
 };
 
 type TrpcMockState = {
@@ -309,8 +310,16 @@ const isRouteClosedError = (error: unknown): boolean => {
   return /Target page, context or browser has been closed/i.test(error.message);
 };
 
-const resolveMockProcedure = (procedure: string, input: unknown) => {
+const resolveMockProcedure = (
+  procedure: string,
+  input: unknown,
+  options: Required<TrpcMockOptions>
+) => {
   switch (procedure) {
+    case "market.listEnabledProviders":
+      return {
+        providers: options.enabledProviders,
+      };
     case "market.listCategories":
       return [
         { id: "crypto", labelRu: "Crypto", labelEn: "Crypto" },
@@ -413,6 +422,7 @@ export const installTrpcMock = async (
     getLiveActivityDelayMs: options?.getLiveActivityDelayMs ?? 240,
     getPublicTradesDelayMs: options?.getPublicTradesDelayMs ?? 240,
     getMarketCommentsDelayMs: options?.getMarketCommentsDelayMs ?? 500,
+    enabledProviders: options?.enabledProviders ?? ["polymarket", "limitless"],
   };
 
   await page.route("**/api/trpc/**", async (route) => {
@@ -430,7 +440,7 @@ export const installTrpcMock = async (
       const waitMs = getProcedureDelay(procedure, mergedOptions);
       await delay(waitMs);
 
-      const payload = resolveMockProcedure(procedure, inputs[index]);
+      const payload = resolveMockProcedure(procedure, inputs[index], mergedOptions);
       responses.push({
         result: {
           data: superjson.serialize(payload),
