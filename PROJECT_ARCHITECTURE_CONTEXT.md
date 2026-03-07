@@ -13,7 +13,7 @@ This project is a **Polymarket wrapper UI**:
 Core goals right now:
 - show latest markets with good UX/performance,
 - enable Privy-based auth + embedded wallet,
-- enforce geoblocking before trading,
+- show an eligibility disclaimer with official Polymarket guidance,
 - relay signed CLOB orders without storing secrets,
 - keep deployment compatible with Vercel Hobby limits.
 
@@ -24,7 +24,7 @@ Core goals right now:
 - API layer: tRPC (`/api/trpc`) for app operations.
 - External read sources:
   - Polymarket Gamma API (`gamma-api.polymarket.com`) for markets/search.
-  - Polymarket CLOB API (`clob.polymarket.com`) for midpoints/history/access status/order relay.
+  - Polymarket CLOB API (`clob.polymarket.com`) for midpoints/history/order relay.
   - Polymarket Data API (`data-api.polymarket.com`) for public trades.
 - Auth:
   - Privy on client (`PrivyProvider`) + Privy server token verification.
@@ -36,6 +36,7 @@ Core goals right now:
 - Backend relays signed order to CLOB (`market.relaySignedOrder`) with short timeout.
 - `apiCreds` and signed order are **not persisted**.
 - No balances/positions/orders/fills are persisted for Polymarket execution.
+- Limitless is currently read-only in-app until its official client-side signing + submission flow is wired end-to-end.
 
 ## 2.3 Deployment model
 - Vercel production branch: `main` (see `vercel.json`).
@@ -93,8 +94,7 @@ Provider selection:
 When opening market page:
 - price candles refreshed every 15s (`market.getPriceCandles`),
 - public trades refreshed every 15s (`market.getPublicTrades`),
-- comments loaded from DB,
-- geocheck refreshed every 60s (`market.checkTradeAccess`).
+- comments loaded from DB.
 
 Charts:
 - binary: `lightweight-charts` candlesticks (`components/TradingViewCandles.tsx`).
@@ -102,21 +102,19 @@ Charts:
 
 ## 3.5 Trade flow (buy only)
 1. User enters amount and selects side/outcome.
-2. Client checks trade access (`market.checkTradeAccess`).
-3. Client builds signed buy order (`src/lib/polymarket/tradingClient.ts`):
+2. For Polymarket, client builds signed buy order (`src/lib/polymarket/tradingClient.ts`):
    - derive/reuse ephemeral CLOB API creds,
    - create order using Privy signer,
    - no persistent secret storage.
-4. Client sends `{signedOrder, orderType, apiCreds}` to `market.relaySignedOrder`.
-5. Server:
+3. Client sends `{signedOrder, orderType, apiCreds}` to `market.relaySignedOrder`.
+4. Server:
    - requires auth,
    - enforces rate limit,
-   - re-runs geocheck,
    - signs L2 auth headers,
    - relays to `${CLOB}/order` with timeout.
+5. Limitless execution remains disabled until the official non-custodial signer/auth flow is implemented.
 
 Failure mapping in UI includes:
-- geoblocked,
 - timeout,
 - insufficient balance/allowance,
 - generic relay error.
@@ -135,7 +133,6 @@ Failure mapping in UI includes:
 - `listCategories`
 - `listMarkets`
 - `getMarket`
-- `checkTradeAccess`
 - `relaySignedOrder`
 - `generateMarketContext`
 - `myBookmarks`
@@ -337,7 +334,6 @@ Required/important env groups:
   - `POLYMARKET_DATA_API_BASE_URL`
   - `NEXT_PUBLIC_POLYMARKET_CLOB_URL`
   - `NEXT_PUBLIC_POLYMARKET_CHAIN_ID`
-  - `POLYMARKET_ACCESS_STATUS_TTL_MS`
   - `POLYMARKET_RELAY_TIMEOUT_MS`
   - `POLYMARKET_MARKET_STALE_AFTER_MS`
   - `POLYMARKET_SYNC_SECRET`
@@ -351,7 +347,6 @@ Current effective strategy:
 - Mirror-first read path for speed/cost.
 - Live fallback when stale.
 - In-memory short TTL caches for:
-  - geocheck access status,
   - semantic query results,
   - embeddings,
   - latest market pool.
@@ -367,11 +362,11 @@ Implemented protections:
 - `auth_token` is HttpOnly cookie.
 - Trading relay has:
   - auth requirement,
-  - geocheck hard block,
   - per-user rate limiting,
   - request size cap,
   - short timeout,
   - `Cache-Control: no-store` on sensitive paths.
+- App shows a first-visit eligibility disclaimer with the official Polymarket restricted-locations link.
 - Client-side signing only; no private key custody in backend.
 
 Sensitive-data handling principle:

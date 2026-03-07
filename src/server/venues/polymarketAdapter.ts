@@ -13,7 +13,6 @@ import {
   type VenueMarket,
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
-  type VenueTradeAccessStatus,
   venueToCanonicalId,
 } from "./types";
 
@@ -77,134 +76,6 @@ const mapPolymarketToVenue = (market: PolymarketMarket): VenueMarket => ({
   },
 });
 
-type JsonLike =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonLike[]
-  | { [key: string]: JsonLike | undefined };
-
-const statusCache = new Map<string, { expiresAt: number; value: VenueTradeAccessStatus }>();
-
-const toBooleanLike = (value: JsonLike | undefined): boolean | null => {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized.length === 0) return null;
-    if (
-      normalized === "true" ||
-      normalized === "1" ||
-      normalized === "yes" ||
-      normalized === "y" ||
-      normalized === "blocked" ||
-      normalized === "deny" ||
-      normalized === "denied"
-    ) {
-      return true;
-    }
-    if (
-      normalized === "false" ||
-      normalized === "0" ||
-      normalized === "no" ||
-      normalized === "n" ||
-      normalized === "allowed" ||
-      normalized === "ok" ||
-      normalized === "eligible"
-    ) {
-      return false;
-    }
-  }
-  return null;
-};
-
-const normalizeAccessStatus = (payload: JsonLike | null): VenueTradeAccessStatus => {
-  const nowIso = new Date().toISOString();
-  const rec =
-    payload && typeof payload === "object" && !Array.isArray(payload)
-      ? (payload as Record<string, JsonLike | undefined>)
-      : {};
-  const values = Object.values(rec);
-  const containsAllowedKeyword = values.some(
-    (v) => typeof v === "string" && /(allow|approved|pass|ok|eligible)/i.test(v)
-  );
-  const containsBlockedKeyword = values.some(
-    (v) => typeof v === "string" && /(block|forbid|deny|restricted|unavailable|geo)/i.test(v)
-  );
-
-  const explicitBoolean =
-    toBooleanLike(rec.allowed) ??
-    toBooleanLike(rec.canTrade) ??
-    toBooleanLike(rec.tradingAllowed) ??
-    toBooleanLike(rec.isAllowed) ??
-    null;
-
-  const rawStatus =
-    typeof rec.status === "string"
-      ? rec.status
-      : typeof rec.result === "string"
-        ? rec.result
-        : typeof rec.accessStatus === "string"
-          ? rec.accessStatus
-        : "";
-
-  const reasonCode =
-    typeof rec.reasonCode === "string"
-      ? rec.reasonCode
-      : typeof rec.reason === "string"
-        ? rec.reason
-        : typeof rec.error === "string"
-          ? rec.error
-          : null;
-
-  const message =
-    typeof rec.message === "string"
-      ? rec.message
-      : typeof rec.detail === "string"
-        ? rec.detail
-        : null;
-
-  if (
-    explicitBoolean === true ||
-    /allow|approved|pass|ok|eligible/i.test(rawStatus) ||
-    (containsAllowedKeyword && !containsBlockedKeyword)
-  ) {
-    return {
-      status: "ALLOWED",
-      allowed: true,
-      reasonCode,
-      message,
-      checkedAt: nowIso,
-    };
-  }
-
-  if (
-    explicitBoolean === false ||
-    /block|forbid|deny|restrict|geo/i.test(rawStatus) ||
-    containsBlockedKeyword
-  ) {
-    return {
-      status: "BLOCKED_REGION",
-      allowed: false,
-      reasonCode,
-      message,
-      checkedAt: nowIso,
-    };
-  }
-
-  return {
-    status: "UNKNOWN_TEMP_ERROR",
-    allowed: false,
-    reasonCode: reasonCode ?? "ACCESS_STATUS_UNKNOWN",
-    message: message ?? "Could not verify regional access at this time.",
-    checkedAt: nowIso,
-  };
-};
-
 const toBase64 = (input: string) => {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
@@ -226,117 +97,6 @@ const buildL2Signature = (
     .digest("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
-};
-
-const checkTradeAccess = async (params: {
-  requestIp?: string | null;
-  cacheKey: string;
-}): Promise<VenueTradeAccessStatus> => {
-  const ttlMs = Math.max(1000, Number(process.env.POLYMARKET_ACCESS_STATUS_TTL_MS ?? 60000));
-  const now = Date.now();
-  const cached = statusCache.get(params.cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const headers: Record<string, string> = {
-    accept: "application/json",
-  };
-
-  if (params.requestIp) {
-    headers["x-forwarded-for"] = params.requestIp;
-    headers["x-real-ip"] = params.requestIp;
-    headers["cf-connecting-ip"] = params.requestIp;
-  }
-
-  try {
-    const geoResponse = await fetch("https://polymarket.com/api/geoblock", {
-      cache: "no-store",
-      headers,
-    });
-
-    if (geoResponse.ok) {
-      const payload = (await geoResponse.json().catch(() => null)) as JsonLike | null;
-      const rec =
-        payload && typeof payload === "object" && !Array.isArray(payload)
-          ? (payload as Record<string, JsonLike | undefined>)
-          : {};
-      const blocked =
-        toBooleanLike(rec.blocked) ??
-        toBooleanLike(rec.isBlocked) ??
-        toBooleanLike(rec.is_blocked) ??
-        toBooleanLike(rec.geoBlocked) ??
-        null;
-
-      if (blocked === true) {
-        const value: VenueTradeAccessStatus = {
-          status: "BLOCKED_REGION",
-          allowed: false,
-          reasonCode:
-            typeof rec.reason === "string"
-              ? rec.reason
-              : typeof rec.country === "string"
-                ? `COUNTRY_${rec.country}`
-                : "GEO_BLOCKED",
-          message:
-            typeof rec.message === "string"
-              ? rec.message
-              : "Trading is unavailable in your jurisdiction.",
-          checkedAt: new Date().toISOString(),
-        };
-        statusCache.set(params.cacheKey, { value, expiresAt: now + ttlMs });
-        return value;
-      }
-
-      if (blocked === false) {
-        const value: VenueTradeAccessStatus = {
-          status: "ALLOWED",
-          allowed: true,
-          reasonCode: null,
-          message: null,
-          checkedAt: new Date().toISOString(),
-        };
-        statusCache.set(params.cacheKey, { value, expiresAt: now + ttlMs });
-        return value;
-      }
-
-      const normalizedGeo = normalizeAccessStatus(payload);
-      if (normalizedGeo.status !== "UNKNOWN_TEMP_ERROR") {
-        statusCache.set(params.cacheKey, { value: normalizedGeo, expiresAt: now + ttlMs });
-        return normalizedGeo;
-      }
-    }
-
-    const clobResponse = await fetch(`${getClobBaseUrl()}/auth/access-status`, {
-      cache: "no-store",
-      headers,
-    });
-
-    if (!clobResponse.ok) {
-      const fallback: VenueTradeAccessStatus = {
-        status: "UNKNOWN_TEMP_ERROR",
-        allowed: false,
-        reasonCode: `HTTP_${clobResponse.status}`,
-        message: "Could not verify regional access at this time.",
-        checkedAt: new Date().toISOString(),
-      };
-      statusCache.set(params.cacheKey, { value: fallback, expiresAt: now + 3000 });
-      return fallback;
-    }
-
-    const payload = (await clobResponse.json()) as JsonLike;
-    const normalized = normalizeAccessStatus(payload);
-    statusCache.set(params.cacheKey, { value: normalized, expiresAt: now + ttlMs });
-    return normalized;
-  } catch {
-    const fallback: VenueTradeAccessStatus = {
-      status: "UNKNOWN_TEMP_ERROR",
-      allowed: false,
-      reasonCode: "ACCESS_STATUS_FETCH_FAILED",
-      message: "Could not verify regional access at this time.",
-      checkedAt: new Date().toISOString(),
-    };
-    statusCache.set(params.cacheKey, { value: fallback, expiresAt: now + 3000 });
-    return fallback;
-  }
 };
 
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
@@ -482,7 +242,6 @@ export const polymarketAdapter: VenueAdapter = {
       timestamp: row.timestamp,
     }));
   },
-  checkTradeAccess,
   relaySignedOrder,
   wsCollectorConfig: () => ({
     url: (

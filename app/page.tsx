@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
+import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
 import OnboardingModal from "@/components/OnboardingModal";
 import ProfileSetupModal, { type ProfileSetupSubmitPayload } from "@/components/ProfileSetupModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
@@ -24,7 +25,7 @@ import type {
   LiveActivityTick,
 } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search, Filter, X } from "lucide-react";
+import { Search, Filter, Info, X } from "lucide-react";
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import FriendsPage from "@/components/FriendsPage";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
@@ -60,6 +61,7 @@ const MARKET_CANDLE_LIMIT_BY_INTERVAL: Record<CandleInterval, number> = {
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v2";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
+const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -210,11 +212,12 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
   const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
-  const volumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
+  const baseVolumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
   const volume24hRaw =
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
       ? Math.max(0, m.rolling24hVolume)
       : null;
+  const volumeRaw = baseVolumeRaw;
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
@@ -324,10 +327,7 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
       : null;
   const currentVolumeRaw =
     typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw) ? Math.max(0, market.volumeRaw) : 0;
-  const nextVolumeRaw =
-    nextRolling24h === null
-      ? currentVolumeRaw
-      : Math.max(currentVolumeRaw, Math.max(0, nextRolling24h));
+  const nextVolumeRaw = currentVolumeRaw;
 
   return {
     ...market,
@@ -600,6 +600,10 @@ export default function HomePage() {
   const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
   const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showEligibilityDisclaimer, setShowEligibilityDisclaimer] = useState(false);
+  const [eligibilityDisclaimerGate, setEligibilityDisclaimerGate] = useState<"pending" | "required" | "done">(
+    "pending"
+  );
   const [profileSetupSaving, setProfileSetupSaving] = useState(false);
   const [profileSetupError, setProfileSetupError] = useState<string | null>(null);
   const [reloginRequired, setReloginRequired] = useState(false);
@@ -643,14 +647,6 @@ export default function HomePage() {
   const { ready: privyReady, authenticated: privyAuthenticated, login: privyLogin, logout: privyLogout } = usePrivySession();
   const { wallets: privyWallets } = usePrivyWalletList();
   const clobApiCredsRef = useRef<EphemeralApiCreds | null>(null);
-  const [tradeAccessState, setTradeAccessState] = useState<{
-    status: "ALLOWED" | "BLOCKED_REGION" | "UNKNOWN_TEMP_ERROR";
-    allowed: boolean;
-    reasonCode: string | null;
-    message: string | null;
-    checkedAt: string;
-  } | null>(null);
-  const [tradeAccessLoading, setTradeAccessLoading] = useState(false);
   const sessionIdRef = useRef<string>(createSessionId());
   const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
   const semanticHydratedMarketIdsRef = useRef<Set<string>>(new Set());
@@ -1048,18 +1044,51 @@ export default function HomePage() {
   }, [lang, leaderboardSort]);
 
   useEffect(() => {
-    const hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding");
+    try {
+      if (localStorage.getItem(ELIGIBILITY_DISCLAIMER_SEEN_KEY) === "true") {
+        setEligibilityDisclaimerGate("done");
+        return undefined;
+      }
+    } catch {
+      // ignore localStorage failures and still present the disclaimer
+    }
+
+    setEligibilityDisclaimerGate("required");
+    setShowEligibilityDisclaimer(true);
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (eligibilityDisclaimerGate !== "done" || showEligibilityDisclaimer) return;
+
+    let hasSeenOnboarding = false;
+    try {
+      hasSeenOnboarding = localStorage.getItem("hasSeenOnboarding") === "true";
+    } catch {
+      hasSeenOnboarding = false;
+    }
+
     if (!hasSeenOnboarding) {
       const timeout = setTimeout(() => setShowOnboarding(true), 800);
       return () => clearTimeout(timeout);
     }
     return undefined;
-  }, []);
+  }, [eligibilityDisclaimerGate, showEligibilityDisclaimer]);
 
   const handleCloseOnboarding = () => {
     setShowOnboarding(false);
     localStorage.setItem("hasSeenOnboarding", "true");
   };
+
+  const handleCloseEligibilityDisclaimer = useCallback(() => {
+    setShowEligibilityDisclaimer(false);
+    setEligibilityDisclaimerGate("done");
+    try {
+      localStorage.setItem(ELIGIBILITY_DISCLAIMER_SEEN_KEY, "true");
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const handleToggleLang = () => {
     setLang((prev) => {
@@ -2739,25 +2768,6 @@ export default function HomePage() {
     setMarketCandleInterval("1h");
   }, [selectedMarketId]);
 
-  const tradeBlockedMessage = useMemo(() => {
-    if (!HAS_PRIVY_PROVIDER || !selectedMarketId) return null;
-    if (tradeAccessLoading && !tradeAccessState) {
-      return lang === "RU" ? "Проверяем региональный доступ..." : "Checking regional access...";
-    }
-    if (!tradeAccessState) return null;
-    if (tradeAccessState.allowed) return null;
-    if (tradeAccessState.status === "BLOCKED_REGION") {
-      return tradeAccessState.message ??
-        (lang === "RU"
-          ? "Торговля недоступна в вашей юрисдикции."
-          : "Trading is unavailable in your jurisdiction.");
-    }
-    return tradeAccessState.message ??
-      (lang === "RU"
-        ? "Временно не удалось проверить доступ к торговле."
-        : "Temporarily unable to verify trading access.");
-  }, [lang, selectedMarketId, tradeAccessLoading, tradeAccessState]);
-
   useEffect(() => {
     if (!selectedMarketId) return;
 
@@ -3415,55 +3425,6 @@ export default function HomePage() {
     marketCandleInterval,
   ]);
 
-  useEffect(() => {
-    if (!HAS_PRIVY_PROVIDER || !selectedMarketId) {
-      setTradeAccessState(null);
-      setTradeAccessLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const fetchAccess = async () => {
-      setTradeAccessLoading(true);
-      try {
-        const access = await trpcClient.market.checkTradeAccess.query({
-          provider: selectedProvider,
-        });
-        if (!cancelled) {
-          setTradeAccessState({
-            status: access.status ?? "UNKNOWN_TEMP_ERROR",
-            allowed: Boolean(access.allowed),
-            reasonCode: access.reasonCode ?? null,
-            message: access.message ?? null,
-            checkedAt: access.checkedAt ?? new Date().toISOString(),
-          });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setTradeAccessState({
-            status: "UNKNOWN_TEMP_ERROR",
-            allowed: false,
-            reasonCode: "ACCESS_STATUS_FETCH_FAILED",
-            message: getErrorMessage(err),
-            checkedAt: new Date().toISOString(),
-          });
-        }
-      } finally {
-        if (!cancelled) setTradeAccessLoading(false);
-      }
-    };
-
-    void fetchAccess();
-    const timer = setInterval(() => {
-      void fetchAccess();
-    }, 60_000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [selectedMarketId, selectedProvider]);
-
   /**
    * Handle placing a bet (buying shares)
    */
@@ -3486,6 +3447,22 @@ export default function HomePage() {
         ? selectedMarket
         : mergedMarkets.find((m) => m.id === marketId) ?? null;
 
+    if (market?.capabilities?.supportsTrading === false) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? `Торги через ${market.provider === "limitless" ? "Limitless" : "эту площадку"} пока недоступны в приложении.`
+            : `Trading via ${market.provider === "limitless" ? "Limitless" : "this venue"} is not available in the app yet.`,
+        isLoading: false,
+      });
+      return;
+    }
+
     if (!HAS_PRIVY_PROVIDER) {
       setBetConfirm({
         open: true,
@@ -3504,26 +3481,6 @@ export default function HomePage() {
 
     if (!privyReady || !privyAuthenticated || !user) {
       openAuth("SIGN_IN");
-      return;
-    }
-
-    const tradeAccess = await trpcClient.market.checkTradeAccess
-      .query({ provider: market?.provider ?? undefined })
-      .catch(() => null);
-    if (!tradeAccess?.allowed) {
-      setBetConfirm({
-        open: true,
-        marketTitle,
-        side: safeSide,
-        amount,
-        newBalance: user?.balance,
-        errorMessage:
-          tradeAccess?.message ??
-          (lang === "RU"
-            ? "Торговля недоступна в вашей юрисдикции."
-            : "Trading is unavailable in your jurisdiction."),
-        isLoading: false,
-      });
       return;
     }
 
@@ -4111,7 +4068,6 @@ export default function HomePage() {
               marketContextError={marketContextErrorById[selectedMarket.id] ?? null}
               onFetchMarketContext={handleFetchMarketContext}
               creatorHasBets={creatorHasBets}
-              tradeBlockedMessage={tradeBlockedMessage}
               onOpenExternalTrade={(marketId) => {
                 const market = mergedMarkets.find((m) => m.id === marketId) ?? null;
                 const target = getExternalMarketUrl(market);
@@ -4299,14 +4255,25 @@ export default function HomePage() {
                         <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
                           {lang === "RU" ? "Фильтры" : "Filters"}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setCatalogFiltersOpen(true)}
-                          className="h-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 px-3 text-xs font-semibold text-zinc-200 hover:text-white transition-colors inline-flex items-center gap-2"
-                        >
-                          <Filter size={14} className="text-zinc-300" />
-                          <span>{lang === "RU" ? "Фильтр" : "Filter"}</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowEligibilityDisclaimer(true)}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 text-zinc-300 transition-colors hover:bg-zinc-950/70 hover:text-white"
+                            aria-label={lang === "RU" ? "Важное уведомление" : "Important notice"}
+                            title={lang === "RU" ? "Важное уведомление" : "Important notice"}
+                          >
+                            <Info size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCatalogFiltersOpen(true)}
+                            className="h-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 px-3 text-xs font-semibold text-zinc-200 hover:text-white transition-colors inline-flex items-center gap-2"
+                          >
+                            <Filter size={14} className="text-zinc-300" />
+                            <span>{lang === "RU" ? "Фильтр" : "Filter"}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -4713,6 +4680,11 @@ export default function HomePage() {
         onClose={handleCloseOnboarding}
         lang={lang}
         onToggleLang={handleToggleLang}
+      />
+      <EligibilityDisclaimerModal
+        isOpen={showEligibilityDisclaimer}
+        onClose={handleCloseEligibilityDisclaimer}
+        lang={lang}
       />
       <BetConfirmModal
         isOpen={betConfirm.open}

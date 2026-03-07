@@ -208,14 +208,6 @@ const marketContextOutput = z.object({
   generated: z.boolean(),
 });
 
-const tradeAccessOutput = z.object({
-  status: z.enum(["ALLOWED", "BLOCKED_REGION", "UNKNOWN_TEMP_ERROR"]),
-  allowed: z.boolean(),
-  reasonCode: z.string().nullable(),
-  message: z.string().nullable(),
-  checkedAt: z.string(),
-});
-
 const apiVersionV1 = z.literal("v1");
 
 const marketListV1Output = z.object({
@@ -765,17 +757,8 @@ const fetchMarketLiveSnapshots = async (
   return map;
 };
 
-const mergeMarketVolumeWithRolling24h = (
-  baseVolumeRaw: number | string | null | undefined,
-  rolling24hRaw: number | null | undefined
-): number => {
-  const baseVolume = Number.isFinite(Number(baseVolumeRaw)) ? Math.max(0, Number(baseVolumeRaw)) : 0;
-  const rolling24h =
-    typeof rolling24hRaw === "number" && Number.isFinite(rolling24hRaw)
-      ? Math.max(0, rolling24hRaw)
-      : null;
-  return rolling24h === null ? baseVolume : Math.max(baseVolume, rolling24h);
-};
+const normalizeMarketVolume = (baseVolumeRaw: number | string | null | undefined): number =>
+  Number.isFinite(Number(baseVolumeRaw)) ? Math.max(0, Number(baseVolumeRaw)) : 0;
 
 const mergeMarketWithLive = (
   market: MappedMarket,
@@ -787,7 +770,7 @@ const mergeMarketWithLive = (
   const nextYes = useMid ? live.mid ?? market.priceYes : market.priceYes;
   const nextNo = useMid ? Math.max(0, Math.min(1, 1 - nextYes)) : market.priceNo;
   const liveChance = useMid ? Math.round(nextYes * 100) : market.chance;
-  const effectiveVolume = mergeMarketVolumeWithRolling24h(market.volume, live.rolling24hVolume);
+  const effectiveVolume = normalizeMarketVolume(market.volume);
 
   return {
     ...market,
@@ -1027,10 +1010,6 @@ const readVolumeFromPayload = (payload: Record<string, unknown> | null): number 
     "volumeUSD",
     "usdVolume",
     "usd_volume",
-    "volume24h",
-    "volume_24h",
-    "dailyVolume",
-    "daily_volume",
     "volume",
   ];
 
@@ -1054,7 +1033,7 @@ const readCapabilitiesFromPayload = (
   const defaults =
     provider === "limitless"
       ? {
-          supportsTrading: true,
+          supportsTrading: false,
           supportsCandles: true,
           supportsPublicTrades: true,
           chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
@@ -1243,7 +1222,7 @@ const listCanonicalProviderMarkets = async (
       liquidityB: null,
       priceYes,
       priceNo,
-      volume: Math.max(0, payloadVolume ?? toFiniteNumber(live?.rolling_24h_volume as any) ?? 0),
+      volume: Math.max(0, payloadVolume ?? 0),
       chance: Math.round(priceYes * 100),
       creatorName: null,
       creatorAvatarUrl: null,
@@ -1583,7 +1562,6 @@ export const __marketRouterTestUtils = {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
-  mergeMarketVolumeWithRolling24h,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
   normalizePublicEnabledProviders,
@@ -1770,228 +1748,7 @@ const toErrorMessage = (error: Error | string | JsonValue) => {
   }
 };
 
-type TradeAccessStatus = {
-  status: "ALLOWED" | "BLOCKED_REGION" | "UNKNOWN_TEMP_ERROR";
-  allowed: boolean;
-  reasonCode: string | null;
-  message: string | null;
-  checkedAt: string;
-};
-
-const accessStatusCache = new Map<string, { expiresAt: number; value: TradeAccessStatus }>();
 const relayRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-const toBooleanLike = (value: JsonValue | undefined): boolean | null => {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized.length === 0) return null;
-    if (
-      normalized === "true" ||
-      normalized === "1" ||
-      normalized === "yes" ||
-      normalized === "y" ||
-      normalized === "blocked" ||
-      normalized === "deny" ||
-      normalized === "denied"
-    ) {
-      return true;
-    }
-    if (
-      normalized === "false" ||
-      normalized === "0" ||
-      normalized === "no" ||
-      normalized === "n" ||
-      normalized === "allowed" ||
-      normalized === "ok" ||
-      normalized === "eligible"
-    ) {
-      return false;
-    }
-  }
-  return null;
-};
-
-const normalizeAccessStatus = (payload: JsonValue | null): TradeAccessStatus => {
-  const nowIso = new Date().toISOString();
-  const rec: Record<string, JsonValue | undefined> =
-    payload && typeof payload === "object" && !Array.isArray(payload)
-      ? (payload as Record<string, JsonValue | undefined>)
-      : {};
-  const values = Object.values(rec);
-  const containsAllowedKeyword = values.some(
-    (v) => typeof v === "string" && /(allow|approved|pass|ok|eligible)/i.test(v)
-  );
-  const containsBlockedKeyword = values.some(
-    (v) => typeof v === "string" && /(block|forbid|deny|restricted|unavailable|geo)/i.test(v)
-  );
-
-  const explicitBoolean =
-    toBooleanLike(rec.allowed) ??
-    toBooleanLike(rec.canTrade) ??
-    toBooleanLike(rec.tradingAllowed) ??
-    toBooleanLike(rec.isAllowed) ??
-    null;
-
-  const rawStatus =
-    typeof rec.status === "string"
-      ? rec.status
-      : typeof rec.result === "string"
-        ? rec.result
-        : typeof rec.accessStatus === "string"
-          ? rec.accessStatus
-          : "";
-  const reasonCode =
-    typeof rec.reasonCode === "string"
-      ? rec.reasonCode
-      : typeof rec.reason === "string"
-        ? rec.reason
-        : typeof rec.error === "string"
-          ? rec.error
-          : null;
-  const message =
-    typeof rec.message === "string"
-      ? rec.message
-      : typeof rec.detail === "string"
-        ? rec.detail
-        : null;
-
-  if (
-    explicitBoolean === true ||
-    /allow|approved|pass|ok|eligible/i.test(rawStatus) ||
-    (containsAllowedKeyword && !containsBlockedKeyword)
-  ) {
-    return { status: "ALLOWED", allowed: true, reasonCode, message, checkedAt: nowIso };
-  }
-
-  if (
-    explicitBoolean === false ||
-    /block|forbid|deny|restrict|geo/i.test(rawStatus) ||
-    containsBlockedKeyword
-  ) {
-    return { status: "BLOCKED_REGION", allowed: false, reasonCode, message, checkedAt: nowIso };
-  }
-
-  return {
-    status: "UNKNOWN_TEMP_ERROR",
-    allowed: false,
-    reasonCode: reasonCode ?? "ACCESS_STATUS_UNKNOWN",
-    message: message ?? "Could not verify regional access at this time.",
-    checkedAt: nowIso,
-  };
-};
-
-const getClientIpFromRequest = (req: Request): string | null => {
-  return getTrustedClientIpFromRequest(req);
-};
-
-const getTradeAccessStatus = async (cacheKey: string, clientIp?: string | null): Promise<TradeAccessStatus> => {
-  const ttlMs = Math.max(1000, Number(process.env.POLYMARKET_ACCESS_STATUS_TTL_MS ?? 60000));
-  const now = Date.now();
-  const cached = accessStatusCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const headers: Record<string, string> = {
-    accept: "application/json",
-  };
-  if (clientIp) {
-    headers["x-forwarded-for"] = clientIp;
-    headers["x-real-ip"] = clientIp;
-    headers["cf-connecting-ip"] = clientIp;
-  }
-
-  try {
-    // Official geocheck endpoint: https://polymarket.com/api/geoblock
-    const geoResponse = await fetch("https://polymarket.com/api/geoblock", {
-      cache: "no-store",
-      headers,
-    });
-    if (geoResponse.ok) {
-      const geoPayload = (await geoResponse.json().catch(() => null)) as JsonValue | null;
-      const geoRec: Record<string, JsonValue | undefined> =
-        geoPayload && typeof geoPayload === "object"
-          ? (geoPayload as Record<string, JsonValue | undefined>)
-          : {};
-      const blocked =
-        toBooleanLike(geoRec.blocked) ??
-        toBooleanLike(geoRec.isBlocked) ??
-        toBooleanLike(geoRec.is_blocked) ??
-        toBooleanLike(geoRec.geoBlocked) ??
-        null;
-      if (blocked === true) {
-        const blockedValue: TradeAccessStatus = {
-          status: "BLOCKED_REGION",
-          allowed: false,
-          reasonCode:
-            typeof geoRec.reason === "string"
-              ? geoRec.reason
-              : typeof geoRec.country === "string"
-                ? `COUNTRY_${geoRec.country}`
-                : "GEO_BLOCKED",
-          message:
-            typeof geoRec.message === "string"
-              ? geoRec.message
-              : "Trading is unavailable in your jurisdiction.",
-          checkedAt: new Date().toISOString(),
-        };
-        accessStatusCache.set(cacheKey, { value: blockedValue, expiresAt: now + ttlMs });
-        return blockedValue;
-      }
-      if (blocked === false) {
-        const allowedValue: TradeAccessStatus = {
-          status: "ALLOWED",
-          allowed: true,
-          reasonCode: null,
-          message: null,
-          checkedAt: new Date().toISOString(),
-        };
-        accessStatusCache.set(cacheKey, { value: allowedValue, expiresAt: now + ttlMs });
-        return allowedValue;
-      }
-
-      const normalizedGeo = normalizeAccessStatus(geoPayload);
-      if (normalizedGeo.status !== "UNKNOWN_TEMP_ERROR") {
-        accessStatusCache.set(cacheKey, { value: normalizedGeo, expiresAt: now + ttlMs });
-        return normalizedGeo;
-      }
-    }
-
-    // Backward-compatible fallback for CLOB access check
-    const clobResponse = await fetch(`${getClobBaseUrl()}/auth/access-status`, {
-      cache: "no-store",
-      headers,
-    });
-    if (!clobResponse.ok) {
-      const fallback: TradeAccessStatus = {
-        status: "UNKNOWN_TEMP_ERROR",
-        allowed: false,
-        reasonCode: `HTTP_${clobResponse.status}`,
-        message: "Could not verify regional access at this time.",
-        checkedAt: new Date().toISOString(),
-      };
-      accessStatusCache.set(cacheKey, { value: fallback, expiresAt: now + 3000 });
-      return fallback;
-    }
-    const payload = (await clobResponse.json()) as JsonValue;
-    const normalized = normalizeAccessStatus(payload);
-    accessStatusCache.set(cacheKey, { value: normalized, expiresAt: now + ttlMs });
-    return normalized;
-  } catch {
-    const fallback: TradeAccessStatus = {
-      status: "UNKNOWN_TEMP_ERROR",
-      allowed: false,
-      reasonCode: "ACCESS_STATUS_FETCH_FAILED",
-      message: "Could not verify regional access at this time.",
-      checkedAt: new Date().toISOString(),
-    };
-    accessStatusCache.set(cacheKey, { value: fallback, expiresAt: now + 3000 });
-    return fallback;
-  }
-};
 
 const applyRelayRateLimit = (userId: string) => {
   const windowMs = 60_000;
@@ -2811,27 +2568,6 @@ export const marketRouter = router({
       };
     }),
 
-  checkTradeAccess: publicProcedure
-    .input(z.object({ provider: z.enum(["polymarket", "limitless"]).optional() }).optional())
-    .output(tradeAccessOutput)
-    .query(async ({ ctx, input }) => {
-      ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
-      const provider = (input?.provider ?? "polymarket") as VenueProvider;
-      const adapter = getVenueAdapter(provider);
-      if (!adapter.isEnabled()) {
-        return {
-          status: "BLOCKED_REGION" as const,
-          allowed: false,
-          reasonCode: "PROVIDER_DISABLED",
-          message: "Trading provider is disabled.",
-          checkedAt: new Date().toISOString(),
-        };
-      }
-      const ip = getClientIpFromRequest(ctx.req);
-      const cacheKey = `access:${provider}:${ip ?? "unknown"}`;
-      return adapter.checkTradeAccess({ cacheKey, requestIp: ip });
-    }),
-
   relaySignedOrder: publicProcedure
     .input(relaySignedOrderInput)
     .output(relaySignedOrderOutput)
@@ -2848,7 +2584,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "PROVIDER_DISABLED" });
       }
 
-      const ip = getClientIpFromRequest(ctx.req);
+      const ip = getTrustedClientIpFromRequest(ctx.req);
 
       const relayRate = await consumeDurableRateLimit(ctx.supabaseService, {
         key: `relay:${provider}:${authUser.id}:${ip ?? "unknown"}`,
@@ -2857,17 +2593,6 @@ export const marketRouter = router({
       });
       if (!relayRate.allowed) {
         throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "ORDER_RELAY_RATE_LIMITED" });
-      }
-
-      const access = await adapter.checkTradeAccess({
-        cacheKey: `relay_access:${provider}:${authUser.id}:${ip ?? "unknown"}`,
-        requestIp: ip,
-      });
-      if (!access.allowed) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: access.reasonCode ?? "TRADE_ACCESS_BLOCKED",
-        });
       }
 
       const orderBody = JSON.stringify({

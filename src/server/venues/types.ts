@@ -58,14 +58,6 @@ export type VenuePublicTrade = {
   timestamp: number;
 };
 
-export type VenueTradeAccessStatus = {
-  status: "ALLOWED" | "BLOCKED_REGION" | "UNKNOWN_TEMP_ERROR";
-  allowed: boolean;
-  reasonCode: string | null;
-  message: string | null;
-  checkedAt: string;
-};
-
 export type VenueApiCreds = {
   key: string;
   secret: string;
@@ -101,7 +93,6 @@ export type VenueAdapter = {
     params?: { interval?: VenueCandleInterval }
   ) => Promise<VenuePricePoint[]>;
   getPublicTrades: (market: VenueMarket, limit?: number) => Promise<VenuePublicTrade[]>;
-  checkTradeAccess: (params: { requestIp?: string | null; cacheKey: string }) => Promise<VenueTradeAccessStatus>;
   relaySignedOrder: (input: VenueRelayOrderInput) => Promise<VenueRelayOrderOutput>;
   wsCollectorConfig?: () => { url: string | null; channels: string[] };
 };

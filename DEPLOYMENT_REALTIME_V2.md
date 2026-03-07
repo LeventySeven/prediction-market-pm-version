@@ -9,8 +9,8 @@ This runbook deploys the current production architecture:
 - Limitless collector worker (required for instant all-venues catalog)
 
 The platform remains non-custodial:
-- order signing stays client-side
-- backend only performs access checks and relay of already signed payloads
+- Polymarket order signing stays client-side
+- backend only relays already signed Polymarket payloads
 - no private keys or raw signed order bodies are persisted
 
 ## 1. Deployment Order (Do Not Reorder)
@@ -81,17 +81,12 @@ Recommended explicit values (to avoid implicit defaults):
 - `POLYMARKET_DATA_API_BASE_URL=https://data-api.polymarket.com`
 - `NEXT_PUBLIC_POLYMARKET_CLOB_URL=https://clob.polymarket.com`
 - `NEXT_PUBLIC_POLYMARKET_CHAIN_ID=137`
-- `POLYMARKET_ACCESS_STATUS_TTL_MS=60000`
 - `POLYMARKET_RELAY_TIMEOUT_MS=10000`
 
-Limitless read/trade configuration (only if enabling Limitless):
+Limitless read configuration (only if enabling Limitless):
 - `ENABLE_LIMITLESS=true`
 - `LIMITLESS_API_BASE_URL=https://api.limitless.exchange`
 - `LIMITLESS_CHAIN_ID=8453`
-- `LIMITLESS_ACCESS_STATUS_URL=<provider access-status endpoint>`
-- `LIMITLESS_ORDER_RELAY_URL=<provider order relay endpoint>`
-- `LIMITLESS_ACCESS_STATUS_TTL_MS=60000`
-- `LIMITLESS_RELAY_TIMEOUT_MS=10000`
 - `LIMITLESS_DEBUG=false`
 - `LIMITLESS_ACTIVE_PAGE_LIMIT=25`
 - `ENABLE_CATALOG_SYNC_ON_READ=false`
@@ -312,13 +307,13 @@ Recommended rollout path:
 1. `ENABLE_LIMITLESS=false` everywhere (Polymarket-only baseline).
 2. Enable `ENABLE_LIMITLESS=true` on web + Limitless collector for read path.
 3. Validate list/search/feed/candles/trades for Limitless.
-4. Configure `LIMITLESS_ACCESS_STATUS_URL` and `LIMITLESS_ORDER_RELAY_URL` in staging.
-5. Validate access-status and relay contracts against live staging behavior.
-6. Promote to production after parity checks.
+4. Validate list/search/feed/candles/trades against live staging behavior.
+5. Keep in-app Limitless trading disabled until the official non-custodial signer/auth flow is implemented.
+6. Promote the read path to production after parity checks.
 
 Current product behavior note:
 - UI currently blocks client-side Limitless order signing in this build.
-- Backend adapter + relay path exists, but production trading should remain disabled until client signer integration is finalized.
+- Backend also reports Limitless trading as unavailable until client signer + official submission auth are finalized.
 
 ## 10. Smoke Tests (Post-Deploy)
 
@@ -362,10 +357,9 @@ where created_at > now() - interval '1 hour';
 1. `SUPABASE_SERVICE_ROLE_KEY`, `PRIVY_APP_SECRET`, API credentials are never exposed as `NEXT_PUBLIC_*`.
 2. CSRF is functioning on auth-cookie mutation endpoints (`auth.privyLogin`, `auth.privyLogout`, `auth.logout`).
 3. `TRUST_PROXY_HEADERS` is enabled only behind trusted infra.
-4. Limitless access check defaults to blocked when uncertain/misconfigured.
-5. Relay idempotency is enforced via `trade_relay_audit` (`provider + user_id + idempotency_key`).
-6. Confirm no secrets or signed payload bodies in logs.
-7. RLS remains enabled on canonical tables.
+4. Relay idempotency is enforced via `trade_relay_audit` (`provider + user_id + idempotency_key`).
+5. Confirm no secrets or signed payload bodies in logs.
+6. RLS remains enabled on canonical tables.
 
 ## 12. Troubleshooting
 
@@ -396,12 +390,12 @@ Fast recovery:
 3. Confirm `provider_sync_state.last_success_at` moves forward within one poll cycle.
 4. Reload `/catalog` and validate provider tab + market rows repopulate.
 
-### 12.3 Trade access always blocked
+### 12.3 Eligibility disclaimer not appearing
 
 Check:
-1. `LIMITLESS_ACCESS_STATUS_URL` configured (for Limitless).
-2. Upstream geoblock/access endpoint returns explicit allow state.
-3. Proxy/IP trust settings are correct.
+1. Clear `hasSeenEligibilityDisclaimer` in local storage for the app origin.
+2. Reload `/catalog` and confirm the modal appears before onboarding.
+3. Confirm the catalog header `i` button still opens the same modal.
 
 ### 12.4 Auth mutations failing with CSRF errors
 

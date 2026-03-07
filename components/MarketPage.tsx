@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick, CandleInterval } from '../types';
 import Button from './Button';
+import EligibilityDisclaimerModal from './EligibilityDisclaimerModal';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
@@ -109,7 +110,6 @@ interface MarketPageProps {
   creatorHasBets?: boolean;
   onEditMarket?: () => void;
   onDeleteMarket?: () => void;
-  tradeBlockedMessage?: string | null;
   onOpenExternalTrade?: (marketId: string) => void;
   chartInterval?: CandleInterval;
   onChartIntervalChange?: (interval: CandleInterval) => void;
@@ -149,7 +149,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
   creatorHasBets = false,
   onEditMarket,
   onDeleteMarket,
-  tradeBlockedMessage = null,
   onOpenExternalTrade,
   chartInterval = "1h",
   onChartIntervalChange,
@@ -441,6 +440,14 @@ const MarketPage: React.FC<MarketPageProps> = ({
   };
 
   const handlePlaceBetClick = async () => {
+    if (!supportsTrading) {
+      setPlaceError(
+        lang === 'RU'
+          ? `Торги через ${externalVenueLabel} пока недоступны в приложении.`
+          : `Trading via ${externalVenueLabel} is not available in the app yet.`
+      );
+      return;
+    }
     if (isExpired) {
       setPlaceError(lang === 'RU' ? 'Торги закрыты.' : 'Trading closed.');
       return;
@@ -564,6 +571,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const sourceIsUrl = /^https?:\/\//i.test(sourceValue);
   const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
   const externalVenueLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
+  const supportsTrading = market.capabilities?.supportsTrading !== false;
 
   const renderOutcomeBadge = () => {
     if (!winningSide) return null;
@@ -908,6 +916,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         value={amount}
                         onChange={(e) => handleAmountChange(e.target.value)}
                         placeholder="0"
+                        disabled={!supportsTrading}
                         className="flex h-11 w-full rounded-md border border-zinc-900 bg-transparent px-3 py-2 pl-7 text-lg font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 placeholder:text-zinc-700"
                       />
                     </div>
@@ -917,7 +926,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       key={inc}
                       type="button"
                       onClick={() => handleQuickAdd(inc)}
-                      disabled={placing || isExpired}
+                      disabled={placing || isExpired || !supportsTrading}
                       className="h-9 rounded-md border border-zinc-900 bg-zinc-950/50 text-xs font-semibold text-zinc-200 hover:bg-zinc-900/40 transition-colors disabled:opacity-50 disabled:pointer-events-none tabular-nums"
                     >
                       +{inc}
@@ -946,9 +955,13 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   <Button
                     fullWidth
                     onClick={handlePlaceBetClick}
-                    disabled={placing || Boolean(tradeBlockedMessage)}
+                    disabled={placing || !supportsTrading}
                   >
-                    {!user
+                    {!supportsTrading
+                      ? lang === 'RU'
+                        ? 'Недоступно в приложении'
+                        : 'Unavailable in app'
+                      : !user
                       ? lang === 'RU'
                         ? 'Зарегистрируйтесь, чтобы торговать'
                         : 'Sign up to trade'
@@ -960,20 +973,17 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         ? 'BUY OPTION'
                         : `BUY ${tradeType}`}
                   </Button>
-                  {tradeBlockedMessage && (
-                    <div className="space-y-2">
-                      <p className="text-xs text-red-400">{tradeBlockedMessage}</p>
-                      {onOpenExternalTrade && (
-                        <button
-                          type="button"
-                          onClick={() => onOpenExternalTrade(market.id)}
-                          className="text-xs font-medium text-zinc-400 underline underline-offset-2 hover:text-white"
-                        >
-                          {lang === 'RU'
-                            ? `Открыть рынок на ${externalVenueLabel}`
-                            : `Open on ${externalVenueLabel}`}
-                        </button>
-                      )}
+                  {onOpenExternalTrade && (
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => onOpenExternalTrade(market.id)}
+                        className="text-xs font-medium text-zinc-400 underline underline-offset-2 hover:text-white"
+                      >
+                        {lang === 'RU'
+                          ? `Открыть рынок на ${externalVenueLabel}`
+                          : `Open on ${externalVenueLabel}`}
+                      </button>
                     </div>
                   )}
                   {showFee && (
@@ -1770,30 +1780,11 @@ const MarketPage: React.FC<MarketPageProps> = ({
         </div>
       </div>
 
-      {disclaimerOpen && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setDisclaimerOpen(false)} />
-          <div className="relative w-full max-w-lg rounded-2xl border border-zinc-900 bg-black p-5 shadow-2xl">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="text-sm font-semibold text-zinc-100">{lang === 'RU' ? 'Информация' : 'Info'}</div>
-              <button
-                type="button"
-                onClick={() => setDisclaimerOpen(false)}
-                className="h-9 w-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
-                aria-label={lang === 'RU' ? 'Закрыть' : 'Close'}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="text-sm text-zinc-300 leading-relaxed">
-              {lang === 'RU'
-                ? `Если ваш прогноз верен, каждая акция погашается по цене $1.00. Если неверен — акции сгорают. Рынки прогнозов сопряжены с высоким риском потери средств.`
-                : `If your prediction is correct, each share is redeemed for $1.00. If incorrect — shares expire worthless. Prediction markets involve a high risk of total loss.`}
-            </div>
-          </div>
-        </div>
-      )}
+      <EligibilityDisclaimerModal
+        isOpen={disclaimerOpen}
+        onClose={() => setDisclaimerOpen(false)}
+        lang={lang}
+      />
     </div>
   );
 };

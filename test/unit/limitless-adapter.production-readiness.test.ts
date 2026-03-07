@@ -229,4 +229,27 @@ describe("limitlessAdapter production readiness", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.volume).toBe(0);
   });
+
+  it("does not treat 24h or ranking fields as total volume", async () => {
+    globalThis.fetch = (async () => {
+      const rows = [
+        {
+          ...makeMarketRow(13),
+          total_volume: undefined,
+          volume: undefined,
+          volume24h: 888,
+          dailyVolume: 777,
+          high_value: 666,
+        },
+      ];
+      return new Response(JSON.stringify({ data: rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 1, sortBy: "volume" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.volume).toBe(0);
+  });
 });

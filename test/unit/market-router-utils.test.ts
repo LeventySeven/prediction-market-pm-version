@@ -6,7 +6,6 @@ const {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
-  mergeMarketVolumeWithRolling24h,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
   normalizePublicEnabledProviders,
@@ -74,9 +73,13 @@ describe("market router utility behavior", () => {
     ).toBe(777);
   });
 
-  it("promotes market volume to max(base, rolling24h)", () => {
-    expect(mergeMarketVolumeWithRolling24h(0, 1234)).toBe(1234);
-    expect(mergeMarketVolumeWithRolling24h(987, 0)).toBe(987);
+  it("ignores 24h-only payload fields when total volume is absent", () => {
+    expect(
+      readVolumeFromPayload({
+        volume24h: 321,
+        dailyVolume: 654,
+      })
+    ).toBeNull();
   });
 
   it("normalizes candle resolution from explicit interval", () => {

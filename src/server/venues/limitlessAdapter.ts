@@ -1,20 +1,10 @@
-import { createHmac } from "node:crypto";
 import {
   type VenueAdapter,
   type VenueCandleInterval,
   type VenueMarket,
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
-  type VenueTradeAccessStatus,
 } from "./types";
-
-type JsonLike =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonLike[]
-  | { [key: string]: JsonLike | undefined };
 
 const DEFAULT_BASE_ROOT = "https://api.limitless.exchange";
 const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
@@ -100,8 +90,6 @@ const getCandidateBaseUrls = (): string[] => {
 
   return Array.from(candidates).filter(Boolean);
 };
-
-const getPrimaryBaseUrl = (): string => getCandidateBaseUrls()[0] ?? DEFAULT_BASE;
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -324,23 +312,13 @@ const parseLimitlessVolume = (row: Record<string, unknown>): number => {
     row.volumeUSD,
     row.usdVolume,
     row.usd_volume,
-    row.highValue,
-    row.high_value,
-    row.volume24h,
-    row.volume_24h,
-    row.dailyVolume,
-    row.daily_volume,
     row.volume,
     stats?.volume,
     stats?.totalVolume,
     stats?.total_volume,
-    stats?.volume24h,
-    stats?.volume_24h,
     marketStats?.volume,
     marketStats?.totalVolume,
     marketStats?.total_volume,
-    marketStats?.volume24h,
-    marketStats?.volume_24h,
     metrics?.volume,
     metrics?.totalVolume,
     metrics?.volumeUsd,
@@ -428,7 +406,7 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
     resolvedOutcomeTitle: toString(row.resolvedOutcome) ?? toString(row.winningOutcome),
     outcomes: parseOutcomes(row, providerMarketId),
     capabilities: {
-      supportsTrading: true,
+      supportsTrading: false,
       supportsCandles: true,
       supportsPublicTrades: true,
       chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
@@ -659,205 +637,11 @@ const fetchMarketRows = async (params: {
 
 const snapshotCache = new Map<string, { expiresAt: number; rows: VenueMarket[] }>();
 
-const accessCache = new Map<string, { expiresAt: number; value: VenueTradeAccessStatus }>();
-
-const checkTradeAccess = async (params: {
-  requestIp?: string | null;
-  cacheKey: string;
-}): Promise<VenueTradeAccessStatus> => {
-  const ttlMs = Math.max(1000, Number(process.env.LIMITLESS_ACCESS_STATUS_TTL_MS ?? 60000));
-  const now = Date.now();
-  const cached = accessCache.get(params.cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const endpoint = (process.env.LIMITLESS_ACCESS_STATUS_URL || "").trim();
-  if (!endpoint) {
-    const blocked: VenueTradeAccessStatus = {
-      status: "BLOCKED_REGION",
-      allowed: false,
-      reasonCode: "LIMITLESS_ACCESS_UNVERIFIED",
-      message: "Limitless access status is not configured.",
-      checkedAt: new Date().toISOString(),
-    };
-    accessCache.set(params.cacheKey, { value: blocked, expiresAt: now + ttlMs });
-    return blocked;
-  }
-
-  const headers: Record<string, string> = { accept: "application/json" };
-  if (params.requestIp) {
-    headers["x-forwarded-for"] = params.requestIp;
-    headers["x-real-ip"] = params.requestIp;
-    headers["cf-connecting-ip"] = params.requestIp;
-  }
-
-  try {
-    const response = await fetch(endpoint, {
-      cache: "no-store",
-      headers,
-    });
-
-    if (!response.ok) {
-      const fallback: VenueTradeAccessStatus = {
-        status: "UNKNOWN_TEMP_ERROR",
-        allowed: false,
-        reasonCode: `HTTP_${response.status}`,
-        message: "Could not verify regional access at this time.",
-        checkedAt: new Date().toISOString(),
-      };
-      accessCache.set(params.cacheKey, { value: fallback, expiresAt: now + 3000 });
-      return fallback;
-    }
-
-    const payload = (await response.json().catch(() => null)) as JsonLike | null;
-    const rec =
-      payload && typeof payload === "object" && !Array.isArray(payload)
-        ? (payload as Record<string, JsonLike | undefined>)
-        : {};
-
-    const allowed =
-      typeof rec.allowed === "boolean"
-        ? rec.allowed
-        : typeof rec.canTrade === "boolean"
-          ? rec.canTrade
-          : typeof rec.tradingAllowed === "boolean"
-            ? rec.tradingAllowed
-            : null;
-
-    if (allowed === true) {
-      const value: VenueTradeAccessStatus = {
-        status: "ALLOWED",
-        allowed: true,
-        reasonCode: null,
-        message: null,
-        checkedAt: new Date().toISOString(),
-      };
-      accessCache.set(params.cacheKey, { value, expiresAt: now + ttlMs });
-      return value;
-    }
-
-    if (allowed === false) {
-      const value: VenueTradeAccessStatus = {
-        status: "BLOCKED_REGION",
-        allowed: false,
-        reasonCode:
-          typeof rec.reasonCode === "string"
-            ? rec.reasonCode
-            : typeof rec.reason === "string"
-              ? rec.reason
-              : "LIMITLESS_BLOCKED",
-        message:
-          typeof rec.message === "string"
-            ? rec.message
-            : "Trading is unavailable in your jurisdiction.",
-        checkedAt: new Date().toISOString(),
-      };
-      accessCache.set(params.cacheKey, { value, expiresAt: now + ttlMs });
-      return value;
-    }
-
-    const unknown: VenueTradeAccessStatus = {
-      status: "UNKNOWN_TEMP_ERROR",
-      allowed: false,
-      reasonCode: "LIMITLESS_ACCESS_UNKNOWN",
-      message: "Could not verify regional access at this time.",
-      checkedAt: new Date().toISOString(),
-    };
-    accessCache.set(params.cacheKey, { value: unknown, expiresAt: now + 3000 });
-    return unknown;
-  } catch {
-    const fallback: VenueTradeAccessStatus = {
-      status: "UNKNOWN_TEMP_ERROR",
-      allowed: false,
-      reasonCode: "LIMITLESS_ACCESS_FETCH_FAILED",
-      message: "Could not verify regional access at this time.",
-      checkedAt: new Date().toISOString(),
-    };
-    accessCache.set(params.cacheKey, { value: fallback, expiresAt: now + 3000 });
-    return fallback;
-  }
-};
-
-const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
-  const relayUrl = (process.env.LIMITLESS_ORDER_RELAY_URL || `${getPrimaryBaseUrl()}/orders`).trim();
-  if (!relayUrl) {
-    return { success: false, status: 500, error: "LIMITLESS_RELAY_URL_MISSING" };
-  }
-
-  const payload = {
-    order: input.signedOrder,
-    orderType: input.orderType,
-    owner: input.apiCreds.key,
-    clientOrderId: input.clientOrderId ?? null,
-  };
-  const body = JSON.stringify(payload);
-
-  if (body.length > 16 * 1024) {
-    return { success: false, status: 413, error: "SIGNED_ORDER_TOO_LARGE" };
-  }
-
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = createHmac("sha256", input.apiCreds.secret).update(`${timestamp}.${body}`).digest("hex");
-
-  const timeoutMs = Math.max(2000, Number(process.env.LIMITLESS_RELAY_TIMEOUT_MS ?? 10000));
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(relayUrl, {
-      method: "POST",
-      cache: "no-store",
-      signal: controller.signal,
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        LIMITLESS_API_KEY: input.apiCreds.key,
-        LIMITLESS_PASSPHRASE: input.apiCreds.passphrase,
-        LIMITLESS_SIGNATURE: signature,
-        LIMITLESS_TIMESTAMP: timestamp,
-        ...(input.requestIp
-          ? {
-              "x-forwarded-for": input.requestIp,
-              "x-real-ip": input.requestIp,
-              "cf-connecting-ip": input.requestIp,
-            }
-          : {}),
-      },
-      body,
-    });
-
-    const result = await response.json().catch(() => null);
-    if (!response.ok) {
-      const rec =
-        result && typeof result === "object" && !Array.isArray(result)
-          ? (result as Record<string, unknown>)
-          : null;
-      return {
-        success: false,
-        status: response.status,
-        error:
-          rec && typeof rec.error === "string"
-            ? rec.error
-            : `ORDER_RELAY_HTTP_${response.status}`,
-        payload: result ?? undefined,
-      };
-    }
-
-    return {
-      success: true,
-      status: response.status,
-      payload: result ?? undefined,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      success: false,
-      status: 0,
-      error: message.includes("aborted") ? "ORDER_RELAY_TIMEOUT" : message,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-};
+const relaySignedOrder = async (_input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => ({
+  success: false,
+  status: 501,
+  error: "LIMITLESS_TRADING_NOT_READY",
+});
 
 const mapHistoryRowsToPoints = (
   rows: Record<string, unknown>[],
@@ -922,7 +706,7 @@ const historySpanSeconds = (points: Array<{ ts: number; price: number }>): numbe
 export const limitlessAdapter: VenueAdapter = {
   provider: "limitless",
   capabilities: {
-    supportsTrading: true,
+    supportsTrading: false,
     supportsCandles: true,
     supportsPublicTrades: true,
     chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
@@ -1116,7 +900,6 @@ export const limitlessAdapter: VenueAdapter = {
 
     return [];
   },
-  checkTradeAccess,
   relaySignedOrder,
   wsCollectorConfig: () => ({
     url: (
