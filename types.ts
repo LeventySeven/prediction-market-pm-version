@@ -48,6 +48,16 @@ export interface MarketOutcome {
   isActive: boolean;
 }
 
+export interface LimitlessTradeMeta {
+  marketSlug: string;
+  exchangeAddress: string;
+  adapterAddress: string | null;
+  collateralTokenAddress: string;
+  collateralTokenDecimals: number;
+  minOrderSize: number | null;
+  positionIds: [string, string];
+}
+
 export interface Market {
   id: string;
   provider?: "polymarket" | "limitless";
@@ -100,6 +110,9 @@ export interface Market {
     supportsCandles: boolean;
     supportsPublicTrades: boolean;
     chainId: number | null;
+  } | null;
+  tradeMeta?: {
+    limitless?: LimitlessTradeMeta | null;
   } | null;
 }
 

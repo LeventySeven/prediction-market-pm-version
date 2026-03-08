@@ -100,6 +100,10 @@ const buildL2Signature = (
 };
 
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
+  if (!input.apiCreds) {
+    return { success: false, status: 400, error: "POLYMARKET_API_CREDS_REQUIRED" };
+  }
+
   const makerAddress =
     typeof input.makerAddress === "string" && input.makerAddress.trim().length > 0
       ? input.makerAddress.trim()

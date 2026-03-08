@@ -20,6 +20,20 @@ export type VenueCapabilities = {
   chainId: number | null;
 };
 
+export type VenueLimitlessTradeMeta = {
+  marketSlug: string;
+  exchangeAddress: string;
+  adapterAddress: string | null;
+  collateralTokenAddress: string;
+  collateralTokenDecimals: number;
+  minOrderSize: number | null;
+  positionIds: [string, string];
+};
+
+export type VenueTradeMeta = {
+  limitless?: VenueLimitlessTradeMeta | null;
+} | null;
+
 export type VenueMarket = {
   provider: VenueProvider;
   providerMarketId: string;
@@ -39,6 +53,7 @@ export type VenueMarket = {
   resolvedOutcomeTitle: string | null;
   outcomes: VenueOutcome[];
   capabilities: VenueCapabilities;
+  tradeMeta?: VenueTradeMeta;
   providerPayload?: Record<string, unknown> | null;
 };
 
@@ -64,10 +79,17 @@ export type VenueApiCreds = {
   passphrase: string;
 };
 
+export type VenueLimitlessAuth = {
+  apiKey: string;
+  ownerId: number;
+};
+
 export type VenueRelayOrderInput = {
   signedOrder: Record<string, unknown>;
   orderType: "FOK" | "GTC";
-  apiCreds: VenueApiCreds;
+  apiCreds?: VenueApiCreds | null;
+  limitlessAuth?: VenueLimitlessAuth | null;
+  marketSlug?: string | null;
   makerAddress?: string | null;
   clientOrderId?: string | null;
   requestIp?: string | null;

@@ -78,6 +78,16 @@ const marketOutcomeOutput = z.object({
   price: z.number(),
 });
 
+const limitlessTradeMetaOutput = z.object({
+  marketSlug: z.string(),
+  exchangeAddress: z.string(),
+  adapterAddress: z.string().nullable(),
+  collateralTokenAddress: z.string(),
+  collateralTokenDecimals: z.number().int().positive(),
+  minOrderSize: z.number().nullable(),
+  positionIds: z.tuple([z.string(), z.string()]),
+});
+
 const marketOutput = z.object({
   id: z.string(),
   provider: z.enum(["polymarket", "limitless"]).optional(),
@@ -124,6 +134,12 @@ const marketOutput = z.object({
       supportsPublicTrades: z.boolean(),
       chainId: z.number().nullable(),
     })
+    .optional(),
+  tradeMeta: z
+    .object({
+      limitless: limitlessTradeMetaOutput.nullable().optional(),
+    })
+    .nullable()
     .optional(),
 });
 
@@ -244,15 +260,50 @@ const jsonValueSchema: z.ZodType<Database["public"]["Tables"]["user_events"]["Ro
 const relaySignedOrderInput = z.object({
   provider: z.enum(["polymarket", "limitless"]).default("polymarket"),
   marketId: z.string().min(1).optional(),
+  marketSlug: z.string().min(1).max(256).optional(),
   signedOrder: z.record(z.string(), jsonValueSchema),
   orderType: z.enum(["FOK", "GTC"]),
   idempotencyKey: z.string().min(8).max(128),
   clientOrderId: z.string().min(1).max(128).optional(),
-  apiCreds: z.object({
-    key: z.string().min(1).max(512),
-    secret: z.string().min(1).max(1024),
-    passphrase: z.string().min(1).max(1024),
-  }),
+  apiCreds: z
+    .object({
+      key: z.string().min(1).max(512),
+      secret: z.string().min(1).max(1024),
+      passphrase: z.string().min(1).max(1024),
+    })
+    .optional(),
+  limitlessAuth: z
+    .object({
+      apiKey: z.string().min(1).max(512),
+      ownerId: z.number().int().positive().max(2_147_483_647),
+    })
+    .optional(),
+}).superRefine((value, ctx) => {
+  if (value.provider === "polymarket") {
+    if (!value.apiCreds) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "POLYMARKET_API_CREDS_REQUIRED",
+        path: ["apiCreds"],
+      });
+    }
+    return;
+  }
+
+  if (!value.limitlessAuth) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "LIMITLESS_AUTH_REQUIRED",
+      path: ["limitlessAuth"],
+    });
+  }
+  if (!value.marketSlug) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "LIMITLESS_MARKET_SLUG_REQUIRED",
+      path: ["marketSlug"],
+    });
+  }
 });
 
 const relaySignedOrderOutput = z.object({
@@ -397,6 +448,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
       supportsPublicTrades: true,
       chainId: Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137),
     },
+    tradeMeta: null,
   };
 };
 
@@ -493,6 +545,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     openInterest: null,
     liveUpdatedAt: null,
     capabilities: market.capabilities,
+    tradeMeta: market.tradeMeta ?? null,
   };
 };
 
@@ -969,6 +1022,110 @@ const readCategoryFromPayload = (payload: Record<string, unknown> | null): strin
   return null;
 };
 
+const readStringFromPayloadPath = (
+  payload: Record<string, unknown> | null,
+  path: string[]
+): string | null => {
+  let cursor: unknown = payload;
+  for (const segment of path) {
+    const rec = asObject(cursor);
+    if (!rec) return null;
+    cursor = rec[segment];
+  }
+  if (typeof cursor === "string" && cursor.trim().length > 0) return cursor.trim();
+  if (typeof cursor === "number" && Number.isFinite(cursor)) return String(cursor);
+  if (typeof cursor === "bigint") return cursor.toString();
+  return null;
+};
+
+const readStringArrayFromPayloadPath = (
+  payload: Record<string, unknown> | null,
+  path: string[]
+): string[] => {
+  let cursor: unknown = payload;
+  for (const segment of path) {
+    const rec = asObject(cursor);
+    if (!rec) return [];
+    cursor = rec[segment];
+  }
+  if (!Array.isArray(cursor)) return [];
+  return cursor
+    .map((value) => {
+      if (typeof value === "string" && value.trim().length > 0) return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value === "bigint") return value.toString();
+      return null;
+    })
+    .filter((value): value is string => Boolean(value));
+};
+
+const buildLimitlessTradeMetaFromPayload = (
+  payload: Record<string, unknown> | null,
+  outcomes: Array<{ tokenId?: string | null }> = []
+): z.infer<typeof limitlessTradeMetaOutput> | null => {
+  if (!payload) return null;
+
+  const marketSlug =
+    readStringFromPayloadPath(payload, ["slug"]) ??
+    readStringFromPayloadPath(payload, ["marketSlug"]) ??
+    readStringFromPayloadPath(payload, ["market_slug"]);
+  const exchangeAddress =
+    readStringFromPayloadPath(payload, ["venue", "exchange"]) ??
+    readStringFromPayloadPath(payload, ["exchangeAddress"]) ??
+    readStringFromPayloadPath(payload, ["exchange_address"]);
+  const collateralTokenAddress =
+    readStringFromPayloadPath(payload, ["collateralToken", "address"]) ??
+    readStringFromPayloadPath(payload, ["collateral_token", "address"]) ??
+    readStringFromPayloadPath(payload, ["collateralTokenAddress"]) ??
+    readStringFromPayloadPath(payload, ["collateral_token_address"]);
+
+  const directPositionIdsPrimary = readStringArrayFromPayloadPath(payload, ["positionIds"]);
+  const directPositionIds =
+    directPositionIdsPrimary.length > 0
+      ? directPositionIdsPrimary
+      : readStringArrayFromPayloadPath(payload, ["position_ids"]);
+  const fallbackOutcomePositionIds = outcomes
+    .map((outcome) => (typeof outcome.tokenId === "string" && outcome.tokenId.trim().length > 0 ? outcome.tokenId.trim() : null))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 2);
+  const positionIds = (directPositionIds.length >= 2 ? directPositionIds : fallbackOutcomePositionIds).slice(0, 2);
+
+  if (!marketSlug || !exchangeAddress || !collateralTokenAddress || positionIds.length < 2) {
+    return null;
+  }
+
+  const collateralTokenDecimals = Math.max(
+    1,
+    Math.trunc(
+      readNumericValue(
+        readStringFromPayloadPath(payload, ["collateralToken", "decimals"]) ??
+          readStringFromPayloadPath(payload, ["collateral_token", "decimals"]) ??
+          readStringFromPayloadPath(payload, ["collateralTokenDecimals"]) ??
+          6
+      ) ?? 6
+    )
+  );
+  const minOrderSize = readNumericValue(
+    readStringFromPayloadPath(payload, ["settings", "minSize"]) ??
+      readStringFromPayloadPath(payload, ["settings", "min_size"]) ??
+      readStringFromPayloadPath(payload, ["minSize"]) ??
+      readStringFromPayloadPath(payload, ["min_size"])
+  );
+
+  return {
+    marketSlug,
+    exchangeAddress,
+    adapterAddress:
+      readStringFromPayloadPath(payload, ["venue", "adapter"]) ??
+      readStringFromPayloadPath(payload, ["adapterAddress"]) ??
+      readStringFromPayloadPath(payload, ["adapter_address"]),
+    collateralTokenAddress,
+    collateralTokenDecimals,
+    minOrderSize: minOrderSize === null ? null : Math.max(0, minOrderSize),
+    positionIds: [positionIds[0]!, positionIds[1]!],
+  };
+};
+
 const readNumericValue = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -1033,7 +1190,7 @@ const readCapabilitiesFromPayload = (
   const defaults =
     provider === "limitless"
       ? {
-          supportsTrading: false,
+          supportsTrading: true,
           supportsCandles: true,
           supportsPublicTrades: true,
           chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
@@ -1235,6 +1392,15 @@ const listCanonicalProviderMarkets = async (
       openInterest: toFiniteNumber(live?.open_interest as any),
       liveUpdatedAt: typeof live?.source_ts === "string" ? live.source_ts : null,
       capabilities,
+      tradeMeta:
+        provider === "limitless"
+          ? {
+              limitless: buildLimitlessTradeMetaFromPayload(
+                payload,
+                outcomes.map((outcome) => ({ tokenId: outcome.tokenId ?? null }))
+              ),
+            }
+          : null,
     } satisfies z.infer<typeof marketOutput>;
   });
 };
@@ -2597,9 +2763,10 @@ export const marketRouter = router({
 
       const orderBody = JSON.stringify({
         order: input.signedOrder,
-        owner: input.apiCreds.key,
         orderType: input.orderType,
         provider,
+        marketId: input.marketId ?? null,
+        marketSlug: input.marketSlug ?? null,
       });
       if (orderBody.length > 16 * 1024) {
         throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "SIGNED_ORDER_TOO_LARGE" });
@@ -2639,16 +2806,25 @@ export const marketRouter = router({
         };
       }
 
-      const apiCreds: VenueApiCreds = {
-        key: input.apiCreds.key,
-        secret: input.apiCreds.secret,
-        passphrase: input.apiCreds.passphrase,
-      };
+      const apiCreds: VenueApiCreds | null = input.apiCreds
+        ? {
+            key: input.apiCreds.key,
+            secret: input.apiCreds.secret,
+            passphrase: input.apiCreds.passphrase,
+          }
+        : null;
 
       const relay = await adapter.relaySignedOrder({
         signedOrder: input.signedOrder as Record<string, unknown>,
         orderType: input.orderType,
         apiCreds,
+        limitlessAuth: input.limitlessAuth
+          ? {
+              apiKey: input.limitlessAuth.apiKey,
+              ownerId: input.limitlessAuth.ownerId,
+            }
+          : null,
+        marketSlug: input.marketSlug ?? null,
         makerAddress:
           typeof input.signedOrder.maker === "string" ? String(input.signedOrder.maker) : null,
         clientOrderId: input.clientOrderId,

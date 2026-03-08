@@ -252,4 +252,88 @@ describe("limitlessAdapter production readiness", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.volume).toBe(0);
   });
+
+  it("maps Limitless trade metadata needed for client-side signing", async () => {
+    globalThis.fetch = (async () => {
+      const rows = [
+        {
+          ...makeMarketRow(14),
+          venue: {
+            exchange: "0x1111111111111111111111111111111111111111",
+            adapter: "0x2222222222222222222222222222222222222222",
+          },
+          collateralToken: {
+            address: "0x3333333333333333333333333333333333333333",
+            decimals: 6,
+          },
+          positionIds: ["101", "202"],
+          settings: {
+            minSize: 5,
+          },
+        },
+      ];
+      return new Response(JSON.stringify({ data: rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 1 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.capabilities.supportsTrading).toBe(true);
+    expect(rows[0]?.tradeMeta?.limitless).toEqual({
+      marketSlug: "market-14",
+      exchangeAddress: "0x1111111111111111111111111111111111111111",
+      adapterAddress: "0x2222222222222222222222222222222222222222",
+      collateralTokenAddress: "0x3333333333333333333333333333333333333333",
+      collateralTokenDecimals: 6,
+      minOrderSize: 5,
+      positionIds: ["101", "202"],
+    });
+  });
+
+  it("relays signed orders with X-API-Key, ownerId, marketSlug, and x-account", async () => {
+    let capturedUrl = "";
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedBody = "";
+
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      capturedUrl = getUrl(input).toString();
+      capturedHeaders = init?.headers;
+      capturedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ ok: true, id: "order-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await limitlessAdapter.relaySignedOrder({
+      signedOrder: {
+        maker: "0x4444444444444444444444444444444444444444",
+        signature: "0xsig",
+      },
+      orderType: "FOK",
+      marketSlug: "market-14",
+      limitlessAuth: {
+        apiKey: "lmts_example",
+        ownerId: 42,
+      },
+      makerAddress: "0x4444444444444444444444444444444444444444",
+    });
+
+    const headers = capturedHeaders as Record<string, string>;
+    expect(result.success).toBe(true);
+    expect(capturedUrl.endsWith("/orders")).toBe(true);
+    expect(headers["X-API-Key"]).toBe("lmts_example");
+    expect(headers["x-account"]).toBe("0x4444444444444444444444444444444444444444");
+    expect(JSON.parse(capturedBody)).toEqual({
+      order: {
+        maker: "0x4444444444444444444444444444444444444444",
+        signature: "0xsig",
+      },
+      ownerId: 42,
+      orderType: "FOK",
+      marketSlug: "market-14",
+    });
+  });
 });

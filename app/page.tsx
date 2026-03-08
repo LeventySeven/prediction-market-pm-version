@@ -5,6 +5,7 @@ import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
 import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
+import LimitlessCredentialsModal from "@/components/LimitlessCredentialsModal";
 import OnboardingModal from "@/components/OnboardingModal";
 import ProfileSetupModal, { type ProfileSetupSubmitPayload } from "@/components/ProfileSetupModal";
 import BetConfirmModal from "@/components/BetConfirmModal";
@@ -35,7 +36,15 @@ import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
-import { buildSignedBuyOrder, type EphemeralApiCreds, type PrivyWalletLike } from "@/src/lib/polymarket/tradingClient";
+import {
+  buildSignedBuyOrder as buildLimitlessSignedBuyOrder,
+  LIMITLESS_BASE_CHAIN_ID,
+} from "@/src/lib/limitless/tradingClient";
+import {
+  buildSignedBuyOrder as buildPolymarketSignedBuyOrder,
+  type EphemeralApiCreds,
+  type PrivyWalletLike,
+} from "@/src/lib/polymarket/tradingClient";
 import { getBrowserSupabaseClient } from "@/src/utils/supabase/browser";
 import type { Database } from "@/src/types/database";
 import {
@@ -62,6 +71,7 @@ const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === 
 const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v2";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
+const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v1";
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -127,6 +137,22 @@ type MarketApiRow = {
     supportsPublicTrades: boolean;
     chainId: number | null;
   } | null;
+  tradeMeta?: {
+    limitless?: {
+      marketSlug: string;
+      exchangeAddress: string;
+      adapterAddress: string | null;
+      collateralTokenAddress: string;
+      collateralTokenDecimals: number;
+      minOrderSize: number | null;
+      positionIds: [string, string];
+    } | null;
+  } | null;
+};
+
+type LimitlessStoredAuth = {
+  apiKey: string;
+  ownerId: number;
 };
 
 type CatalogBootstrapEntry = {
@@ -208,6 +234,41 @@ const alignBucketToResolution = (bucketMs: number, resolutionMs: number): number
 const isCsrfTokenInvalidErrorMessage = (msg?: string) =>
   String(msg ?? "").toUpperCase().includes("CSRF_TOKEN_INVALID");
 
+const normalizeLimitlessStoredAuth = (value: unknown): LimitlessStoredAuth | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const rec = value as { apiKey?: unknown; ownerId?: unknown };
+  const apiKey = typeof rec.apiKey === "string" ? rec.apiKey.trim() : "";
+  const ownerId =
+    typeof rec.ownerId === "number" && Number.isInteger(rec.ownerId)
+      ? rec.ownerId
+      : typeof rec.ownerId === "string"
+        ? Number(rec.ownerId)
+        : NaN;
+  if (!apiKey || !Number.isInteger(ownerId) || ownerId <= 0) return null;
+  return { apiKey, ownerId };
+};
+
+const readStoredLimitlessAuth = (): LimitlessStoredAuth | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(LIMITLESS_AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    return normalizeLimitlessStoredAuth(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredLimitlessAuth = (value: LimitlessStoredAuth) => {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(LIMITLESS_AUTH_STORAGE_KEY, JSON.stringify(value));
+};
+
+const clearStoredLimitlessAuth = () => {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LIMITLESS_AUTH_STORAGE_KEY);
+};
+
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
@@ -265,6 +326,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     openInterest: m.openInterest ?? null,
     liveUpdatedAt: m.liveUpdatedAt ?? null,
     capabilities: m.capabilities ?? null,
+    tradeMeta: m.tradeMeta ?? null,
   };
 };
 
@@ -647,6 +709,7 @@ export default function HomePage() {
   const { ready: privyReady, authenticated: privyAuthenticated, login: privyLogin, logout: privyLogout } = usePrivySession();
   const { wallets: privyWallets } = usePrivyWalletList();
   const clobApiCredsRef = useRef<EphemeralApiCreds | null>(null);
+  const limitlessAuthPromptResolverRef = useRef<((value: LimitlessStoredAuth | null) => void) | null>(null);
   const sessionIdRef = useRef<string>(createSessionId());
   const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
   const semanticHydratedMarketIdsRef = useRef<Set<string>>(new Set());
@@ -654,6 +717,11 @@ export default function HomePage() {
   const marketOpenStartedAtRef = useRef<number | null>(null);
   const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
+  const [limitlessStoredAuth, setLimitlessStoredAuth] = useState<LimitlessStoredAuth | null>(() =>
+    readStoredLimitlessAuth()
+  );
+  const [limitlessCredentialsOpen, setLimitlessCredentialsOpen] = useState(false);
+  const [limitlessCredentialsError, setLimitlessCredentialsError] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const bootstrapRef = useRef<InitialCatalogBootstrap | null>(readWarmCatalogBootstrap());
   const [enabledProviders, setEnabledProviders] = useState<Array<"polymarket" | "limitless">>(() =>
@@ -1237,6 +1305,61 @@ export default function HomePage() {
       }
     })();
   }, [selectedMarketId, user, reloginRequired, refreshUser, attemptSilentRefresh]);
+
+  const resolveLimitlessCredentialsPrompt = useCallback((value: LimitlessStoredAuth | null) => {
+    const resolver = limitlessAuthPromptResolverRef.current;
+    limitlessAuthPromptResolverRef.current = null;
+    if (resolver) resolver(value);
+  }, []);
+
+  const closeLimitlessCredentialsModal = useCallback(() => {
+    setLimitlessCredentialsOpen(false);
+    setLimitlessCredentialsError(null);
+    resolveLimitlessCredentialsPrompt(null);
+  }, [resolveLimitlessCredentialsPrompt]);
+
+  const promptForLimitlessCredentials = useCallback(async () => {
+    const stored = readStoredLimitlessAuth();
+    if (stored) {
+      setLimitlessStoredAuth(stored);
+      return stored;
+    }
+    setLimitlessCredentialsError(null);
+    setLimitlessCredentialsOpen(true);
+    return await new Promise<LimitlessStoredAuth | null>((resolve) => {
+      limitlessAuthPromptResolverRef.current = resolve;
+    });
+  }, []);
+
+  const handleSaveLimitlessCredentials = useCallback(
+    async (payload: { apiKey: string; ownerId: number }) => {
+      const nextValue: LimitlessStoredAuth = {
+        apiKey: payload.apiKey.trim(),
+        ownerId: payload.ownerId,
+      };
+      writeStoredLimitlessAuth(nextValue);
+      setLimitlessStoredAuth(nextValue);
+      setLimitlessCredentialsError(null);
+      setLimitlessCredentialsOpen(false);
+      resolveLimitlessCredentialsPrompt(nextValue);
+    },
+    [resolveLimitlessCredentialsPrompt]
+  );
+
+  const handleClearLimitlessCredentials = useCallback(() => {
+    clearStoredLimitlessAuth();
+    setLimitlessStoredAuth(null);
+    setLimitlessCredentialsError(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (limitlessAuthPromptResolverRef.current) {
+        limitlessAuthPromptResolverRef.current(null);
+        limitlessAuthPromptResolverRef.current = null;
+      }
+    };
+  }, []);
 
   const handleUpdateProfileIdentity = useCallback(
     async (params: { username: string; displayName: string }) => {
@@ -3517,22 +3640,6 @@ export default function HomePage() {
       return;
     }
 
-    if ((market.provider ?? "polymarket") === "limitless") {
-      setBetConfirm({
-        open: true,
-        marketTitle,
-        side: safeSide,
-        amount,
-        newBalance: user?.balance,
-        errorMessage:
-          lang === "RU"
-            ? "Подпись ордеров Limitless на клиенте пока не настроена в этом билде."
-            : "Client-side Limitless order signing is not configured in this build yet.",
-        isLoading: false,
-      });
-      return;
-    }
-
     const normalizeOutcome = (title?: string | null) => String(title ?? "").trim().toLowerCase();
     const outcomes = market.outcomes ?? [];
     const yesOutcome =
@@ -3549,6 +3656,7 @@ export default function HomePage() {
       (outcomeId ? outcomes.find((o) => o.id === outcomeId) : null) ??
       (safeSide === "NO" ? noOutcome : yesOutcome);
 
+    const provider = market.provider ?? "polymarket";
     const tokenId = selectedOutcome?.tokenId ?? null;
     const price =
       typeof selectedOutcome?.price === "number" && Number.isFinite(selectedOutcome.price)
@@ -3557,7 +3665,23 @@ export default function HomePage() {
           ? market.noPrice
           : market.yesPrice;
 
-    if (!tokenId || !Number.isFinite(price) || price <= 0) {
+    if (!Number.isFinite(price) || price <= 0) {
+      setBetConfirm({
+        open: true,
+        marketTitle,
+        side: safeSide,
+        amount,
+        newBalance: user?.balance,
+        errorMessage:
+          lang === "RU"
+            ? "Для выбранного исхода нет корректной цены."
+            : "No valid price is available for the selected outcome.",
+        isLoading: false,
+      });
+      return;
+    }
+
+    if (provider === "polymarket" && !tokenId) {
       setBetConfirm({
         open: true,
         marketTitle,
@@ -3584,30 +3708,87 @@ export default function HomePage() {
     });
 
     try {
-      const built = await buildSignedBuyOrder({
-        wallet: wallet as PrivyWalletLike,
-        tokenId,
-        amountUsd: amount,
-        limitPrice: price,
-        chainId: Number.isFinite(POLYMARKET_CHAIN_ID) ? POLYMARKET_CHAIN_ID : 137,
-        clobUrl: POLYMARKET_CLOB_URL,
-        apiCreds: clobApiCredsRef.current,
-        orderType: "FOK",
-      });
-      clobApiCredsRef.current = built.apiCreds;
+      const idempotencyKey =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const clientOrderId = `ui_${Date.now()}`;
 
-      const relay = await trpcClient.market.relaySignedOrder.mutate({
-        provider: market.provider ?? "polymarket",
-        marketId: market.id,
-        signedOrder: built.signedOrder,
-        orderType: built.orderType,
-        idempotencyKey:
-          (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-            ? crypto.randomUUID()
-            : `${Date.now()}_${Math.random().toString(36).slice(2)}`),
-        clientOrderId: `ui_${Date.now()}`,
-        apiCreds: built.apiCreds,
-      });
+      const relay =
+        provider === "limitless"
+          ? await (async () => {
+              const tradeMeta = market.tradeMeta?.limitless ?? null;
+              if (!tradeMeta) {
+                throw new Error("LIMITLESS_TRADE_META_MISSING");
+              }
+              const auth = limitlessStoredAuth ?? (await promptForLimitlessCredentials());
+              if (!auth) {
+                setBetConfirm((prev) => ({ ...prev, open: false, isLoading: false, errorMessage: null }));
+                return null;
+              }
+
+              const built = await buildLimitlessSignedBuyOrder({
+                wallet: wallet as PrivyWalletLike,
+                tradeMeta,
+                side: safeSide,
+                amountUsd: amount,
+                limitPrice: price,
+                chainId:
+                  typeof market.capabilities?.chainId === "number" && Number.isFinite(market.capabilities.chainId)
+                    ? market.capabilities.chainId
+                    : LIMITLESS_BASE_CHAIN_ID,
+                orderType: "FOK",
+              });
+
+              const result = await trpcClient.market.relaySignedOrder.mutate({
+                provider,
+                marketId: market.id,
+                marketSlug: tradeMeta.marketSlug,
+                signedOrder: built.signedOrder,
+                orderType: built.orderType,
+                idempotencyKey,
+                clientOrderId,
+                limitlessAuth: auth,
+              });
+
+              const relayError = String(result.error ?? "").toUpperCase();
+              if (
+                relayError.includes("LIMITLESS_AUTH_REQUIRED") ||
+                relayError.includes("UNAUTHORIZED") ||
+                relayError.includes("API KEY") ||
+                relayError.includes("OWNER")
+              ) {
+                clearStoredLimitlessAuth();
+                setLimitlessStoredAuth(null);
+              }
+
+              return result;
+            })()
+          : await (async () => {
+              const built = await buildPolymarketSignedBuyOrder({
+                wallet: wallet as PrivyWalletLike,
+                tokenId,
+                amountUsd: amount,
+                limitPrice: price,
+                chainId: Number.isFinite(POLYMARKET_CHAIN_ID) ? POLYMARKET_CHAIN_ID : 137,
+                clobUrl: POLYMARKET_CLOB_URL,
+                apiCreds: clobApiCredsRef.current,
+                orderType: "FOK",
+              });
+              clobApiCredsRef.current = built.apiCreds;
+
+              return await trpcClient.market.relaySignedOrder.mutate({
+                provider,
+                marketId: market.id,
+                signedOrder: built.signedOrder,
+                orderType: built.orderType,
+                idempotencyKey,
+                clientOrderId,
+                apiCreds: built.apiCreds,
+              });
+            })();
+
+      if (!relay) return;
 
       if (!relay.success) {
         throw new Error(relay.error ?? "ORDER_RELAY_FAILED");
@@ -3629,10 +3810,28 @@ export default function HomePage() {
         if (upper.includes("ORDER_RELAY_TIMEOUT")) {
           return lang === "RU" ? "Таймаут при отправке ордера в CLOB." : "Timed out while relaying order to CLOB.";
         }
+        if (
+          upper.includes("USER REJECTED") ||
+          upper.includes("ACTION_REJECTED") ||
+          upper.includes("USER DENIED") ||
+          upper.includes("CANCELLED")
+        ) {
+          return lang === "RU" ? "Операция отменена в кошельке." : "The action was cancelled in your wallet.";
+        }
         if (upper.includes("BLOCKED") || upper.includes("ACCESS")) {
           return lang === "RU"
             ? "Торговля недоступна в вашей юрисдикции."
             : "Trading is unavailable in your jurisdiction.";
+        }
+        if (upper.includes("LIMITLESS_TRADE_META")) {
+          return lang === "RU"
+            ? "Для этого рынка не хватает торговых параметров Limitless."
+            : "This market is missing Limitless trading metadata.";
+        }
+        if (upper.includes("LIMITLESS_AUTH_REQUIRED") || upper.includes("API KEY") || upper.includes("OWNER ID")) {
+          return lang === "RU"
+            ? "Проверьте ваш Limitless API key и owner ID."
+            : "Check your Limitless API key and owner ID.";
         }
         if (upper.includes("INSUFFICIENT")) {
           return lang === "RU"
@@ -4685,6 +4884,16 @@ export default function HomePage() {
         isOpen={showEligibilityDisclaimer}
         onClose={handleCloseEligibilityDisclaimer}
         lang={lang}
+      />
+      <LimitlessCredentialsModal
+        isOpen={limitlessCredentialsOpen}
+        lang={lang}
+        initialApiKey={limitlessStoredAuth?.apiKey ?? ""}
+        initialOwnerId={limitlessStoredAuth ? String(limitlessStoredAuth.ownerId) : ""}
+        error={limitlessCredentialsError}
+        onClose={closeLimitlessCredentialsModal}
+        onSubmit={handleSaveLimitlessCredentials}
+        onClear={handleClearLimitlessCredentials}
       />
       <BetConfirmModal
         isOpen={betConfirm.open}

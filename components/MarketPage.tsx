@@ -172,7 +172,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Wrapper mode: all market execution is performed on Polymarket.
+  // Trading is delegated to venue-specific flows from the shell page.
   const isOnChainMarket = false;
   const walletConnected = false;
   const walletBalanceMajor: number | null = null;

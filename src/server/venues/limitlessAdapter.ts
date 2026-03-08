@@ -1,6 +1,7 @@
 import {
   type VenueAdapter,
   type VenueCandleInterval,
+  type VenueLimitlessTradeMeta,
   type VenueMarket,
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
@@ -212,10 +213,100 @@ const fallbackSourceUrl = (slug: string | null): string | null => {
   return `${DEFAULT_SITE.replace(/\/+$/, "")}/market/${encodeURIComponent(slug)}`;
 };
 
+const readNestedString = (row: Record<string, unknown>, path: string[]): string | null => {
+  let cursor: unknown = row;
+  for (const segment of path) {
+    const rec = asRecord(cursor);
+    if (!rec) return null;
+    cursor = rec[segment];
+  }
+  return toString(cursor);
+};
+
+const readNestedNumber = (row: Record<string, unknown>, path: string[]): number | null => {
+  let cursor: unknown = row;
+  for (const segment of path) {
+    const rec = asRecord(cursor);
+    if (!rec) return null;
+    cursor = rec[segment];
+  }
+  return toNumber(cursor);
+};
+
+const readStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => toString(item))
+    .filter((item): item is string => Boolean(item));
+};
+
+const buildLimitlessTradeMeta = (
+  row: Record<string, unknown>,
+  outcomes: VenueMarket["outcomes"]
+): VenueLimitlessTradeMeta | null => {
+  const marketSlug = toString(row.slug) ?? toString(row.marketSlug) ?? toString(row.market_slug);
+  const exchangeAddress =
+    readNestedString(row, ["venue", "exchange"]) ??
+    toString(row.exchangeAddress) ??
+    toString(row.exchange_address);
+  const collateralTokenAddress =
+    readNestedString(row, ["collateralToken", "address"]) ??
+    readNestedString(row, ["collateral_token", "address"]) ??
+    toString(row.collateralTokenAddress) ??
+    toString(row.collateral_token_address);
+  const directPositionIds = (() => {
+    const primary = readStringArray(row.positionIds);
+    if (primary.length > 0) return primary;
+    return readStringArray(row.position_ids);
+  })();
+  const fallbackPositionIds = outcomes
+    .map((outcome) => outcome.providerTokenId)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .slice(0, 2);
+  const positionIds = (directPositionIds.length >= 2 ? directPositionIds : fallbackPositionIds).slice(0, 2);
+
+  if (!marketSlug || !exchangeAddress || !collateralTokenAddress || positionIds.length < 2) {
+    return null;
+  }
+
+  const collateralTokenDecimals = Math.max(
+    1,
+    Math.trunc(
+      readNestedNumber(row, ["collateralToken", "decimals"]) ??
+        readNestedNumber(row, ["collateral_token", "decimals"]) ??
+        toNumber(row.collateralTokenDecimals) ??
+        6
+    )
+  );
+  const minOrderSize =
+    readNestedNumber(row, ["settings", "minSize"]) ??
+    readNestedNumber(row, ["settings", "min_size"]) ??
+    toNumber(row.minSize) ??
+    toNumber(row.min_size);
+
+  return {
+    marketSlug,
+    exchangeAddress,
+    adapterAddress:
+      readNestedString(row, ["venue", "adapter"]) ??
+      toString(row.adapterAddress) ??
+      toString(row.adapter_address),
+    collateralTokenAddress,
+    collateralTokenDecimals,
+    minOrderSize: minOrderSize === null ? null : Math.max(0, minOrderSize),
+    positionIds: [positionIds[0]!, positionIds[1]!],
+  };
+};
+
 const parseOutcomes = (
   row: Record<string, unknown>,
   marketId: string
 ): VenueMarket["outcomes"] => {
+  const rowPositionIds = (() => {
+    const primary = readStringArray(row.positionIds);
+    if (primary.length > 0) return primary;
+    return readStringArray(row.position_ids);
+  })();
   const raw = row.outcomes;
   if (Array.isArray(raw) && raw.length > 0) {
     return raw
@@ -235,7 +326,11 @@ const parseOutcomes = (
         const providerOutcomeId =
           toString(rec.id) ?? toString(rec.outcome_id) ?? `${marketId}:outcome:${idx}`;
         const providerTokenId =
-          toString(rec.tokenId) ?? toString(rec.token_id) ?? toString(rec.assetId) ?? null;
+          toString(rec.tokenId) ??
+          toString(rec.token_id) ??
+          toString(rec.assetId) ??
+          rowPositionIds[idx] ??
+          null;
         return {
           id: providerOutcomeId,
           providerOutcomeId,
@@ -277,7 +372,7 @@ const parseOutcomes = (
       id: `${marketId}:yes`,
       providerOutcomeId: `${marketId}:yes`,
       providerTokenId:
-        toString(row.yesTokenId) ?? toString(row.yes_token_id) ?? yesTokenFromTokens ?? null,
+        toString(row.yesTokenId) ?? toString(row.yes_token_id) ?? yesTokenFromTokens ?? rowPositionIds[0] ?? null,
       title: "YES",
       probability: yesPrice,
       price: yesPrice,
@@ -288,7 +383,7 @@ const parseOutcomes = (
       id: `${marketId}:no`,
       providerOutcomeId: `${marketId}:no`,
       providerTokenId:
-        toString(row.noTokenId) ?? toString(row.no_token_id) ?? noTokenFromTokens ?? null,
+        toString(row.noTokenId) ?? toString(row.no_token_id) ?? noTokenFromTokens ?? rowPositionIds[1] ?? null,
       title: "NO",
       probability: noPrice,
       price: noPrice,
@@ -382,6 +477,7 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
     null;
 
   const volume = parseLimitlessVolume(row);
+  const outcomes = parseOutcomes(row, providerMarketId);
 
   return {
     provider: "limitless",
@@ -404,12 +500,15 @@ const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null =>
       (Array.isArray(row.categories) ? toString(row.categories[0]) : null),
     volume,
     resolvedOutcomeTitle: toString(row.resolvedOutcome) ?? toString(row.winningOutcome),
-    outcomes: parseOutcomes(row, providerMarketId),
+    outcomes,
     capabilities: {
-      supportsTrading: false,
+      supportsTrading: true,
       supportsCandles: true,
       supportsPublicTrades: true,
       chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
+    },
+    tradeMeta: {
+      limitless: buildLimitlessTradeMeta(row, outcomes),
     },
     providerPayload: row,
   };
@@ -637,11 +736,110 @@ const fetchMarketRows = async (params: {
 
 const snapshotCache = new Map<string, { expiresAt: number; rows: VenueMarket[] }>();
 
-const relaySignedOrder = async (_input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => ({
-  success: false,
-  status: 501,
-  error: "LIMITLESS_TRADING_NOT_READY",
-});
+const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
+  const limitlessAuth = input.limitlessAuth;
+  if (!limitlessAuth?.apiKey || !Number.isInteger(limitlessAuth.ownerId) || limitlessAuth.ownerId <= 0) {
+    return { success: false, status: 400, error: "LIMITLESS_AUTH_REQUIRED" };
+  }
+
+  const marketSlug = typeof input.marketSlug === "string" ? input.marketSlug.trim() : "";
+  if (!marketSlug) {
+    return { success: false, status: 400, error: "LIMITLESS_MARKET_SLUG_REQUIRED" };
+  }
+
+  const makerAddress =
+    typeof input.makerAddress === "string" && input.makerAddress.trim().length > 0
+      ? input.makerAddress.trim()
+      : typeof input.signedOrder.maker === "string"
+        ? String(input.signedOrder.maker).trim()
+        : typeof input.signedOrder.signer === "string"
+          ? String(input.signedOrder.signer).trim()
+          : "";
+  if (!makerAddress) {
+    return { success: false, status: 400, error: "SIGNED_ORDER_MAKER_MISSING" };
+  }
+
+  const body = JSON.stringify({
+    order: input.signedOrder,
+    ownerId: limitlessAuth.ownerId,
+    orderType: input.orderType,
+    marketSlug,
+  });
+  if (body.length > 16 * 1024) {
+    return { success: false, status: 413, error: "SIGNED_ORDER_TOO_LARGE" };
+  }
+
+  const timeoutMs = Math.max(2_000, Number(process.env.LIMITLESS_RELAY_TIMEOUT_MS ?? 10_000));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const candidateUrls = Array.from(
+    new Set(
+      getCandidateBaseUrls().map((base) => `${normalizeBase(base)}/orders`)
+    )
+  );
+
+  try {
+    for (let idx = 0; idx < candidateUrls.length; idx += 1) {
+      const response = await fetch(candidateUrls[idx]!, {
+        method: "POST",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "X-API-Key": limitlessAuth.apiKey,
+          "x-account": makerAddress,
+          ...(input.requestIp
+            ? {
+                "x-forwarded-for": input.requestIp,
+                "x-real-ip": input.requestIp,
+                "cf-connecting-ip": input.requestIp,
+              }
+            : {}),
+        },
+        body,
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        if ((response.status === 404 || response.status === 405) && idx < candidateUrls.length - 1) {
+          continue;
+        }
+        const payloadRec =
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>)
+            : null;
+        const message =
+          (payloadRec && typeof payloadRec.error === "string" && payloadRec.error.trim()) ||
+          (payloadRec && typeof payloadRec.message === "string" && payloadRec.message.trim()) ||
+          `ORDER_RELAY_HTTP_${response.status}`;
+        return {
+          success: false,
+          status: response.status,
+          error: message,
+          payload: payload ?? undefined,
+        };
+      }
+
+      return {
+        success: true,
+        status: response.status,
+        payload: payload ?? undefined,
+      };
+    }
+
+    return { success: false, status: 404, error: "ORDER_RELAY_ENDPOINT_NOT_FOUND" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      status: 0,
+      error: message.includes("aborted") ? "ORDER_RELAY_TIMEOUT" : message,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
 const mapHistoryRowsToPoints = (
   rows: Record<string, unknown>[],
@@ -706,7 +904,7 @@ const historySpanSeconds = (points: Array<{ ts: number; price: number }>): numbe
 export const limitlessAdapter: VenueAdapter = {
   provider: "limitless",
   capabilities: {
-    supportsTrading: false,
+    supportsTrading: true,
     supportsCandles: true,
     supportsPublicTrades: true,
     chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
