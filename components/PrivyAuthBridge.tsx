@@ -4,9 +4,9 @@ import { useEffect, useRef } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { trpcClient } from "@/src/utils/trpcClient";
 
-const dispatchSyncedEvent = () => {
+const dispatchSyncedEvent = (detail?: { user?: unknown | null }) => {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("privy-session-bridged"));
+  window.dispatchEvent(new CustomEvent("privy-session-bridged", { detail }));
 };
 
 const hasCsrfError = (error: unknown): boolean => {
@@ -42,15 +42,16 @@ export default function PrivyAuthBridge() {
         try {
           const token = await getAccessToken();
           if (!token || token === lastAccessTokenRef.current) return;
+          let response: Awaited<ReturnType<typeof trpcClient.auth.privyLogin.mutate>> | null = null;
           try {
-            await trpcClient.auth.privyLogin.mutate({ accessToken: token });
+            response = await trpcClient.auth.privyLogin.mutate({ accessToken: token });
           } catch (error) {
             if (!hasCsrfError(error)) throw error;
             await refreshCsrfCookie();
-            await trpcClient.auth.privyLogin.mutate({ accessToken: token });
+            response = await trpcClient.auth.privyLogin.mutate({ accessToken: token });
           }
           lastAccessTokenRef.current = token;
-          dispatchSyncedEvent();
+          dispatchSyncedEvent({ user: response?.user ?? null });
         } catch (err) {
           // Avoid noisy logs with secrets/token values.
           console.warn("privy bridge login failed");
@@ -66,7 +67,7 @@ export default function PrivyAuthBridge() {
       .mutate()
       .catch(() => undefined)
       .finally(() => {
-        dispatchSyncedEvent();
+        dispatchSyncedEvent({ user: null });
       });
   }, [ready, authenticated, getAccessToken]);
 

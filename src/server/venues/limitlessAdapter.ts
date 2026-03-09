@@ -6,6 +6,7 @@ import {
   type VenueRelayOrderInput,
   type VenueRelayOrderOutput,
 } from "./types";
+import { extractTotalVolumeFromPayload } from "../../lib/marketVolumePayload";
 
 const DEFAULT_BASE_ROOT = "https://api.limitless.exchange";
 const DEFAULT_BASE = `${DEFAULT_BASE_ROOT}/api/v1`;
@@ -394,39 +395,7 @@ const parseOutcomes = (
 };
 
 const parseLimitlessVolume = (row: Record<string, unknown>): number => {
-  const stats = asRecord(row.stats);
-  const marketStats = asRecord(row.marketStats) ?? asRecord(row.market_stats);
-  const metrics = asRecord(row.metrics);
-  const aggregates = asRecord(row.aggregates);
-
-  const candidates: unknown[] = [
-    row.totalVolume,
-    row.total_volume,
-    row.volumeUsd,
-    row.volume_usd,
-    row.volumeUSD,
-    row.usdVolume,
-    row.usd_volume,
-    row.volume,
-    stats?.volume,
-    stats?.totalVolume,
-    stats?.total_volume,
-    marketStats?.volume,
-    marketStats?.totalVolume,
-    marketStats?.total_volume,
-    metrics?.volume,
-    metrics?.totalVolume,
-    metrics?.volumeUsd,
-    aggregates?.volume,
-    aggregates?.totalVolume,
-    aggregates?.volumeUsd,
-  ];
-
-  for (const candidate of candidates) {
-    const parsed = toNumber(candidate);
-    if (parsed !== null) return Math.max(0, parsed);
-  }
-  return 0;
+  return Math.max(0, extractTotalVolumeFromPayload(row) ?? 0);
 };
 
 const mapLimitlessMarket = (row: Record<string, unknown>): VenueMarket | null => {

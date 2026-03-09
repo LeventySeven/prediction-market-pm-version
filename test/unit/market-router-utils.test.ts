@@ -6,6 +6,7 @@ const {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
+  pickBetterCandleSet,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
   normalizePublicEnabledProviders,
@@ -80,6 +81,19 @@ describe("market router utility behavior", () => {
         dailyVolume: 654,
       })
     ).toBeNull();
+  });
+
+  it("finds nested lifetime volume fields before falling back to raw volume", () => {
+    expect(
+      readVolumeFromPayload({
+        volume: 0,
+        stats: {
+          analytics: {
+            allTimeVolumeUsd: 98765,
+          },
+        },
+      })
+    ).toBe(98765);
   });
 
   it("normalizes candle resolution from explicit interval", () => {
@@ -162,6 +176,49 @@ describe("market router utility behavior", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.bucket).toBe("2026-03-01T10:01:00.000Z");
     expect(rows[1]?.bucket).toBe("2026-03-01T10:02:00.000Z");
+  });
+
+  it("prefers real moving history over a longer flat baseline", () => {
+    const flat = Array.from({ length: 12 }, (_, idx) => ({
+      bucket: new Date(Date.parse("2026-03-01T00:00:00.000Z") + idx * 60 * 60 * 1000).toISOString(),
+      outcomeId: null,
+      outcomeTitle: null,
+      outcomeColor: null,
+      open: 0.5,
+      high: 0.5,
+      low: 0.5,
+      close: 0.5,
+      volume: 0,
+      tradesCount: 0,
+    })) as any[];
+    const moving = [
+      {
+        bucket: "2026-03-01T08:00:00.000Z",
+        outcomeId: null,
+        outcomeTitle: null,
+        outcomeColor: null,
+        open: 0.41,
+        high: 0.46,
+        low: 0.4,
+        close: 0.45,
+        volume: 10,
+        tradesCount: 2,
+      },
+      {
+        bucket: "2026-03-01T09:00:00.000Z",
+        outcomeId: null,
+        outcomeTitle: null,
+        outcomeColor: null,
+        open: 0.45,
+        high: 0.61,
+        low: 0.44,
+        close: 0.58,
+        volume: 11,
+        tradesCount: 3,
+      },
+    ] as any[];
+
+    expect(pickBetterCandleSet(flat, moving)).toEqual(moving);
   });
 
   it("filters enabled providers to public venues only", () => {

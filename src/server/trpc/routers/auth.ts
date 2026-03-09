@@ -77,6 +77,32 @@ const isDuplicateError = (error: { code?: unknown; message?: unknown } | null | 
   return message.includes("duplicate");
 };
 
+const findUserByPrivyWallet = async (
+  supabaseService: {
+    from: (table: string) => {
+      select: (columns: string) => any;
+    };
+  },
+  walletAddress: string | null
+): Promise<DbUserRow | null> => {
+  if (!walletAddress) return null;
+  const byWallet = await supabaseService
+    .from("users")
+    .select(publicColumns)
+    .eq("privy_wallet_address", walletAddress)
+    .maybeSingle();
+  if (byWallet.error || !byWallet.data) return null;
+  return byWallet.data as DbUserRow;
+};
+
+const needsPrivyLinkUpdate = (
+  row: DbUserRow,
+  identity: { privyUserId: string; walletAddress: string | null }
+): boolean =>
+  row.privy_user_id !== identity.privyUserId ||
+  (row.privy_wallet_address ?? null) !== identity.walletAddress ||
+  row.auth_provider !== "privy";
+
 const resolvePrivyUserConflict = async (
   supabaseService: {
     from: (table: string) => {
@@ -93,6 +119,24 @@ const resolvePrivyUserConflict = async (
     .maybeSingle();
   if (!byPrivy.error && byPrivy.data) {
     return byPrivy.data as DbUserRow;
+  }
+
+  const byWallet = await findUserByPrivyWallet(supabaseService, identity.walletAddress);
+  if (byWallet) {
+    if (!needsPrivyLinkUpdate(byWallet, identity)) return byWallet;
+    const linkedByWallet = await supabaseService
+      .from("users")
+      .update({
+        privy_user_id: identity.privyUserId,
+        privy_wallet_address: identity.walletAddress,
+        auth_provider: "privy",
+      } as Database["public"]["Tables"]["users"]["Update"])
+      .eq("id", byWallet.id)
+      .select(publicColumns)
+      .single();
+    if (!linkedByWallet.error && linkedByWallet.data) {
+      return linkedByWallet.data as DbUserRow;
+    }
   }
 
   if (!identity.email) return null;
@@ -140,6 +184,10 @@ const upsertPrivyUser = async (
 
   let userRow = byPrivy.data as DbUserRow | null;
 
+  if (!userRow) {
+    userRow = await findUserByPrivyWallet(supabaseService, identity.walletAddress);
+  }
+
   if (!userRow && identity.email) {
     const byEmail = await supabaseService
       .from("users")
@@ -153,6 +201,9 @@ const upsertPrivyUser = async (
   }
 
   if (userRow) {
+    if (!needsPrivyLinkUpdate(userRow, identity)) {
+      return userRow;
+    }
     const updated = await supabaseService
       .from("users")
       .update({

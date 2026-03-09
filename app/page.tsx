@@ -763,6 +763,16 @@ export default function HomePage() {
   const [visibleCatalogMarketIds, setVisibleCatalogMarketIds] = useState<string[]>([]);
   const catalogLoadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const catalogAutoAdvancePageRef = useRef(0);
+  const refreshUserInFlightRef = useRef<Promise<Awaited<ReturnType<typeof trpcClient.auth.me.query>> | null> | null>(null);
+  const refreshUserCacheRef = useRef<{
+    updatedAt: number;
+    value: Awaited<ReturnType<typeof trpcClient.auth.me.query>> | null;
+  }>({
+    updatedAt: 0,
+    value: null,
+  });
+  const lastPrivyBridgeAtRef = useRef(0);
+  const lastProfileBootstrapUserIdRef = useRef<string | null>(null);
   const [documentVisible, setDocumentVisible] = useState(true);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
   const [loadingUser, setLoadingUser] = useState(false);
@@ -1253,22 +1263,65 @@ export default function HomePage() {
   }, []);
 
   const refreshUser = useCallback(async () => {
-    try {
-      const me = await trpcClient.auth.me.query();
-      if (me) {
-        clearRelogin();
-        applyPublicUser(me);
-        return me;
-      }
-    } catch (err) {
-      console.error("Failed to refresh session user", err);
+    const now = Date.now();
+    if (refreshUserInFlightRef.current) {
+      return refreshUserInFlightRef.current;
     }
-    return null;
+    if (now - refreshUserCacheRef.current.updatedAt <= 800) {
+      return refreshUserCacheRef.current.value;
+    }
+
+    const request = (async () => {
+      try {
+        const me = await trpcClient.auth.me.query();
+        refreshUserCacheRef.current = {
+          updatedAt: Date.now(),
+          value: me ?? null,
+        };
+        if (me) {
+          clearRelogin();
+          applyPublicUser(me);
+          return me;
+        }
+      } catch (err) {
+        console.error("Failed to refresh session user", err);
+      }
+      refreshUserCacheRef.current = {
+        updatedAt: Date.now(),
+        value: null,
+      };
+      return null;
+    })();
+
+    refreshUserInFlightRef.current = request;
+    try {
+      return await request;
+    } finally {
+      if (refreshUserInFlightRef.current === request) {
+        refreshUserInFlightRef.current = null;
+      }
+    }
   }, [applyPublicUser, clearRelogin]);
 
   useEffect(() => {
     if (!HAS_PRIVY_PROVIDER) return;
-    const handlePrivyBridge = () => {
+    const handlePrivyBridge = (event: Event) => {
+      lastPrivyBridgeAtRef.current = Date.now();
+      const detail = (event as CustomEvent<{ user?: Awaited<ReturnType<typeof trpcClient.auth.me.query>> | null }>).detail;
+      if (detail && "user" in detail) {
+        const bridgedUser = detail.user ?? null;
+        refreshUserCacheRef.current = {
+          updatedAt: Date.now(),
+          value: bridgedUser,
+        };
+        if (bridgedUser) {
+          clearRelogin();
+          applyPublicUser(bridgedUser);
+        } else {
+          setUser(null);
+        }
+        return;
+      }
       void refreshUser();
     };
     if (typeof window !== "undefined") {
@@ -1279,15 +1332,20 @@ export default function HomePage() {
         window.removeEventListener("privy-session-bridged", handlePrivyBridge as EventListener);
       }
     };
-  }, [refreshUser]);
+  }, [applyPublicUser, clearRelogin, refreshUser]);
 
   useEffect(() => {
     if (!HAS_PRIVY_PROVIDER) return;
     if (!privyReady) return;
+    if (Date.now() - lastPrivyBridgeAtRef.current <= 1_500) return;
     if (privyAuthenticated) {
       void refreshUser();
       return;
     }
+    refreshUserCacheRef.current = {
+      updatedAt: Date.now(),
+      value: null,
+    };
     setUser(null);
   }, [privyReady, privyAuthenticated, refreshUser]);
 
@@ -2161,6 +2219,7 @@ export default function HomePage() {
   }, [user, lang, attemptSilentRefresh]);
   useEffect(() => {
     if (!user) {
+      lastProfileBootstrapUserIdRef.current = null;
       setMyPositions([]);
       setMyTrades([]);
       setMyBookmarks([]);
@@ -2169,8 +2228,27 @@ export default function HomePage() {
       setProfilePnlMajor(null);
       return;
     }
-    void loadMyBets();
-  }, [user, loadMyBets]);
+    if (lastProfileBootstrapUserIdRef.current === user.id) return;
+    lastProfileBootstrapUserIdRef.current = user.id;
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let idleId: number | null = null;
+    const run = () => {
+      void loadMyBets();
+    };
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(run, { timeout: 1_500 });
+      return () => {
+        if (idleId !== null) window.cancelIdleCallback(idleId);
+      };
+    }
+
+    timeoutId = setTimeout(run, 250);
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [user?.id, loadMyBets]);
 
   useEffect(() => {
     void loadMarkets();

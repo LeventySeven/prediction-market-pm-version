@@ -5,6 +5,7 @@ import { listMirroredPolymarketMarkets, searchMirroredPolymarketMarkets } from "
 import { listPolymarketMarkets, searchPolymarketMarkets } from "@/src/server/polymarket/client";
 import { getVenueAdapter, listEnabledProviders } from "@/src/server/venues/registry";
 import { resolveDisplayVolume } from "@/src/lib/marketPresentation";
+import { extractTotalVolumeFromPayload } from "@/src/lib/marketVolumePayload";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -177,8 +178,7 @@ const fromLimitlessCatalogPool = async (limit: number): Promise<RecMarket[]> => 
         const id = String(row.provider_market_id ?? "").trim();
         if (!id) return null;
         const payload = row.provider_payload as Record<string, unknown> | null;
-        const payloadVolumeRaw = Number(payload?.volume ?? 0);
-        const payloadVolume = Number.isFinite(payloadVolumeRaw) ? Math.max(0, payloadVolumeRaw) : 0;
+        const payloadVolume = Math.max(0, extractTotalVolumeFromPayload(payload) ?? 0);
         const catalogId = String(row.id ?? "").trim();
         const liveVolume = liveById.get(catalogId) ?? payloadVolume;
         return {

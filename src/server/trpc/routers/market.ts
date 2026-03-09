@@ -55,6 +55,7 @@ import {
   resolveReliableBinaryPrice,
   roundPercentValue,
 } from "../../../lib/marketPresentation";
+import { extractTotalVolumeFromPayload } from "../../../lib/marketVolumePayload";
 
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
@@ -1165,40 +1166,7 @@ const readNumericValue = (value: unknown): number | null => {
 };
 
 const readVolumeFromPayload = (payload: Record<string, unknown> | null): number | null => {
-  if (!payload) return null;
-  const asRecord = (value: unknown): Record<string, unknown> | null =>
-    value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-  const candidates = [
-    payload,
-    asRecord(payload.stats),
-    asRecord(payload.marketStats),
-    asRecord(payload.market_stats),
-    asRecord(payload.metrics),
-    asRecord(payload.aggregates),
-  ].filter((row): row is Record<string, unknown> => Boolean(row));
-
-  const keys = [
-    "totalVolume",
-    "total_volume",
-    "volumeUsd",
-    "volume_usd",
-    "volumeUSD",
-    "usdVolume",
-    "usd_volume",
-    "volume",
-  ];
-
-  let fallback: number | null = null;
-  for (const row of candidates) {
-    for (const key of keys) {
-      const parsed = readNumericValue(row[key]);
-      if (parsed === null) continue;
-      const normalized = Math.max(0, parsed);
-      if (normalized > 0) return normalized;
-      if (fallback === null) fallback = normalized;
-    }
-  }
-  return fallback;
+  return extractTotalVolumeFromPayload(payload);
 };
 
 const readCapabilitiesFromPayload = (
@@ -1633,9 +1601,38 @@ const normalizeCandlesForChart = (
   return aggregated.slice(Math.max(0, aggregated.length - limit));
 };
 
+const candleMovementScore = (rows: PriceCandleRow[]): number => {
+  if (rows.length === 0) return 0;
+  const closes = new Set<number>();
+  let minLow = Number.POSITIVE_INFINITY;
+  let maxHigh = Number.NEGATIVE_INFINITY;
+
+  for (const row of rows) {
+    const close = Number(row.close);
+    const high = Number(row.high);
+    const low = Number(row.low);
+    if (Number.isFinite(close)) closes.add(Number(close.toFixed(4)));
+    if (Number.isFinite(high)) maxHigh = Math.max(maxHigh, high);
+    if (Number.isFinite(low)) minLow = Math.min(minLow, low);
+  }
+
+  const range = Number.isFinite(maxHigh) && Number.isFinite(minLow) ? Math.max(0, maxHigh - minLow) : 0;
+  return closes.size + range * 100;
+};
+
 const pickBetterCandleSet = (a: PriceCandleRow[], b: PriceCandleRow[]): PriceCandleRow[] => {
   if (a.length === 0) return b;
   if (b.length === 0) return a;
+  const aMovement = candleMovementScore(a);
+  const bMovement = candleMovementScore(b);
+  const aHasMeaningfulMovement = aMovement >= 2.5;
+  const bHasMeaningfulMovement = bMovement >= 2.5;
+  if (aHasMeaningfulMovement !== bHasMeaningfulMovement) {
+    return bHasMeaningfulMovement ? b : a;
+  }
+  if (Math.abs(bMovement - aMovement) >= 1.5) {
+    return bMovement > aMovement ? b : a;
+  }
   const aSpan = candleSpanMs(a);
   const bSpan = candleSpanMs(b);
   if (bSpan > aSpan) return b;
@@ -1735,6 +1732,7 @@ export const __marketRouterTestUtils = {
   categoryMetaFromRaw,
   sortMarketRows,
   readVolumeFromPayload,
+  pickBetterCandleSet,
   selectCandleResolutionMs,
   normalizeCandlesForChart,
   normalizePublicEnabledProviders,
@@ -2323,6 +2321,7 @@ export const marketRouter = router({
       const loadLimitlessRows = async (): Promise<Array<z.infer<typeof marketOutput>>> => {
         const providerRows: Array<z.infer<typeof marketOutput>> = [];
         let hasLiveLimitlessRows = false;
+        const adapter = getVenueAdapter("limitless");
         if (limitlessWorkerFresh) {
           const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
             provider: "limitless",
@@ -2334,7 +2333,6 @@ export const marketRouter = router({
             providerRows.push(...canonicalRows);
           }
         }
-        const adapter = getVenueAdapter("limitless");
         if (!hasLiveLimitlessRows && adapter.isEnabled()) {
           try {
             const liveRows = await adapter.listMarketsSnapshot({
@@ -2364,6 +2362,30 @@ export const marketRouter = router({
           });
           if (canonicalRows.length > 0) {
             providerRows.push(...canonicalRows);
+          }
+        }
+
+        if (providerRows.some((row) => Number(row.volume ?? 0) <= 0) && adapter.isEnabled()) {
+          try {
+            const liveRows = await adapter.listMarketsSnapshot({
+              onlyOpen,
+              limit: Math.min(candidateLimit, 400),
+              sortBy,
+            });
+            if (liveRows.length > 0) {
+              const liveByProviderMarketId = new Map(
+                liveRows.map((row) => [row.providerMarketId, mapVenueMarketToMarketOutput(row)] as const)
+              );
+              return providerRows.map((row) => {
+                if (Number(row.volume ?? 0) > 0) return row;
+                const providerMarketId = String(row.providerMarketId ?? row.id ?? "").trim();
+                const live = liveByProviderMarketId.get(providerMarketId) ?? null;
+                if (!live || Number(live.volume ?? 0) <= Number(row.volume ?? 0)) return row;
+                return live;
+              });
+            }
+          } catch (err) {
+            console.warn("Limitless live volume hydration failed", err);
           }
         }
 
@@ -2472,9 +2494,31 @@ export const marketRouter = router({
         });
         const canonical = canonicalRows[0] ?? null;
         if (canonical) {
-          void writeUpstashCache(detailCacheKey, canonical, upstashMarketDetailTtlSec);
+          let resolved = canonical;
+          if (Number(canonical.volume ?? 0) <= 0) {
+            const adapter = getVenueAdapter(ref.provider);
+            if (adapter.isEnabled()) {
+              try {
+                const liveRow = await adapter.getMarketById(ref.providerMarketId);
+                if (liveRow) {
+                  const live = mapVenueMarketToMarketOutput(liveRow);
+                  if (Number(live.volume ?? 0) > Number(resolved.volume ?? 0)) {
+                    resolved = live;
+                  }
+                  if (ENABLE_CATALOG_SYNC_ON_READ) {
+                    void upsertVenueMarketsToCatalog(ctx.supabaseService, [liveRow]).catch(() => {
+                      // Canonical table sync is best effort.
+                    });
+                  }
+                }
+              } catch (err) {
+                console.warn("Live detail hydration for canonical market failed", err);
+              }
+            }
+          }
+          void writeUpstashCache(detailCacheKey, resolved, upstashMarketDetailTtlSec);
           recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-          return canonical;
+          return resolved;
         }
       }
 
