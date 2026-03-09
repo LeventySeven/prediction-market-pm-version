@@ -55,6 +55,7 @@ import {
 } from "@/src/lib/avatarPalette";
 import { applyStableCatalogOrder } from "@/src/lib/catalogStableOrder";
 import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
+import { computeEffectiveVolumeRaw, pickBinaryOutcomes } from "@/src/lib/marketPresentation";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -271,14 +272,28 @@ const clearStoredLimitlessAuth = () => {
 
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
-  const chanceSource = typeof m.chance === "number" ? m.chance : Math.round(m.priceYes * 100);
+  const binaryOutcomes = pickBinaryOutcomes(Array.isArray(m.outcomes) ? m.outcomes : []);
+  const derivedYesPrice =
+    typeof binaryOutcomes.yes?.price === "number" && Number.isFinite(binaryOutcomes.yes.price)
+      ? binaryOutcomes.yes.price
+      : Number(m.priceYes);
+  const derivedNoPrice =
+    typeof binaryOutcomes.no?.price === "number" && Number.isFinite(binaryOutcomes.no.price)
+      ? binaryOutcomes.no.price
+      : Number(m.priceNo);
+  const chanceSource =
+    typeof binaryOutcomes.yes?.probability === "number" && Number.isFinite(binaryOutcomes.yes.probability)
+      ? Math.round(binaryOutcomes.yes.probability * 100)
+      : typeof m.chance === "number"
+        ? m.chance
+        : Math.round(derivedYesPrice * 100);
   const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
   const baseVolumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
   const volume24hRaw =
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
       ? Math.max(0, m.rolling24hVolume)
       : null;
-  const volumeRaw = baseVolumeRaw;
+  const volumeRaw = computeEffectiveVolumeRaw(baseVolumeRaw, volume24hRaw);
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
@@ -307,8 +322,8 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     volume24hRaw,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
-    yesPrice: Number(m.priceYes),
-    noPrice: Number(m.priceNo),
+    yesPrice: derivedYesPrice,
+    noPrice: derivedNoPrice,
     chance,
     description: m.description ?? (lang === "RU" ? "Описание будет добавлено." : "Description coming soon."),
     source: normalizeExternalMarketUrl(m.source, m.provider ?? "polymarket") ?? (m.source ?? null),
@@ -389,7 +404,7 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
       : null;
   const currentVolumeRaw =
     typeof market.volumeRaw === "number" && Number.isFinite(market.volumeRaw) ? Math.max(0, market.volumeRaw) : 0;
-  const nextVolumeRaw = currentVolumeRaw;
+  const nextVolumeRaw = computeEffectiveVolumeRaw(currentVolumeRaw, nextRolling24h);
 
   return {
     ...market,

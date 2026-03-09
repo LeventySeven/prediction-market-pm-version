@@ -48,6 +48,7 @@ import {
   upstashMarketTradesTtlSec,
   writeUpstashCache,
 } from "../../cache/upstash";
+import { pickBinaryOutcomes, pickYesLikeOutcome } from "../../../lib/marketPresentation";
 
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
@@ -389,8 +390,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     probability: o.probability,
     price: o.price,
   }));
-  const yes = outcomes[0];
-  const no = outcomes[1];
+  const { yes, no } = pickBinaryOutcomes(outcomes);
   const category = categoryMetaFromRaw(market.category);
 
   let resolved: "YES" | "NO" | null = null;
@@ -402,6 +402,9 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     const matched = outcomes.find((o) => o.title.toLowerCase() === normalized);
     resolvedOutcomeId = matched?.id ?? null;
   }
+
+  const priceYes = yes ? yes.price : 0.5;
+  const priceNo = no ? no.price : clamp01(1 - priceYes);
 
   return {
     id: market.id,
@@ -428,10 +431,10 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     settlementAsset: "USD",
     feeBps: null,
     liquidityB: null,
-    priceYes: yes ? yes.price : 0.5,
-    priceNo: no ? no.price : 0.5,
+    priceYes,
+    priceNo,
     volume: market.volume,
-    chance: yes ? yes.probability * 100 : 50,
+    chance: Math.round(priceYes * 100),
     creatorName: null,
     creatorAvatarUrl: null,
     bestBid: null,
@@ -483,13 +486,14 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
 
   const outputId = venueToCanonicalId(market.provider, market.providerMarketId);
   const sortedOutcomes = [...market.outcomes].sort((a, b) => a.sortOrder - b.sortOrder);
-  const yes = sortedOutcomes[0];
-  const no = sortedOutcomes[1];
+  const { yes, no } = pickBinaryOutcomes(sortedOutcomes);
   const category = categoryMetaFromRaw(market.category);
   const resolved = market.state === "resolved" ? market.resolvedOutcomeTitle : null;
   const resolvedMatch = resolved
     ? sortedOutcomes.find((outcome) => outcome.title.toLowerCase() === resolved.toLowerCase()) ?? null
     : null;
+  const priceYes = yes ? yes.price : 0.5;
+  const priceNo = no ? no.price : clamp01(1 - priceYes);
 
   return {
     id: outputId,
@@ -530,10 +534,10 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     settlementAsset: "USD",
     feeBps: null,
     liquidityB: null,
-    priceYes: yes ? yes.price : 0.5,
-    priceNo: no ? no.price : 0.5,
+    priceYes,
+    priceNo,
     volume: market.volume,
-    chance: yes ? yes.probability * 100 : 50,
+    chance: Math.round(priceYes * 100),
     creatorName: null,
     creatorAvatarUrl: null,
     bestBid: null,
@@ -1337,14 +1341,15 @@ const listCanonicalProviderMarkets = async (
       };
     });
 
-    const yes = outcomes[0];
-    const no = outcomes[1];
+    const { yes, no } = pickBinaryOutcomes(outcomes);
     const live = liveByMarketId.get(marketRefId);
     const payloadVolume = readVolumeFromPayload(payload);
     const liveMid = toFiniteNumber(live?.mid as any);
     const useLiveMid = typeof liveMid === "number" && liveMid >= 0 && liveMid <= 1;
-    const priceYes = useLiveMid ? liveMid : yes ? yes.price : 0.5;
-    const priceNo = useLiveMid ? Math.max(0, Math.min(1, 1 - priceYes)) : no ? no.price : 0.5;
+    const fallbackYesPrice = yes ? yes.price : 0.5;
+    const fallbackNoPrice = no ? no.price : clamp01(1 - fallbackYesPrice);
+    const priceYes = useLiveMid ? liveMid : fallbackYesPrice;
+    const priceNo = useLiveMid ? Math.max(0, Math.min(1, 1 - priceYes)) : fallbackNoPrice;
 
     const stateRaw = String(row.state ?? "open").trim().toLowerCase();
     const state: z.infer<typeof marketOutput>["state"] =
@@ -1664,21 +1669,6 @@ const buildFlatBaselineCandles = (
     volume: 0,
     tradesCount: 0,
   }));
-};
-
-const pickYesLikeOutcome = <T extends { title?: string | null; sortOrder?: number | null }>(
-  outcomes: T[]
-): T | null => {
-  if (outcomes.length === 0) return null;
-  const yesByTitle =
-    outcomes.find((outcome) => String(outcome.title ?? "").trim().toLowerCase() === "yes") ??
-    outcomes.find((outcome) => String(outcome.title ?? "").trim().toLowerCase().includes("yes")) ??
-    null;
-  if (yesByTitle) return yesByTitle;
-  const bySort = outcomes
-    .filter((outcome) => Number.isFinite(Number(outcome.sortOrder ?? 0)))
-    .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0))[0];
-  return bySort ?? outcomes[0] ?? null;
 };
 
 const buildBaselineCandlesFromPolymarketMarket = (
