@@ -32,8 +32,8 @@ const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-zinc-900 bg-black/80 backdrop-blur supports-[backdrop-filter]:bg-black/60">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+    <header className="sticky top-0 z-40 w-full border-b border-zinc-900/90 bg-black/85 backdrop-blur-xl supports-[backdrop-filter]:bg-black/70">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         {/* Logo */}
         <div
           className={`flex items-center gap-2 ${onLogoClick ? 'cursor-pointer' : 'cursor-default'}`}
@@ -55,15 +55,15 @@ const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Search (Desktop) */}
-        <div className="hidden md:flex flex-1 max-w-sm mx-8 relative">
+        <div className="relative mx-8 hidden max-w-md flex-1 md:flex">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder={t.search}
-            className="flex h-9 w-full rounded-full border border-zinc-900 bg-zinc-950/40 px-3 py-1 pl-9 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-10 w-full rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-1 pl-10 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <Search size={14} className="absolute left-3 top-2.5 text-zinc-600" />
+          <Search size={15} className="absolute left-3.5 top-3 text-zinc-600" />
         </div>
 
         {/* Actions */}
@@ -71,7 +71,7 @@ const Header: React.FC<HeaderProps> = ({
           {onHelpClick && (
             <button
               onClick={onHelpClick}
-              className="inline-flex items-center justify-center rounded-full text-sm font-medium ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-white h-9 w-9"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/70 text-sm font-medium text-zinc-300 ring-offset-black transition-colors hover:bg-zinc-950/90 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700"
               title={t.help}
             >
               <HelpCircle size={16} className="text-white" />
@@ -81,7 +81,7 @@ const Header: React.FC<HeaderProps> = ({
           {onToggleLang && (
             <button
               onClick={onToggleLang}
-              className="inline-flex items-center justify-center rounded-full text-xs font-bold ring-offset-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-300 hover:text-white h-9 px-3 gap-2"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 text-xs font-bold text-zinc-300 ring-offset-black transition-colors hover:bg-zinc-950/90 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700"
             >
               <Globe size={12} className="text-white" />
               {lang}

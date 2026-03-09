@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
 import MarketPage from "@/components/MarketPage";
@@ -56,6 +56,7 @@ import {
 import { applyStableCatalogOrder } from "@/src/lib/catalogStableOrder";
 import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
 import { computeEffectiveVolumeRaw, pickBinaryOutcomes } from "@/src/lib/marketPresentation";
+import MarketPulseBoard from "@/components/MarketPulseBoard";
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -673,6 +674,7 @@ const persistWarmCatalogBootstrap = (payload: InitialCatalogBootstrap) => {
 export default function HomePage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [semanticSearchScores, setSemanticSearchScores] = useState<Record<string, number>>({});
   const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
   const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
@@ -969,6 +971,8 @@ export default function HomePage() {
   const [myBookmarks, setMyBookmarks] = useState<MarketBookmark[]>([]);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<string | null>(null);
   const [marketsError, setMarketsError] = useState<string | null>(null);
+  const [topMarketPreviewRows, setTopMarketPreviewRows] = useState<Market[]>([]);
+  const [topMarketPreviewLoading, setTopMarketPreviewLoading] = useState(false);
   const [betConfirm, setBetConfirm] = useState<{
     open: boolean;
     marketTitle: string;
@@ -1991,6 +1995,56 @@ export default function HomePage() {
     lang,
     markCatalogKeyLoaded,
   ]);
+  const showMarketPulseBoard =
+    currentView === "CATALOG" &&
+    catalogPage === 1 &&
+    searchQuery.trim().length === 0 &&
+    activeCategoryId === "all";
+
+  useEffect(() => {
+    if (!showMarketPulseBoard) return;
+
+    const fetchParams: CatalogFetchParams = {
+      page: 1,
+      providerFilter: activeProviderFilter,
+      sortBy: "volume",
+    };
+    const cacheKey = buildCatalogFetchKey(fetchParams);
+    const cached = catalogPageCacheRef.current.get(cacheKey);
+    if (cached) {
+      setTopMarketPreviewRows(cached.rows.map((row) => mapMarketApiToMarket(row, lang)));
+      setTopMarketPreviewLoading(false);
+    } else {
+      setTopMarketPreviewRows([]);
+      setTopMarketPreviewLoading(true);
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await fetchCatalogPage(fetchParams);
+        if (cancelled) return;
+        setTopMarketPreviewRows(result.rows.map((row) => mapMarketApiToMarket(row, lang)));
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("Failed to load top market preview", err);
+        }
+      } finally {
+        if (!cancelled) setTopMarketPreviewLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeProviderFilter,
+    buildCatalogFetchKey,
+    fetchCatalogPage,
+    lang,
+    showMarketPulseBoard,
+  ]);
+
   useEffect(() => {
     const byId = new Map<string, MarketCategoryStrict>();
     for (const market of markets) {
@@ -2630,12 +2684,12 @@ export default function HomePage() {
           activeCategoryId === "all" || (market.categoryId ?? "") === activeCategoryId;
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
         const semanticMatch = Boolean(semanticSearchScores[market.id]);
-        const matchesSearch = semanticMatch || targetTitle
-          .toLowerCase()
-          .includes(searchQuery.toLowerCase());
+        const normalizedSearch = deferredSearchQuery.trim().toLowerCase();
+        const matchesSearch =
+          normalizedSearch.length === 0 || semanticMatch || targetTitle.toLowerCase().includes(normalizedSearch);
         return matchesProvider && matchesCategory && matchesSearch;
       }),
-    [activeCategoryId, activeProviderFilter, searchQuery, mergedMarkets, lang, semanticSearchScores]
+    [activeCategoryId, activeProviderFilter, deferredSearchQuery, mergedMarkets, lang, semanticSearchScores]
   );
 
   const catalogMarkets = useMemo(() => {
@@ -2826,7 +2880,7 @@ export default function HomePage() {
 
   const feedMarkets = useMemo(() => {
     if (!user) return [];
-    const q = searchQuery.trim().toLowerCase();
+    const q = deferredSearchQuery.trim().toLowerCase();
     const base = mergedMarkets.filter((m) => myBetMarketIds.has(m.id));
     const filtered = !q
       ? base
@@ -2850,7 +2904,9 @@ export default function HomePage() {
       const bt = sortTs(b.closesAt ?? b.expiresAt);
       return at - bt;
     });
-  }, [user, mergedMarkets, myBetMarketIds, searchQuery, lang]);
+  }, [user, mergedMarkets, myBetMarketIds, deferredSearchQuery, lang]);
+
+  const marketPulseRows = topMarketPreviewRows.length > 0 ? topMarketPreviewRows : catalogMarkets;
 
   const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
   const bookmarkedMarkets = useMemo(() => {
@@ -4364,11 +4420,23 @@ export default function HomePage() {
                             setSearchQuery(e.target.value);
                           }}
                           placeholder={lang === "RU" ? "Поиск..." : "Search..."}
-                          className="w-full h-10 rounded-full bg-zinc-950 border border-zinc-900 px-4 pl-10 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                          className="h-11 w-full rounded-[20px] border border-zinc-800 bg-zinc-950/80 px-4 pl-11 text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-700"
                         />
-                        <Search size={16} className="absolute left-3.5 top-3 text-zinc-600" />
+                        <Search size={16} className="absolute left-4 top-3.5 text-zinc-600" />
                       </div>
                     </div>
+
+                    {showMarketPulseBoard && (
+                      <MarketPulseBoard
+                        markets={marketPulseRows}
+                        loading={topMarketPreviewLoading && marketPulseRows.length === 0}
+                        lang={lang}
+                        onMarketClick={(market) => {
+                          setMarketBetIntent(null);
+                          void openMarketWithAuthCheck(market);
+                        }}
+                      />
+                    )}
 
                     {/* Categories */}
                     <div className="px-4 pb-3 border-b border-zinc-900">
@@ -4379,11 +4447,11 @@ export default function HomePage() {
                             setCatalogPage(1);
                             setActiveCategoryId("all");
                           }}
-                          className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
-                            activeCategoryId === "all"
-                              ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
-                              : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
-                          }`}
+                            className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
+                              activeCategoryId === "all"
+                                ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
+                                : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
+                            }`}
                         >
                           {lang === "RU" ? "Все" : "All"}
                         </button>
@@ -4398,10 +4466,10 @@ export default function HomePage() {
                                 setCatalogPage(1);
                                 setActiveCategoryId(c.id);
                               }}
-                              className={`shrink-0 px-3 py-1.5 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
+                              className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
                                   ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
-                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
+                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
                               }`}
                             >
                               {label}
@@ -4435,12 +4503,12 @@ export default function HomePage() {
                               }}
                               className={`shrink-0 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
                                 provider.id === "all"
-                                  ? "px-3 py-1.5"
-                                  : "h-9 w-9 p-0 inline-flex items-center justify-center"
+                                  ? "min-h-[40px] px-4"
+                                  : "inline-flex h-10 w-10 items-center justify-center p-0"
                               } ${
                                 selected
                                   ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
-                                  : "border-zinc-900 bg-black text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/40"
+                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
                               }`}
                             >
                               {provider.id === "all" || !provider.logoSrc ? (
@@ -4473,7 +4541,7 @@ export default function HomePage() {
                           <button
                             type="button"
                             onClick={() => setShowEligibilityDisclaimer(true)}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 text-zinc-300 transition-colors hover:bg-zinc-950/70 hover:text-white"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-zinc-900 bg-zinc-950/50 text-zinc-300 transition-colors hover:bg-zinc-950/80 hover:text-white"
                             aria-label={lang === "RU" ? "Важное уведомление" : "Important notice"}
                             title={lang === "RU" ? "Важное уведомление" : "Important notice"}
                           >
@@ -4482,7 +4550,7 @@ export default function HomePage() {
                           <button
                             type="button"
                             onClick={() => setCatalogFiltersOpen(true)}
-                            className="h-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 px-3 text-xs font-semibold text-zinc-200 hover:text-white transition-colors inline-flex items-center gap-2"
+                            className="inline-flex h-10 items-center gap-2 rounded-2xl border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-950/80 hover:text-white"
                           >
                             <Filter size={14} className="text-zinc-300" />
                             <span>{lang === "RU" ? "Фильтр" : "Filter"}</span>
@@ -4516,7 +4584,7 @@ export default function HomePage() {
                               type="button"
                               onClick={() => setCatalogPage((prev) => Math.max(1, prev - 1))}
                               disabled={loadingMarkets || catalogPage <= 1}
-                              className="h-9 px-3 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-zinc-200"
+                              className="h-10 rounded-full border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 hover:bg-zinc-950/80 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {lang === "RU" ? "Назад" : "Prev"}
                             </button>
@@ -4527,7 +4595,7 @@ export default function HomePage() {
                               type="button"
                               onClick={() => setCatalogPage((prev) => prev + 1)}
                               disabled={loadingMarkets || !hasNextCatalogPage}
-                              className="h-9 px-3 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/70 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-zinc-200"
+                              className="h-10 rounded-full border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 hover:bg-zinc-950/80 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {lang === "RU" ? "Далее" : "Next"}
                             </button>
@@ -4538,7 +4606,17 @@ export default function HomePage() {
                           <p className="text-sm">{marketsError}</p>
                         </div>
                       ) : !hasLoadedActiveCatalogKey ? (
-                        <div className="py-8" aria-hidden="true" />
+                        <div className="pb-8">
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 sm:gap-4">
+                            {Array.from({ length: 8 }).map((_, idx) => (
+                              <div
+                                key={`catalog-skeleton-${idx}`}
+                                className="h-[252px] rounded-2xl border border-zinc-900 bg-zinc-950/50 animate-pulse"
+                                aria-hidden="true"
+                              />
+                            ))}
+                          </div>
+                        </div>
                       ) : (
                         <div className="text-center py-20 text-zinc-500 px-4">
                           <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
