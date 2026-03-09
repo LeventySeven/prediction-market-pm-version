@@ -5,6 +5,7 @@ export type MultiChartRow = {
   label: string;
   spansMultipleDays: boolean;
   values: Record<string, number>;
+  volume: number;
 };
 
 export type BinaryChartRow = {
@@ -16,6 +17,7 @@ export type BinaryChartRow = {
   low: number;
   close: number;
   spansMultipleDays: boolean;
+  volume: number;
 };
 
 export type ChartSeries =
@@ -218,6 +220,7 @@ export const buildMarketChartSeries = ({
         label: string;
         spansMultipleDays: boolean;
         values: Record<string, number>;
+        volume: number;
       }
     >();
     chartCandles.forEach((c) => {
@@ -230,8 +233,10 @@ export const buildMarketChartSeries = ({
         label: labelFor(ts),
         spansMultipleDays,
         values: {},
+        volume: 0,
       };
       row.values[resolvedOutcomeId] = Number((c.close * 100).toFixed(2));
+      row.volume += Math.max(0, Number(c.volume ?? 0));
       byTs.set(ts, row);
     });
 
@@ -270,6 +275,7 @@ export const buildMarketChartSeries = ({
           label: labelFor(ts),
           spansMultipleDays,
           values,
+          volume: 0,
         };
       });
       return {
@@ -279,9 +285,37 @@ export const buildMarketChartSeries = ({
       };
     }
 
+    const liveValues: Record<string, number> = {};
+    outcomeLines.forEach((line) => {
+      const marketOutcome = (market.outcomes ?? []).find((outcome) => outcome.id === line.id);
+      if (!marketOutcome) return;
+      const raw =
+        Number.isFinite(marketOutcome.probability)
+          ? marketOutcome.probability <= 1
+            ? marketOutcome.probability * 100
+            : marketOutcome.probability
+          : Number.isFinite(marketOutcome.price)
+            ? marketOutcome.price * 100
+            : null;
+      if (raw === null) return;
+      liveValues[line.id] = clampPercent(raw);
+    });
+
+    const syncedRows =
+      normalizedRows.length === 0
+        ? normalizedRows
+        : normalizedRows.map((row, index) => {
+            if (index !== normalizedRows.length - 1) return row;
+            const nextValues = { ...row.values };
+            for (const [key, value] of Object.entries(liveValues)) {
+              nextValues[key] = Number(value.toFixed(2));
+            }
+            return { ...row, values: nextValues };
+          });
+
     return {
       mode: "multi",
-      data: normalizedRows,
+      data: syncedRows,
       lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder),
     };
   }
@@ -303,6 +337,7 @@ export const buildMarketChartSeries = ({
         low,
         close,
         spansMultipleDays,
+        volume: Math.max(0, Number(c.volume ?? 0)),
       };
     })
     .filter(
@@ -317,6 +352,7 @@ export const buildMarketChartSeries = ({
         low: number;
         close: number;
         spansMultipleDays: boolean;
+        volume: number;
       } => Boolean(v)
     )
     .sort((a, b) => a.ts - b.ts);
@@ -334,9 +370,32 @@ export const buildMarketChartSeries = ({
       low: fallbackValue,
       close: fallbackValue,
       spansMultipleDays,
+      volume: 0,
     }));
     return { mode: "binary", data: fallbackRows, lines: [] };
   }
 
-  return { mode: "binary", data: rows, lines: [] };
+  const liveValue = Number(
+    (
+      clampPrice(
+        Number.isFinite(market.yesPrice)
+          ? market.yesPrice
+          : Number.isFinite(market.chance)
+            ? market.chance / 100
+            : 0.5
+      ) * 100
+    ).toFixed(2)
+  );
+  const syncedRows = rows.map((row, index) => {
+    if (index !== rows.length - 1) return row;
+    return {
+      ...row,
+      value: liveValue,
+      high: Math.max(row.high, liveValue),
+      low: Math.min(row.low, liveValue),
+      close: liveValue,
+    };
+  });
+
+  return { mode: "binary", data: syncedRows, lines: [] };
 };

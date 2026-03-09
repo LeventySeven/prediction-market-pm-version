@@ -4,6 +4,7 @@ import { getSupabaseServiceClient } from "@/src/server/supabase/client";
 import { listMirroredPolymarketMarkets, searchMirroredPolymarketMarkets } from "@/src/server/polymarket/mirror";
 import { listPolymarketMarkets, searchPolymarketMarkets } from "@/src/server/polymarket/client";
 import { getVenueAdapter, listEnabledProviders } from "@/src/server/venues/registry";
+import { resolveDisplayVolume } from "@/src/lib/marketPresentation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -97,7 +98,7 @@ const normalizeMarkets = (markets: unknown): RecMarket[] => {
         id,
         question,
         tags,
-        volume: Number.isFinite(volumeRaw) ? Math.max(0, volumeRaw) : 0,
+        volume: resolveDisplayVolume(volumeRaw).raw ?? 0,
       } satisfies RecMarket;
     })
     .filter((v): v is RecMarket => Boolean(v))
@@ -112,7 +113,7 @@ const fromMirrorKeyword = async (query: string, limit: number): Promise<RecMarke
       id: m.id,
       question: m.title,
       tags: [m.category ?? "", ...m.outcomes.map((o) => o.title)].filter(Boolean),
-      volume: m.volume,
+      volume: resolveDisplayVolume(m.volume).raw ?? 0,
     }));
   } catch {
     return [];
@@ -127,7 +128,7 @@ const fromMirrorPool = async (limit: number): Promise<RecMarket[]> => {
       id: m.id,
       question: m.title,
       tags: [m.category ?? "", ...m.outcomes.map((o) => o.title)].filter(Boolean),
-      volume: m.volume,
+      volume: resolveDisplayVolume(m.volume).raw ?? 0,
     }));
   } catch {
     return [];
@@ -184,7 +185,7 @@ const fromLimitlessCatalogPool = async (limit: number): Promise<RecMarket[]> => 
           id: `limitless:${id}`,
           question: String(row.title ?? id),
           tags: [String(row.category ?? "")].filter(Boolean),
-          volume: liveVolume,
+          volume: resolveDisplayVolume(payloadVolume, liveVolume).raw ?? 0,
         } satisfies RecMarket;
       })
       .filter((value): value is RecMarket => Boolean(value));
@@ -200,7 +201,7 @@ const fromPolymarketLive = async (query: string, limit: number): Promise<RecMark
       id: m.id,
       question: m.title,
       tags: [m.category ?? "", ...m.outcomes.map((o) => o.title)].filter(Boolean),
-      volume: m.volume,
+      volume: resolveDisplayVolume(m.volume).raw ?? 0,
     }));
   } catch {
     return [];
@@ -218,7 +219,7 @@ const fromLimitlessLive = async (query: string, limit: number): Promise<RecMarke
       id: `limitless:${m.providerMarketId}`,
       question: m.title,
       tags: [m.category ?? "", ...m.outcomes.map((o) => o.title), m.slug].filter(Boolean),
-      volume: m.volume,
+      volume: resolveDisplayVolume(m.volume).raw ?? 0,
     }));
   } catch {
     return [];
@@ -235,7 +236,7 @@ const getLatestPolymarketPool = async (limit: number): Promise<RecMarket[]> => {
       id: m.id,
       question: m.title,
       tags: [m.category ?? "", ...m.outcomes.map((o) => o.title), m.slug].filter(Boolean),
-      volume: m.volume,
+      volume: resolveDisplayVolume(m.volume).raw ?? 0,
     }));
     latestPoolCache = {
       expiresAt: now + LATEST_POOL_CACHE_TTL_MS,

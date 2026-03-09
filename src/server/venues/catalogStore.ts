@@ -290,6 +290,7 @@ export const upsertProviderSyncState = async (
     startedAt?: string;
     successAt?: string;
     errorMessage?: string | null;
+    stats?: Record<string, unknown> | null;
   }
 ): Promise<void> => {
   if (!supabaseService) return;
@@ -307,6 +308,9 @@ export const upsertProviderSyncState = async (
   }
   if (payload.errorMessage !== undefined) {
     row.last_error = payload.errorMessage;
+  }
+  if (payload.stats !== undefined) {
+    row.stats = payload.stats;
   }
 
   await (supabaseService as any)

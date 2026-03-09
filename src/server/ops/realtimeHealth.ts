@@ -18,6 +18,25 @@ const parseIso = (value: unknown): string | null => {
   return new Date(parsed).toISOString();
 };
 
+const asObject = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const readCountFromStats = (
+  stats: Record<string, unknown> | null,
+  keys: string[]
+): number | null => {
+  if (!stats) return null;
+  for (const key of keys) {
+    const raw = stats[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string") {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+};
+
 const ageSecFromIso = (iso: string | null, now = Date.now()): number | null => {
   if (!iso) return null;
   const parsed = Date.parse(iso);
@@ -68,7 +87,7 @@ const readProviderSyncState = async (supabaseService: unknown) => {
   try {
     const { data, error } = await (supabaseService as any)
       .from("provider_sync_state")
-      .select("provider,scope,last_started_at,last_success_at,last_error,updated_at");
+      .select("provider,scope,last_started_at,last_success_at,last_error,stats,updated_at");
     if (error || !Array.isArray(data)) {
       return {
         rows: [] as Array<{
@@ -77,6 +96,7 @@ const readProviderSyncState = async (supabaseService: unknown) => {
           lastStartedAt: string | null;
           lastSuccessAt: string | null;
           lastError: string | null;
+          stats: Record<string, unknown> | null;
           updatedAt: string | null;
           ageSec: number | null;
           fresh: boolean | null;
@@ -96,6 +116,7 @@ const readProviderSyncState = async (supabaseService: unknown) => {
         lastSuccessAt,
         lastError:
           row.last_error === null || row.last_error === undefined ? null : String(row.last_error),
+        stats: asObject(row.stats),
         updatedAt: parseIso(row.updated_at ?? null),
         ageSec: ageSecFromIso(lastSuccessAt),
         fresh: isFresh(lastSuccessAt, staleAfterMs),
@@ -110,13 +131,32 @@ const readProviderSyncState = async (supabaseService: unknown) => {
         scope: string;
         lastStartedAt: string | null;
         lastSuccessAt: string | null;
-        lastError: string | null;
-        updatedAt: string | null;
-        ageSec: number | null;
-        fresh: boolean | null;
-      }>,
+          lastError: string | null;
+          stats: Record<string, unknown> | null;
+          updatedAt: string | null;
+          ageSec: number | null;
+          fresh: boolean | null;
+        }>,
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+};
+
+const readCoverageCount = async (
+  supabaseService: unknown,
+  table: string,
+  filters: Array<{ column: string; value: string }> = []
+): Promise<number | null> => {
+  try {
+    let query = (supabaseService as any).from(table).select("*", { count: "exact", head: true });
+    for (const filter of filters) {
+      query = query.eq(filter.column, filter.value);
+    }
+    const { count, error } = await query;
+    if (error) return null;
+    return typeof count === "number" ? count : null;
+  } catch {
+    return null;
   }
 };
 
@@ -214,6 +254,29 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
   const providerSyncState = supabaseService
     ? await readProviderSyncState(supabaseService)
     : { rows: [], error: supabaseError ?? "SUPABASE_UNAVAILABLE" };
+  const coverage = supabaseService
+    ? {
+        polymarketOpen: await readCoverageCount(supabaseService, "polymarket_market_cache", [
+          { column: "state", value: "open" },
+        ]),
+        polymarketLiveRows: await readCoverageCount(supabaseService, "polymarket_market_live"),
+        limitlessOpen: await readCoverageCount(supabaseService, "market_catalog", [
+          { column: "provider", value: "limitless" },
+          { column: "state", value: "open" },
+        ]),
+        limitlessLiveRows: await readCoverageCount(supabaseService, "market_live"),
+      }
+    : {
+        polymarketOpen: null,
+        polymarketLiveRows: null,
+        limitlessOpen: null,
+      limitlessLiveRows: null,
+    };
+  const syncStatsByProvider = new Map(
+    providerSyncState.rows.map((row) => [row.provider, row.stats] as const)
+  );
+  const polymarketStats = syncStatsByProvider.get("polymarket") ?? null;
+  const limitlessStats = syncStatsByProvider.get("limitless") ?? null;
   const upstash = await checkUpstashPing();
 
   const freshSignals = [
@@ -239,6 +302,38 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
       liveHeads,
       candleHeads,
       providerSyncState,
+      coverage: {
+        polymarket: {
+          openMarkets: coverage.polymarketOpen,
+          liveRows: coverage.polymarketLiveRows,
+          trackedMarkets: readCountFromStats(polymarketStats, ["trackedMarkets", "openMarkets"]),
+          trackedSubscriptions: readCountFromStats(polymarketStats, [
+            "trackedSubscriptions",
+            "activeSubscribedAssetIds",
+            "trackedAssetIds",
+          ]),
+          trackedAssetIds: readCountFromStats(polymarketStats, ["trackedAssetIds"]),
+          coveragePct:
+            coverage.polymarketOpen && coverage.polymarketLiveRows !== null
+              ? Math.round((coverage.polymarketLiveRows / Math.max(1, coverage.polymarketOpen)) * 1000) / 10
+              : null,
+        },
+        limitless: {
+          openMarkets: coverage.limitlessOpen,
+          liveRows: coverage.limitlessLiveRows,
+          trackedMarkets: readCountFromStats(limitlessStats, ["trackedMarkets", "openMarkets"]),
+          trackedSubscriptions: readCountFromStats(limitlessStats, [
+            "trackedSubscriptions",
+            "wsSubscriptionTargets",
+          ]),
+          trackedSlugs: readCountFromStats(limitlessStats, ["trackedSlugs"]),
+          trackedAddresses: readCountFromStats(limitlessStats, ["trackedAddresses"]),
+          coveragePct:
+            coverage.limitlessOpen && coverage.limitlessLiveRows !== null
+              ? Math.round((coverage.limitlessLiveRows / Math.max(1, coverage.limitlessOpen)) * 1000) / 10
+              : null,
+        },
+      },
     },
     upstash,
     pipeline: {

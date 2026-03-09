@@ -2,24 +2,30 @@
 
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
-  CandlestickSeries,
-  LineSeries,
+  AreaSeries,
   ColorType,
-  LastPriceAnimationMode,
+  HistogramSeries,
+  LineSeries,
+  createChart,
+  type AreaData,
+  type HistogramData,
   type IChartApi,
   type ISeriesApi,
-  createChart,
-  type CandlestickData,
   type LineData,
   type UTCTimestamp,
 } from 'lightweight-charts';
 
-type CandlePoint = {
+type VolumeBar = {
   ts: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
+  value: number;
+  color?: string;
+};
+
+type AreaPoint = {
+  ts: number;
+  value: number;
+  high?: number;
+  low?: number;
 };
 
 type LinePoint = {
@@ -36,14 +42,18 @@ type LineSeriesInput = {
 
 type TradingViewCandlesProps =
   | {
-      mode?: 'candles';
-      data: CandlePoint[];
+      mode: 'area';
+      points: AreaPoint[];
+      color?: string;
+      volumeBars?: VolumeBar[];
       lines?: never;
     }
   | {
       mode: 'lines';
       lines: LineSeriesInput[];
-      data?: never;
+      volumeBars?: VolumeBar[];
+      points?: never;
+      color?: never;
     };
 
 const clampPercent = (value: number): number => Math.max(0, Math.min(100, value));
@@ -54,43 +64,58 @@ const toPercent = (value: number): number => {
   return Number(clampPercent(normalized).toFixed(2));
 };
 
-const normalizeCandles = (data: CandlePoint[]): CandlestickData<UTCTimestamp>[] => {
-  const bySecond = new Map<number, { open: number; high: number; low: number; close: number }>();
-
-  const ordered = [...data]
-    .filter((row) => Number.isFinite(row.ts))
+const normalizeVolumeBars = (bars: VolumeBar[]): HistogramData<UTCTimestamp>[] => {
+  const ordered = [...bars]
+    .filter((row) => Number.isFinite(row.ts) && Number.isFinite(row.value))
     .sort((a, b) => a.ts - b.ts);
 
-  for (const row of ordered) {
-    const second = Math.floor(row.ts / 1000);
-    const open = toPercent(row.open);
-    const high = toPercent(row.high);
-    const low = toPercent(row.low);
-    const close = toPercent(row.close);
-    const prev = bySecond.get(second);
+  return ordered.map((row) => ({
+    time: Math.floor(row.ts / 1000) as UTCTimestamp,
+    value: Math.max(0, Number(row.value ?? 0)),
+    color: row.color,
+  }));
+};
 
-    if (!prev) {
-      bySecond.set(second, { open, high, low, close });
-      continue;
-    }
+const normalizeAreaPoints = (
+  points: AreaPoint[]
+): {
+  area: AreaData<UTCTimestamp>[];
+  high: LineData<UTCTimestamp>[];
+  low: LineData<UTCTimestamp>[];
+} => {
+  const bySecond = new Map<number, { value: number; high: number | null; low: number | null }>();
+  const ordered = [...points]
+    .filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.value))
+    .sort((a, b) => a.ts - b.ts);
 
+  for (const point of ordered) {
+    const second = Math.floor(point.ts / 1000);
     bySecond.set(second, {
-      open: prev.open,
-      high: Math.max(prev.high, high),
-      low: Math.min(prev.low, low),
-      close,
+      value: toPercent(point.value),
+      high: Number.isFinite(point.high) ? toPercent(point.high ?? 0) : null,
+      low: Number.isFinite(point.low) ? toPercent(point.low ?? 0) : null,
     });
   }
 
-  return Array.from(bySecond.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([sec, value]) => ({
+  const rows = Array.from(bySecond.entries()).sort((a, b) => a[0] - b[0]);
+  return {
+    area: rows.map(([sec, row]) => ({
       time: sec as UTCTimestamp,
-      open: value.open,
-      high: value.high,
-      low: value.low,
-      close: value.close,
-    }));
+      value: row.value,
+    })),
+    high: rows
+      .filter(([, row]) => row.high !== null)
+      .map(([sec, row]) => ({
+        time: sec as UTCTimestamp,
+        value: row.high as number,
+      })),
+    low: rows
+      .filter(([, row]) => row.low !== null)
+      .map(([sec, row]) => ({
+        time: sec as UTCTimestamp,
+        value: row.low as number,
+      })),
+  };
 };
 
 const normalizeLinePoints = (points: LinePoint[]): LineData<UTCTimestamp>[] => {
@@ -111,95 +136,33 @@ const normalizeLinePoints = (points: LinePoint[]): LineData<UTCTimestamp>[] => {
     }));
 };
 
-const sameCandle = (
-  a: CandlestickData<UTCTimestamp>,
-  b: CandlestickData<UTCTimestamp>
-): boolean =>
-  a.time === b.time &&
-  a.open === b.open &&
-  a.high === b.high &&
-  a.low === b.low &&
-  a.close === b.close;
-
-const sameLinePoint = (a: LineData<UTCTimestamp>, b: LineData<UTCTimestamp>): boolean =>
-  a.time === b.time && a.value === b.value;
-
-const MIN_VISIBLE_RANGE_PERCENT = 2;
-
-const withMinVisiblePriceRange = <T extends { priceRange?: { minValue: number; maxValue: number } }>(
-  autoScaleInfo: T | null
-): T | null => {
-  if (!autoScaleInfo?.priceRange) return autoScaleInfo;
-  const minValue = Number(autoScaleInfo.priceRange.minValue);
-  const maxValue = Number(autoScaleInfo.priceRange.maxValue);
-  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) return autoScaleInfo;
-  const span = maxValue - minValue;
-  if (span >= MIN_VISIBLE_RANGE_PERCENT) return autoScaleInfo;
-  const center = (maxValue + minValue) / 2;
-  return {
-    ...autoScaleInfo,
-    priceRange: {
-      minValue: center - MIN_VISIBLE_RANGE_PERCENT / 2,
-      maxValue: center + MIN_VISIBLE_RANGE_PERCENT / 2,
-    },
-  };
-};
-
-const shouldResetCandles = (
-  prev: CandlestickData<UTCTimestamp>[],
-  next: CandlestickData<UTCTimestamp>[]
-): boolean => {
-  if (next.length === 0) return prev.length !== 0;
-  if (prev.length === 0) return true;
-  if (next.length < prev.length) return true;
-
-  const stablePrefixLength = Math.min(prev.length, next.length) - 1;
-  for (let i = 0; i < stablePrefixLength; i += 1) {
-    if (!sameCandle(prev[i], next[i])) return true;
-  }
-
-  return false;
-};
-
-const shouldResetLine = (
-  prev: LineData<UTCTimestamp>[],
-  next: LineData<UTCTimestamp>[]
-): boolean => {
-  if (next.length === 0) return prev.length !== 0;
-  if (prev.length === 0) return true;
-  if (next.length < prev.length) return true;
-
-  const stablePrefixLength = Math.min(prev.length, next.length) - 1;
-  for (let i = 0; i < stablePrefixLength; i += 1) {
-    if (!sameLinePoint(prev[i], next[i])) return true;
-  }
-
-  return false;
-};
-
 const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
-  const mode = props.mode ?? 'candles';
-  const candleInput = mode === 'candles' ? props.data : [];
-  const lineInput = mode === 'lines' ? props.lines : [];
-
-  const normalizedCandles = useMemo(() => normalizeCandles(candleInput), [candleInput]);
-  const normalizedLines = useMemo(
-    () =>
-      lineInput.map((line) => ({
-        ...line,
-        points: normalizeLinePoints(line.points),
-      })),
-    [lineInput]
-  );
-
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const highBandSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const lowBandSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lineSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
 
-  const candleDataRef = useRef<CandlestickData<UTCTimestamp>[]>([]);
-  const lineDataRef = useRef<Map<string, LineData<UTCTimestamp>[]>>(new Map());
-  const lastFitSignatureRef = useRef("");
+  const normalizedVolume = useMemo(
+    () => normalizeVolumeBars(props.volumeBars ?? []),
+    [props.volumeBars]
+  );
+  const normalizedArea = useMemo(
+    () => (props.mode === 'area' ? normalizeAreaPoints(props.points) : null),
+    [props]
+  );
+  const normalizedLines = useMemo(
+    () =>
+      props.mode === 'lines'
+        ? props.lines.map((line) => ({
+            ...line,
+            points: normalizeLinePoints(line.points),
+          }))
+        : [],
+    [props]
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -209,120 +172,137 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       autoSize: true,
       layout: {
         background: { type: ColorType.Solid, color: '#000000' },
-        textColor: '#a1a1aa',
+        textColor: '#9ca3af',
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.05)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: 'rgba(255,255,255,0.035)' },
+        horzLines: { color: 'rgba(255,255,255,0.045)' },
       },
       crosshair: {
-        vertLine: { color: 'rgba(244,63,164,0.65)' },
-        horzLine: { color: 'rgba(244,63,164,0.65)' },
+        vertLine: { color: 'rgba(244,63,164,0.28)' },
+        horzLine: { color: 'rgba(244,63,164,0.28)' },
       },
       localization: {
-        priceFormatter: (value) => `${value.toFixed(2)}%`,
+        priceFormatter: (value) => `${value.toFixed(1)}%`,
       },
       rightPriceScale: {
         borderColor: '#18181b',
-        scaleMargins: { top: 0.06, bottom: 0.06 },
+        scaleMargins: { top: 0.08, bottom: 0.24 },
       },
       timeScale: {
         borderColor: '#18181b',
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 0,
-        barSpacing: 6,
+        barSpacing: 7,
         minBarSpacing: 4,
       },
+    });
+
+    chart.priceScale('volume').applyOptions({
+      visible: false,
+      scaleMargins: { top: 0.8, bottom: 0.02 },
+      borderVisible: false,
     });
 
     chartRef.current = chart;
 
     return () => {
       chartRef.current = null;
-      candleSeriesRef.current = null;
+      areaSeriesRef.current = null;
+      highBandSeriesRef.current = null;
+      lowBandSeriesRef.current = null;
       lineSeriesRef.current.clear();
-      candleDataRef.current = [];
-      lineDataRef.current.clear();
-      lastFitSignatureRef.current = "";
+      volumeSeriesRef.current = null;
       chart.remove();
     };
   }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || mode !== 'candles') return;
+    if (!chart) return;
+
+    if (!volumeSeriesRef.current) {
+      volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
+        priceScaleId: 'volume',
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+    }
+    volumeSeriesRef.current.setData(normalizedVolume);
+  }, [normalizedVolume]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || props.mode !== 'area' || !normalizedArea) return;
 
     for (const [id, series] of lineSeriesRef.current.entries()) {
       chart.removeSeries(series);
       lineSeriesRef.current.delete(id);
     }
-    lineDataRef.current.clear();
 
-    let series = candleSeriesRef.current;
-    if (!series) {
-      series = chart.addSeries(CandlestickSeries, {
-        upColor: 'rgba(163,230,53,0.95)',
-        downColor: 'rgba(244,63,164,0.95)',
-        borderUpColor: 'rgba(190,242,100,1)',
-        borderDownColor: 'rgba(249,168,212,1)',
-        borderVisible: true,
-        wickUpColor: 'rgba(190,242,100,0.95)',
-        wickDownColor: 'rgba(249,168,212,0.95)',
-        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+    if (!areaSeriesRef.current) {
+      areaSeriesRef.current = chart.addSeries(AreaSeries, {
+        lineWidth: 3,
+        priceLineVisible: false,
         lastValueVisible: true,
-        priceLineVisible: true,
-        priceLineColor: 'rgba(244,63,164,0.9)',
-        autoscaleInfoProvider: (baseImplementation: (() => unknown) | undefined) =>
-          withMinVisiblePriceRange(
-            typeof baseImplementation === "function" ? (baseImplementation() as any) : null
-          ),
+        lineColor: props.color ?? 'rgba(190,255,29,1)',
+        topColor: 'rgba(190,255,29,0.28)',
+        bottomColor: 'rgba(190,255,29,0.02)',
+        crosshairMarkerVisible: true,
       });
-      candleSeriesRef.current = series;
-      candleDataRef.current = [];
-      lastFitSignatureRef.current = "";
     }
+    areaSeriesRef.current.applyOptions({
+      lineColor: props.color ?? 'rgba(190,255,29,1)',
+      topColor: 'rgba(190,255,29,0.28)',
+      bottomColor: 'rgba(190,255,29,0.02)',
+    });
+    areaSeriesRef.current.setData(normalizedArea.area);
 
-    const prev = candleDataRef.current;
-    const next = normalizedCandles;
-
-    if (shouldResetCandles(prev, next)) {
-      series.setData(next);
-      candleDataRef.current = next;
-    } else if (next.length > prev.length) {
-      for (let i = prev.length; i < next.length; i += 1) {
-        series.update(next[i]);
-      }
-      candleDataRef.current = next;
-    } else if (next.length > 0 && prev.length > 0) {
-      const prevLast = prev[prev.length - 1];
-      const nextLast = next[next.length - 1];
-      if (!sameCandle(prevLast, nextLast)) {
-        series.update(nextLast);
-      }
-      candleDataRef.current = next;
+    if (!highBandSeriesRef.current) {
+      highBandSeriesRef.current = chart.addSeries(LineSeries, {
+        color: 'rgba(190,255,29,0.18)',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
     }
+    if (!lowBandSeriesRef.current) {
+      lowBandSeriesRef.current = chart.addSeries(LineSeries, {
+        color: 'rgba(245,68,166,0.18)',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+    }
+    highBandSeriesRef.current.setData(normalizedArea.high);
+    lowBandSeriesRef.current.setData(normalizedArea.low);
 
-    const nextSignature =
-      next.length > 0
-        ? `${String(next[0]?.time)}:${String(next[next.length - 1]?.time)}:${next.length}`
-        : "";
-    if (next.length > 0 && nextSignature !== lastFitSignatureRef.current) {
+    const allTimes = normalizedArea.area.map((row) => Number(row.time));
+    if (allTimes.length > 0) {
       chart.timeScale().fitContent();
-      lastFitSignatureRef.current = nextSignature;
     }
-  }, [mode, normalizedCandles]);
+  }, [normalizedArea, props]);
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || mode !== 'lines') return;
+    if (!chart || props.mode !== 'lines') return;
 
-    if (candleSeriesRef.current) {
-      chart.removeSeries(candleSeriesRef.current);
-      candleSeriesRef.current = null;
-      candleDataRef.current = [];
-      lastFitSignatureRef.current = "";
+    if (areaSeriesRef.current) {
+      chart.removeSeries(areaSeriesRef.current);
+      areaSeriesRef.current = null;
+    }
+    if (highBandSeriesRef.current) {
+      chart.removeSeries(highBandSeriesRef.current);
+      highBandSeriesRef.current = null;
+    }
+    if (lowBandSeriesRef.current) {
+      chart.removeSeries(lowBandSeriesRef.current);
+      lowBandSeriesRef.current = null;
     }
 
     const activeIds = new Set(normalizedLines.map((line) => line.id));
@@ -330,10 +310,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       if (activeIds.has(id)) continue;
       chart.removeSeries(series);
       lineSeriesRef.current.delete(id);
-      lineDataRef.current.delete(id);
     }
-
-    let hasAnyData = false;
 
     for (const line of normalizedLines) {
       let series = lineSeriesRef.current.get(line.id);
@@ -341,68 +318,29 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
         series = chart.addSeries(LineSeries, {
           color: line.color,
           lineWidth: 2,
+          priceLineVisible: false,
           lastValueVisible: true,
-          priceLineVisible: true,
-          priceLineColor: line.color,
           crosshairMarkerVisible: true,
-          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-          lastPriceAnimation: LastPriceAnimationMode.OnDataUpdate,
-          autoscaleInfoProvider: (baseImplementation: (() => unknown) | undefined) =>
-            withMinVisiblePriceRange(
-              typeof baseImplementation === "function" ? (baseImplementation() as any) : null
-            ),
         });
         lineSeriesRef.current.set(line.id, series);
-        lineDataRef.current.set(line.id, []);
-      } else {
-        series.applyOptions({
-          color: line.color,
-          priceLineColor: line.color,
-        });
       }
-
-      const prev = lineDataRef.current.get(line.id) ?? [];
-      const next = line.points;
-
-      if (shouldResetLine(prev, next)) {
-        series.setData(next);
-        lineDataRef.current.set(line.id, next);
-      } else if (next.length > prev.length) {
-        for (let i = prev.length; i < next.length; i += 1) {
-          series.update(next[i]);
-        }
-        lineDataRef.current.set(line.id, next);
-      } else if (next.length > 0 && prev.length > 0) {
-        const prevLast = prev[prev.length - 1];
-        const nextLast = next[next.length - 1];
-        if (!sameLinePoint(prevLast, nextLast)) {
-          series.update(nextLast);
-        }
-        lineDataRef.current.set(line.id, next);
-      }
-
-      if (next.length > 0) {
-        hasAnyData = true;
-      }
+      series.applyOptions({
+        color: line.color,
+        lastValueVisible: true,
+      });
+      series.setData(line.points);
     }
 
-    const allTimes = Array.from(lineDataRef.current.values())
-      .flatMap((rows) => rows.map((row) => Number(row.time)))
-      .filter((time) => Number.isFinite(time))
-      .sort((a, b) => a - b);
-    const nextSignature =
-      allTimes.length > 0
-        ? `${allTimes[0]}:${allTimes[allTimes.length - 1]}:${allTimes.length}`
-        : "";
-    if (hasAnyData && nextSignature !== lastFitSignatureRef.current) {
+    const allTimes = normalizedLines.flatMap((line) => line.points.map((row) => Number(row.time)));
+    if (allTimes.length > 0) {
       chart.timeScale().fitContent();
-      lastFitSignatureRef.current = nextSignature;
     }
-  }, [mode, normalizedLines]);
+  }, [normalizedLines, props.mode]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-xl border border-zinc-900 bg-black">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(163,230,53,0.08),transparent_45%),radial-gradient(circle_at_80%_100%,rgba(244,63,164,0.10),transparent_50%)]" />
+    <div className="relative h-full w-full overflow-hidden rounded-[26px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(17,17,22,0.95),rgba(0,0,0,1))]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(163,230,53,0.12),transparent_42%),radial-gradient(circle_at_85%_100%,rgba(244,63,164,0.12),transparent_50%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),transparent)]" />
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );

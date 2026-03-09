@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
-import { Activity, ArrowUpRight, Clock3, Layers3, Waves } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Activity, ArrowUpRight, Clock3, Waves } from 'lucide-react';
 import type { Market } from '../types';
 import { formatTimeRemaining } from '../lib/time';
 import { formatCompactUsd, formatPercent, roundPercentValue } from '../src/lib/marketPresentation';
@@ -12,8 +12,6 @@ type MarketPulseBoardProps = {
   lang?: 'RU' | 'EN';
   onMarketClick?: (market: Market) => void;
 };
-
-type BoardMode = 'TRENDING' | 'TOP';
 
 const formatCompactValue = (value: number, options?: Intl.NumberFormatOptions) =>
   new Intl.NumberFormat('en-US', {
@@ -26,12 +24,6 @@ const formatCount = (value: number) => formatCompactValue(Math.max(0, value));
 
 const hasFinite = (value: number | null | undefined): value is number =>
   typeof value === 'number' && Number.isFinite(value);
-
-const getLiquidity = (market: Market): number | null => {
-  if (hasFinite(market.openInterest)) return Math.max(0, market.openInterest);
-  if (hasFinite(market.liquidityB)) return Math.max(0, market.liquidityB);
-  return null;
-};
 
 const getSpreadPercent = (market: Market): number | null => {
   if (!hasFinite(market.bestBid) || !hasFinite(market.bestAsk)) return null;
@@ -82,29 +74,27 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
   lang = 'EN',
   onMarketClick,
 }) => {
-  const [mode, setMode] = useState<BoardMode>('TRENDING');
-
   const topRows = useMemo(() => {
     const candidates = markets.filter((market) => !isEnded(market));
     const rows = candidates.length > 0 ? candidates : markets;
-    const sorted = [...rows].sort((a, b) => {
-      const aPrimary = mode === 'TRENDING' ? (a.volume24hRaw ?? 0) : (a.volumeRaw ?? 0);
-      const bPrimary = mode === 'TRENDING' ? (b.volume24hRaw ?? 0) : (b.volumeRaw ?? 0);
-      if (bPrimary !== aPrimary) return bPrimary - aPrimary;
-      const aLiquidity = getLiquidity(a) ?? 0;
-      const bLiquidity = getLiquidity(b) ?? 0;
-      if (bLiquidity !== aLiquidity) return bLiquidity - aLiquidity;
-      const aCreated = Date.parse(a.createdAt);
-      const bCreated = Date.parse(b.createdAt);
-      return (Number.isFinite(bCreated) ? bCreated : 0) - (Number.isFinite(aCreated) ? aCreated : 0);
-    });
-    return sorted.slice(0, 8);
-  }, [markets, mode]);
+    return [...rows]
+      .sort((a, b) => {
+        const a24h = a.volume24hRaw ?? 0;
+        const b24h = b.volume24hRaw ?? 0;
+        if (b24h !== a24h) return b24h - a24h;
+        const aTotal = a.volumeRaw ?? 0;
+        const bTotal = b.volumeRaw ?? 0;
+        if (bTotal !== aTotal) return bTotal - aTotal;
+        const aCreated = Date.parse(a.createdAt);
+        const bCreated = Date.parse(b.createdAt);
+        return (Number.isFinite(bCreated) ? bCreated : 0) - (Number.isFinite(aCreated) ? aCreated : 0);
+      })
+      .slice(0, 8);
+  }, [markets]);
 
   const summary = useMemo(() => {
     const liveMarkets = markets.filter((market) => !isEnded(market)).length;
     const volume24h = markets.reduce((sum, market) => sum + Math.max(0, market.volume24hRaw ?? 0), 0);
-    const liveBooks = markets.filter((market) => hasFinite(market.bestBid) && hasFinite(market.bestAsk)).length;
     const closingSoon = markets.filter((market) => {
       if (isEnded(market)) return false;
       const deadline = market.closesAt || market.expiresAt;
@@ -128,13 +118,6 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
         icon: Waves,
       },
       {
-        key: 'books',
-        label: lang === 'RU' ? 'Активные книги' : 'Live books',
-        value: formatCount(liveBooks),
-        tone: 'text-zinc-100',
-        icon: Layers3,
-      },
-      {
         key: 'closing',
         label: lang === 'RU' ? 'Скоро закроются' : 'Closing soon',
         value: formatCount(closingSoon),
@@ -146,7 +129,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
 
   return (
     <section className="px-4 pt-4 pb-5">
-      <div className="relative overflow-hidden rounded-[28px] border border-zinc-900 bg-[radial-gradient(circle_at_top_left,rgba(245,68,166,0.16),transparent_35%),radial-gradient(circle_at_top_right,rgba(190,255,29,0.10),transparent_30%),linear-gradient(180deg,rgba(20,20,24,0.96),rgba(5,5,7,1))] p-4 sm:p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+      <div className="relative overflow-hidden rounded-[30px] border border-zinc-900 bg-[radial-gradient(circle_at_top_left,rgba(245,68,166,0.14),transparent_34%),radial-gradient(circle_at_top_right,rgba(190,255,29,0.10),transparent_30%),linear-gradient(180deg,rgba(19,19,24,0.97),rgba(6,6,10,1))] p-4 sm:p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent_40%)] pointer-events-none" />
 
         <div className="relative flex flex-col gap-5">
@@ -158,19 +141,19 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
               </div>
               <h2 className="mt-3 text-2xl font-semibold tracking-tight text-zinc-50 sm:text-[2rem]">
                 {lang === 'RU'
-                  ? 'Топ рынков с приоритетом на ликвидность, объем и скорость чтения'
-                  : 'Top markets tuned for liquidity, volume, and fast scanning'}
+                  ? 'Быстрый обзор активных рынков с упором на объем и вероятность'
+                  : 'A fast scan of active markets focused on volume and probability'}
               </h2>
               <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-400">
                 {lang === 'RU'
-                  ? 'Сохраняем текущий каталог, но добавляем более плотный обзор для быстрого входа в лучшие рынки.'
-                  : 'The existing catalog stays in place, with a denser board above it for fast entry into the best markets.'}
+                  ? 'Плотная обзорная панель над каталогом для быстрого входа в самые активные события.'
+                  : 'A denser board above the catalog for quick entry into the most active events.'}
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 xl:w-[520px]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 xl:w-[560px]">
               {loading && markets.length === 0
-                ? Array.from({ length: 4 }).map((_, idx) => (
+                ? Array.from({ length: 3 }).map((_, idx) => (
                     <div
                       key={`summary-skeleton-${idx}`}
                       className="h-[92px] rounded-2xl border border-zinc-900 bg-black/50 animate-pulse"
@@ -181,7 +164,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                     return (
                       <div
                         key={item.key}
-                        className="rounded-2xl border border-zinc-900 bg-black/55 px-4 py-3 backdrop-blur-sm"
+                        className="rounded-[22px] border border-zinc-900 bg-black/55 px-4 py-3 backdrop-blur-sm"
                       >
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
@@ -196,7 +179,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
             </div>
           </div>
 
-          <div className="rounded-[24px] border border-zinc-900 bg-black/60 backdrop-blur-md">
+          <div className="rounded-[26px] border border-zinc-900 bg-black/60 backdrop-blur-md">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-900 px-4 py-3">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
@@ -204,41 +187,18 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                 </div>
                 <div className="mt-1 text-sm text-zinc-400">
                   {lang === 'RU'
-                    ? 'Blur-подобный обзор, но на реальных рыночных метриках платформы'
-                    : 'Blur-style scan view, adapted to real platform market metrics'}
+                    ? 'Отсортировано по активности за 24 часа, затем по общему объему'
+                    : 'Sorted by 24-hour activity first, then by total volume'}
                 </div>
-              </div>
-              <div className="inline-flex rounded-full border border-zinc-900 bg-zinc-950/60 p-1">
-                {([
-                  { id: 'TRENDING' as const, labelRu: 'Тренды', labelEn: 'Trending' },
-                  { id: 'TOP' as const, labelRu: 'Топ', labelEn: 'Top' },
-                ]).map((tab) => {
-                  const active = mode === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setMode(tab.id)}
-                      className={`min-h-[40px] rounded-full px-4 text-xs font-semibold uppercase tracking-[0.16em] transition ${
-                        active
-                          ? 'bg-zinc-100 text-zinc-950 shadow-[0_10px_25px_rgba(255,255,255,0.08)]'
-                          : 'text-zinc-400 hover:text-white'
-                      }`}
-                    >
-                      {lang === 'RU' ? tab.labelRu : tab.labelEn}
-                    </button>
-                  );
-                })}
               </div>
             </div>
 
             <div className="hidden lg:block">
-              <div className="grid grid-cols-[minmax(0,2.6fr)_1fr_1fr_1fr_1.1fr_0.8fr] gap-4 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+              <div className="grid grid-cols-[minmax(0,2.8fr)_1fr_1fr_1fr_0.9fr] gap-4 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                 <div>{lang === 'RU' ? 'Рынок' : 'Market'}</div>
                 <div>{lang === 'RU' ? 'Сигнал' : 'Signal'}</div>
                 <div>{lang === 'RU' ? 'Объем 24ч' : '24h vol'}</div>
                 <div>{lang === 'RU' ? 'Общий объем' : 'Total vol'}</div>
-                <div>{lang === 'RU' ? 'Ликвидность' : 'Liquidity'}</div>
                 <div>{lang === 'RU' ? 'До конца' : 'Ends'}</div>
               </div>
 
@@ -247,9 +207,8 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                   ? Array.from({ length: 6 }).map((_, idx) => (
                       <div
                         key={`desktop-row-skeleton-${idx}`}
-                        className="grid grid-cols-[minmax(0,2.6fr)_1fr_1fr_1fr_1.1fr_0.8fr] gap-4 border-b border-zinc-900 px-4 py-4 animate-pulse"
+                        className="grid grid-cols-[minmax(0,2.8fr)_1fr_1fr_1fr_0.9fr] gap-4 border-b border-zinc-900 px-4 py-4 animate-pulse"
                       >
-                        <div className="h-10 rounded-2xl bg-zinc-950/80" />
                         <div className="h-10 rounded-2xl bg-zinc-950/80" />
                         <div className="h-10 rounded-2xl bg-zinc-950/80" />
                         <div className="h-10 rounded-2xl bg-zinc-950/80" />
@@ -259,7 +218,6 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                     ))
                   : topRows.map((market) => {
                       const signal = getSignal(market, lang);
-                      const liquidity = getLiquidity(market);
                       const spread = getSpreadPercent(market);
                       const category =
                         (lang === 'RU' ? market.categoryLabelRu : market.categoryLabelEn) ??
@@ -271,7 +229,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                           key={`desktop-market-${market.id}`}
                           type="button"
                           onClick={() => onMarketClick?.(market)}
-                          className="grid w-full cursor-pointer grid-cols-[minmax(0,2.6fr)_1fr_1fr_1fr_1.1fr_0.8fr] gap-4 border-b border-zinc-900 px-4 py-4 text-left transition-colors hover:bg-zinc-950/70"
+                          className="grid w-full cursor-pointer grid-cols-[minmax(0,2.8fr)_1fr_1fr_1fr_0.9fr] gap-4 border-b border-zinc-900 px-4 py-4 text-left transition-colors hover:bg-zinc-950/70"
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <img
@@ -285,7 +243,11 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                               </div>
                               <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
                                 <span className="inline-flex items-center gap-1 rounded-full border border-zinc-900 bg-zinc-950/60 px-2 py-1">
-                                  <img src={getProviderLogo(market)} alt={getProviderName(market)} className="h-3.5 w-3.5 object-contain" />
+                                  <img
+                                    src={getProviderLogo(market)}
+                                    alt={getProviderName(market)}
+                                    className="h-3.5 w-3.5 object-contain"
+                                  />
                                   {getProviderName(market)}
                                 </span>
                                 {category ? <span className="truncate">{category}</span> : null}
@@ -295,25 +257,23 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
 
                           <div className="flex flex-col justify-center">
                             <div className="text-sm font-semibold text-zinc-100">{formatPercent(signal.chance)}</div>
-                            <div className="mt-1 text-[11px] text-zinc-500">{signal.label}</div>
+                            <div className="mt-1 text-[11px] text-zinc-500">
+                              {signal.label}
+                              {spread === null ? '' : ` • ${spread.toFixed(1)}% spread`}
+                            </div>
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volume24hRaw)}</div>
+                            <div className="text-sm font-semibold text-zinc-100">{market.volume24h ?? '—'}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">
                               {market.liveUpdatedAt ? (lang === 'RU' ? 'живые данные' : 'live data') : (lang === 'RU' ? 'кэш' : 'cache')}
                             </div>
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volumeRaw)}</div>
-                            <div className="mt-1 text-[11px] text-zinc-500">{market.volume}</div>
-                          </div>
-
-                          <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{liquidity === null ? '—' : formatCompactUsd(liquidity)}</div>
+                            <div className="text-sm font-semibold text-zinc-100">{market.volume}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">
-                              {spread === null ? (lang === 'RU' ? 'спред —' : 'spread —') : `${lang === 'RU' ? 'спред' : 'spread'} ${spread.toFixed(1)}%`}
+                              {market.volume24h ? `${lang === 'RU' ? '24ч' : '24h'} ${market.volume24h}` : '—'}
                             </div>
                           </div>
 
@@ -342,7 +302,6 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                   ))
                 : topRows.map((market) => {
                     const signal = getSignal(market, lang);
-                    const liquidity = getLiquidity(market);
                     const spread = getSpreadPercent(market);
                     return (
                       <button
@@ -363,32 +322,24 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                             </div>
                             <div className="mt-1 text-xs text-zinc-500">
                               {getProviderName(market)} • {signal.label} {formatPercent(signal.chance)}
+                              {spread === null ? '' : ` • ${spread.toFixed(1)}%`}
                             </div>
                           </div>
                           <ArrowUpRight size={14} className="mt-1 text-zinc-600" />
                         </div>
 
-                        <div className="mt-4 grid grid-cols-2 gap-3">
+                        <div className="mt-4 grid grid-cols-3 gap-3">
                           <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                               {lang === 'RU' ? '24ч' : '24h'}
                             </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volume24hRaw)}</div>
+                            <div className="mt-2 text-sm font-semibold text-zinc-100">{market.volume24h ?? '—'}</div>
                           </div>
                           <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                               {lang === 'RU' ? 'Всего' : 'Total'}
                             </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volumeRaw)}</div>
-                          </div>
-                          <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                              {lang === 'RU' ? 'Ликвидность' : 'Liquidity'}
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{liquidity === null ? '—' : formatCompactUsd(liquidity)}</div>
-                            <div className="mt-1 text-[11px] text-zinc-500">
-                              {spread === null ? '—' : `${spread.toFixed(1)}%`}
-                            </div>
+                            <div className="mt-2 text-sm font-semibold text-zinc-100">{market.volume}</div>
                           </div>
                           <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">

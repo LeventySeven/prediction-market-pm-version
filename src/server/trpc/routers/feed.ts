@@ -3,6 +3,7 @@ import { publicProcedure, router } from "../trpc";
 import { listMirroredPolymarketMarkets } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
 import { listEnabledProviders } from "../../venues/registry";
+import { resolveDisplayVolume } from "../../../lib/marketPresentation";
 
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
 type MarketLiveFeedRow = Pick<
@@ -78,7 +79,7 @@ export const feedRouter = router({
       const candidates: FeedMarketCandidate[] = polymarketRows.map((market) => ({
         marketId: market.id,
         category: market.category ?? "general",
-        fallbackVolume: market.volume,
+        fallbackVolume: resolveDisplayVolume(market.volume).raw ?? 0,
       }));
 
       const liveByMarket = new Map<string, { rolling24hVolume: number; sourceTs: number }>();
@@ -147,7 +148,7 @@ export const feedRouter = router({
           candidates.push({
             marketId,
             category: String(row.category ?? "general"),
-            fallbackVolume: live?.rolling24hVolume ?? 0,
+            fallbackVolume: resolveDisplayVolume(live?.rolling24hVolume).raw ?? 0,
           });
           if (live) {
             liveByMarket.set(marketId, live);

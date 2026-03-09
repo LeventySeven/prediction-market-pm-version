@@ -3,6 +3,12 @@ type OutcomeLike = {
   sortOrder?: number | null;
 };
 
+export type DisplayVolume = {
+  raw: number | null;
+  label: string;
+  missing: boolean;
+};
+
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
 const toFiniteNonNegative = (value: number | string | null | undefined): number => {
@@ -11,6 +17,24 @@ const toFiniteNonNegative = (value: number | string | null | undefined): number 
 };
 
 const trimTrailingZeros = (value: string): string => value.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+
+const parseVolumeValue = (value: number | string | null | undefined): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase().replace(/\$/g, "").replace(/,/g, "");
+  if (!normalized) return null;
+  const compactMatch = normalized.match(/^(-?\d+(?:\.\d+)?)([kmb])?$/);
+  if (compactMatch) {
+    const base = Number(compactMatch[1]);
+    if (!Number.isFinite(base)) return null;
+    const suffix = compactMatch[2];
+    const multiplier =
+      suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
+    return Math.max(0, base * multiplier);
+  }
+  const parsed = Number(normalized.replace(/[^0-9.-]+/g, ""));
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+};
 
 export const normalizeOutcomeLabel = (title?: string | null): string =>
   String(title ?? "").trim().toLowerCase();
@@ -61,6 +85,34 @@ export const computeEffectiveVolumeRaw = (
   baseVolume: number | string | null | undefined,
   rolling24hVolume: number | string | null | undefined
 ): number => Math.max(toFiniteNonNegative(baseVolume), toFiniteNonNegative(rolling24hVolume));
+
+export const resolveDisplayVolume = (
+  ...values: Array<number | string | null | undefined>
+): DisplayVolume => {
+  let hasKnown = false;
+  let maxValue = 0;
+
+  for (const value of values) {
+    const parsed = parseVolumeValue(value);
+    if (parsed === null) continue;
+    hasKnown = true;
+    if (parsed > maxValue) maxValue = parsed;
+  }
+
+  if (!hasKnown) {
+    return {
+      raw: null,
+      label: "—",
+      missing: true,
+    };
+  }
+
+  return {
+    raw: maxValue,
+    label: formatCompactUsd(maxValue),
+    missing: false,
+  };
+};
 
 export const formatCompactUsd = (value: number | null | undefined): string => {
   const numeric = toFiniteNonNegative(value);

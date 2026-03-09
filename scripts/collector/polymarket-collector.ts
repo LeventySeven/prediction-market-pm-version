@@ -35,8 +35,8 @@ const WS_SUBSCRIPTION_CHUNK_SIZE = Math.max(50, Math.min(500, Number(process.env
 const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
 const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
 const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
-const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 150)));
-const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 3)));
+const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 200)));
+const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 15)));
 const NEW_MARKET_POLL_INTERVAL_MS = Math.max(
   5000,
   Number(process.env.COLLECTOR_NEW_MARKET_POLL_INTERVAL_MS ?? 10_000)
@@ -61,8 +61,8 @@ const MISSING_MARKET_MISS_THRESHOLD = Math.max(
   1,
   Math.min(20, Number(process.env.COLLECTOR_MISSING_MARKET_MISS_THRESHOLD ?? 3))
 );
-const MAX_TRACKED_MARKETS = Math.max(20, Number(process.env.COLLECTOR_MAX_TRACKED_MARKETS ?? 500));
-const MAX_TRACKED_ASSET_IDS = Math.max(100, Number(process.env.COLLECTOR_MAX_TRACKED_ASSET_IDS ?? 1200));
+const MAX_TRACKED_MARKETS = Math.max(20, Number(process.env.COLLECTOR_MAX_TRACKED_MARKETS ?? 2500));
+const MAX_TRACKED_ASSET_IDS = Math.max(100, Number(process.env.COLLECTOR_MAX_TRACKED_ASSET_IDS ?? 5000));
 const LIVE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_UPSERT_CHUNK_SIZE ?? 400)));
 const CANDLE_UPSERT_CHUNK_SIZE = Math.max(100, Math.min(1000, Number(process.env.COLLECTOR_CANDLE_UPSERT_CHUNK_SIZE ?? 400)));
 const ENABLE_SNAPSHOT_REALTIME_SEED =
@@ -1037,6 +1037,11 @@ const syncSnapshot = async (mode: "full" | "head") => {
       scope: syncScope,
       startedAt,
       errorMessage: null,
+      stats: {
+        trackedMarkets: 0,
+        trackedSubscriptions: activeSubscribedAssetIds.size,
+        trackedAssetIds: trackedAssetIds.size,
+      },
     });
 
     const markets = await listPolymarketMarketsSnapshot({
@@ -1052,6 +1057,12 @@ const syncSnapshot = async (mode: "full" | "head") => {
         scope: syncScope,
         successAt: new Date().toISOString(),
         errorMessage: null,
+        stats: {
+          trackedMarkets: 0,
+          trackedSubscriptions: activeSubscribedAssetIds.size,
+          trackedAssetIds: trackedAssetIds.size,
+          changedMarkets: 0,
+        },
       });
       return;
     }
@@ -1133,6 +1144,13 @@ const syncSnapshot = async (mode: "full" | "head") => {
       scope: syncScope,
       successAt: new Date().toISOString(),
       errorMessage: null,
+      stats: {
+        trackedMarkets: markets.length,
+        openMarkets: markets.length,
+        trackedSubscriptions: activeSubscribedAssetIds.size,
+        trackedAssetIds: trackedAssetIds.size,
+        changedMarkets: changedMarkets.length,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1140,6 +1158,11 @@ const syncSnapshot = async (mode: "full" | "head") => {
       provider: "polymarket",
       scope: syncScope,
       errorMessage: message,
+      stats: {
+        trackedMarkets: 0,
+        trackedSubscriptions: activeSubscribedAssetIds.size,
+        trackedAssetIds: trackedAssetIds.size,
+      },
     });
     console.error(`[collector] ${mode} snapshot sync failed`, message);
     throw error;

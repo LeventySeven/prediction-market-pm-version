@@ -55,6 +55,7 @@ describe("limitlessAdapter production readiness", () => {
   it("caps page size to API-safe limits and returns newest-first markets", async () => {
     const requested: Array<{ path: string; page: number; limit: number }> = [];
     const total = 220;
+    const pageSize = 200;
 
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
       const url = getUrl(input);
@@ -62,7 +63,7 @@ describe("limitlessAdapter production readiness", () => {
       const limit = Number(url.searchParams.get("limit") || "100");
       requested.push({ path: url.pathname, page, limit });
 
-      const start = (page - 1) * 100 + 1;
+      const start = (page - 1) * pageSize + 1;
       const count = Math.max(0, Math.min(limit, total - start + 1));
       const rows = Array.from({ length: count }, (_, idx) => makeMarketRow(start + idx));
       return new Response(JSON.stringify({ data: rows }), {
@@ -75,7 +76,7 @@ describe("limitlessAdapter production readiness", () => {
 
     expect(rows).toHaveLength(220);
     expect(rows[0]?.providerMarketId).toBe("220");
-    expect(requested.map((r) => `${r.page}:${r.limit}`)).toEqual(["1:100", "2:100", "3:20"]);
+    expect(requested.map((r) => `${r.page}:${r.limit}`)).toEqual(["1:200", "2:20"]);
     expect(new Set(requested.map((r) => r.path))).toEqual(new Set(["/markets/active"]));
   });
 

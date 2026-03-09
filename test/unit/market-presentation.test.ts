@@ -5,6 +5,7 @@ import {
   formatPercent,
   pickBinaryOutcomes,
   pickYesLikeOutcome,
+  resolveDisplayVolume,
   resolveReliableBinaryPrice,
   roundPercentValue,
 } from "../../src/lib/marketPresentation";
@@ -42,6 +43,24 @@ describe("marketPresentation", () => {
     expect(formatCompactUsd(98_580_143.58917899)).toBe("$98.6m");
     expect(formatCompactUsd(9_800_000)).toBe("$9.8m");
     expect(formatCompactUsd(12_450)).toBe("$12.4k");
+  });
+
+  it("resolves display volume from live and formatted fallbacks", () => {
+    expect(resolveDisplayVolume(null, undefined)).toEqual({
+      raw: null,
+      label: "—",
+      missing: true,
+    });
+    expect(resolveDisplayVolume(0, 12_500)).toEqual({
+      raw: 12_500,
+      label: "$12.5k",
+      missing: false,
+    });
+    expect(resolveDisplayVolume("$9.8m")).toEqual({
+      raw: 9_800_000,
+      label: "$9.8m",
+      missing: false,
+    });
   });
 
   it("normalizes percent values consistently", () => {

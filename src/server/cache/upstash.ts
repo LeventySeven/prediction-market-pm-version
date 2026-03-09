@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { z } from "zod";
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 
 const parseBooleanEnv = (value: string | undefined, fallback: boolean): boolean => {
   if (typeof value !== "string") return fallback;

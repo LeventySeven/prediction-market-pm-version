@@ -1,11 +1,12 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick, CandleInterval } from '../types';
+import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick } from '../types';
 import Button from './Button';
 import EligibilityDisclaimerModal from './EligibilityDisclaimerModal';
 import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, ThumbsUp, CalendarDays, Coins, MessageCircle, X, Info, LineChart, Link as LinkIcon, Check, Loader2, BookOpen } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
 import { buildMarketChartSeries } from '@/src/lib/charts/marketChartSeries';
+import { getChartRangeRequest, MARKET_CHART_RANGES, type MarketChartRange } from '@/src/lib/chartRanges';
 import { formatPercent, roundPercentValue } from '@/src/lib/marketPresentation';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
@@ -112,8 +113,8 @@ interface MarketPageProps {
   onEditMarket?: () => void;
   onDeleteMarket?: () => void;
   onOpenExternalTrade?: (marketId: string) => void;
-  chartInterval?: CandleInterval;
-  onChartIntervalChange?: (interval: CandleInterval) => void;
+  chartRange?: MarketChartRange;
+  onChartRangeChange?: (range: MarketChartRange) => void;
 }
 
 const MarketPage: React.FC<MarketPageProps> = ({
@@ -151,8 +152,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   onEditMarket,
   onDeleteMarket,
   onOpenExternalTrade,
-  chartInterval = "1h",
-  onChartIntervalChange,
+  chartRange = "1M",
+  onChartRangeChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'COMMENTS' | 'ACTIVITY'>('COMMENTS');
   const [commentText, setCommentText] = useState('');
@@ -265,20 +266,53 @@ const MarketPage: React.FC<MarketPageProps> = ({
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
   };
 
+  const chartRequest = useMemo(() => getChartRangeRequest(chartRange), [chartRange]);
   const chartSeries = useMemo(
     () =>
       buildMarketChartSeries({
         priceCandles,
         market,
         lang,
-        interval: chartInterval,
+        interval: chartRequest.interval,
       }),
-    [priceCandles, market, lang, chartInterval]
+    [chartRequest.interval, lang, market, priceCandles]
   );
 
   const displayedChance = isMulti
     ? roundPercentValue(selectedOutcome?.price ?? 0)
     : roundPercentValue(Number.isFinite(market.chance) ? market.chance : Number(market.yesPrice ?? 0.5));
+  const chartDelta = useMemo(() => {
+    if (chartSeries.data.length < 2) return 0;
+    if (chartSeries.mode === 'multi') {
+      const activeOutcomeId = selectedOutcome?.id ?? chartSeries.lines[0]?.id ?? null;
+      if (!activeOutcomeId) return 0;
+      const first = Number(chartSeries.data[0]?.values?.[activeOutcomeId] ?? 0);
+      const last = Number(chartSeries.data[chartSeries.data.length - 1]?.values?.[activeOutcomeId] ?? 0);
+      return Number((last - first).toFixed(1));
+    }
+    const first = Number(chartSeries.data[0]?.value ?? 0);
+    const last = Number(chartSeries.data[chartSeries.data.length - 1]?.value ?? 0);
+    return Number((last - first).toFixed(1));
+  }, [chartSeries, selectedOutcome?.id]);
+  const chartVolumeBars = useMemo(() => {
+    if (chartSeries.mode === 'multi') {
+      return chartSeries.data.map((row) => ({
+        ts: row.ts,
+        value: row.volume,
+        color: 'rgba(244,63,164,0.35)',
+      }));
+    }
+
+    return chartSeries.data.map((row, index, rows) => {
+      const prev = rows[Math.max(0, index - 1)]?.value ?? row.value;
+      const rising = row.value >= prev;
+      return {
+        ts: row.ts,
+        value: row.volume,
+        color: rising ? 'rgba(190,255,29,0.42)' : 'rgba(245,68,166,0.42)',
+      };
+    });
+  }, [chartSeries]);
   const prevDisplayedChanceRef = useRef(displayedChance);
   const [chanceBump, setChanceBump] = useState(false);
 
@@ -1237,93 +1271,129 @@ const MarketPage: React.FC<MarketPageProps> = ({
           id="chart-section"
           className="scroll-mt-24 lg:col-span-8 lg:col-start-1 lg:row-start-2"
         >
-          <div className="rounded-2xl border border-zinc-900 bg-black p-6 h-[520px] relative">
-            <div className="flex items-baseline gap-4 mb-8">
-              <span
-                className={`text-4xl font-bold tracking-tight text-zinc-100 transition-transform duration-200 ${
-                  chanceBump ? "scale-105" : "scale-100"
-                }`}
-              >
-                {displayedChance}%
-              </span>
-              <span className="text-zinc-500 text-sm font-medium uppercase tracking-wide">
-                {isMulti
-                  ? (lang === 'RU' ? 'Вероятность выбранного исхода' : 'Selected outcome probability')
-                  : (lang === 'RU' ? 'Вероятность (Да)' : 'Yes Probability')}
-              </span>
-            </div>
-            <div className="absolute top-6 right-6 z-20 flex items-center gap-2">
-              {(["1h", "1m"] as const).map((intervalOption) => {
-                const active = chartInterval === intervalOption;
-                return (
-                  <button
-                    key={`chart-interval-${intervalOption}`}
-                    type="button"
-                    onClick={() => onChartIntervalChange?.(intervalOption)}
-                    className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition ${
-                      active
-                        ? "border-zinc-200 bg-zinc-100 text-zinc-900"
-                        : "border-zinc-800 bg-black/70 text-zinc-300 hover:border-zinc-700 hover:text-white"
-                    }`}
-                    aria-pressed={active}
-                  >
-                    {intervalOption.toUpperCase()}
-                  </button>
-                );
-              })}
-              {insightsLoading && (
-                <span className="text-[11px] uppercase text-zinc-500 tracking-wider">
-                  {lang === 'RU' ? 'Обновление...' : 'Updating...'}
-                </span>
-              )}
-            </div>
-            {chartSeries.mode === 'multi' && chartSeries.lines.length > 0 && (
-              <div className="absolute top-16 right-6 z-10 rounded-xl border border-zinc-900 bg-black/80 backdrop-blur px-3 py-2 space-y-1">
-                {chartSeries.lines.map((line) => (
-                  <div key={`legend-${line.id}`} className="flex items-center gap-2 text-[10px] text-zinc-300 max-w-[180px]">
-                    <span className="w-2.5 h-2.5 rounded-full border border-zinc-800/80 shrink-0" style={{ backgroundColor: line.color }} />
-                    <span className="truncate">{line.title}</span>
+          <div className="relative h-[580px] overflow-hidden rounded-[30px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(19,19,24,0.96),rgba(4,4,6,1))] p-5 sm:p-6">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(190,255,29,0.12),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(245,68,166,0.12),transparent_38%)]" />
+
+            <div className="relative flex h-full flex-col">
+              <div className="flex flex-col gap-4 border-b border-zinc-900/80 pb-5 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                    {isMulti
+                      ? (lang === 'RU' ? 'Выбранный исход' : 'Selected outcome')
+                      : (lang === 'RU' ? 'Да вероятность' : 'Yes probability')}
                   </div>
-                ))}
-              </div>
-            )}
-            {chartSeries.data.length > 0 ? (
-              chartSeries.mode === 'multi' ? (
-                <div className="h-[84%]">
-                  <TradingViewCandles
-                    mode="lines"
-                    lines={chartSeries.lines.map((line) => ({
-                      id: line.id,
-                      title: line.title,
-                      color: line.color,
-                      points: chartSeries.data
-                        .map((row) => ({
-                          ts: row.ts,
-                          value: Number(row.values[line.id] ?? Number.NaN),
-                        }))
-                        .filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.value)),
-                    }))}
-                  />
+                  <div className="mt-3 flex items-end gap-3">
+                    <span
+                      className={`text-5xl font-semibold tracking-tight text-zinc-50 transition-transform duration-200 ${
+                        chanceBump ? 'scale-105' : 'scale-100'
+                      }`}
+                    >
+                      {displayedChance}%
+                    </span>
+                    <span
+                      className={`pb-1 text-sm font-semibold ${
+                        chartDelta > 0
+                          ? 'text-[rgba(190,255,29,1)]'
+                          : chartDelta < 0
+                            ? 'text-[rgba(245,68,166,1)]'
+                            : 'text-zinc-400'
+                      }`}
+                    >
+                      {chartDelta > 0 ? '+' : ''}
+                      {chartDelta.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="mt-2 text-sm text-zinc-500">
+                    {lang === 'RU'
+                      ? `Диапазон ${chartRange} • Последняя цена синхронизирована с текущим рынком`
+                      : `Range ${chartRange} • Latest point stays synced to the current market`}
+                  </div>
                 </div>
-              ) : (
-                <div className="h-[84%]">
-                  <TradingViewCandles
-                    mode="candles"
-                    data={chartSeries.data.map((row) => ({
-                      ts: row.ts,
-                      open: Number(row.open ?? row.value ?? 0),
-                      high: Number(row.high ?? row.value ?? 0),
-                      low: Number(row.low ?? row.value ?? 0),
-                      close: Number(row.close ?? row.value ?? 0),
-                    }))}
-                  />
+
+                <div className="flex flex-col items-start gap-3 sm:items-end">
+                  <div className="inline-flex rounded-full border border-zinc-900 bg-zinc-950/70 p-1">
+                    {MARKET_CHART_RANGES.map((rangeOption) => {
+                      const active = chartRange === rangeOption;
+                      return (
+                        <button
+                          key={`chart-range-${rangeOption}`}
+                          type="button"
+                          onClick={() => onChartRangeChange?.(rangeOption)}
+                          className={`min-h-[38px] rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.18em] transition ${
+                            active
+                              ? 'bg-zinc-100 text-zinc-950 shadow-[0_8px_30px_rgba(255,255,255,0.08)]'
+                              : 'text-zinc-400 hover:text-white'
+                          }`}
+                          aria-pressed={active}
+                        >
+                          {rangeOption}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {insightsLoading ? (
+                    <span className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+                      {lang === 'RU' ? 'Обновление...' : 'Updating...'}
+                    </span>
+                  ) : null}
                 </div>
-              )
-            ) : (
-              <div className="flex h-[84%] items-center justify-center text-sm text-neutral-500">
-                {lang === 'RU' ? 'Нет данных для графика' : 'No chart data yet'}
               </div>
-            )}
+
+              {chartSeries.mode === 'multi' && chartSeries.lines.length > 0 ? (
+                <div className="relative z-10 mt-4 flex flex-wrap gap-2">
+                  {chartSeries.lines.map((line) => (
+                    <div
+                      key={`legend-${line.id}`}
+                      className="inline-flex items-center gap-2 rounded-full border border-zinc-900 bg-zinc-950/60 px-3 py-1 text-[11px] text-zinc-300"
+                    >
+                      <span
+                        className="h-2.5 w-2.5 rounded-full border border-zinc-800/80"
+                        style={{ backgroundColor: line.color }}
+                      />
+                      <span className="truncate">{line.title}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="relative mt-5 flex-1">
+                {chartSeries.data.length > 0 ? (
+                  chartSeries.mode === 'multi' ? (
+                    <TradingViewCandles
+                      mode="lines"
+                      volumeBars={chartVolumeBars}
+                      lines={chartSeries.lines.map((line) => ({
+                        id: line.id,
+                        title: line.title,
+                        color: line.color,
+                        points: chartSeries.data
+                          .map((row) => ({
+                            ts: row.ts,
+                            value: Number(row.values[line.id] ?? Number.NaN),
+                          }))
+                          .filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.value)),
+                      }))}
+                    />
+                  ) : (
+                    <TradingViewCandles
+                      mode="area"
+                      color="rgba(190,255,29,1)"
+                      volumeBars={chartVolumeBars}
+                      points={chartSeries.data.map((row) => ({
+                        ts: row.ts,
+                        value: Number(row.close ?? row.value ?? 0),
+                        high: Number(row.high ?? row.value ?? 0),
+                        low: Number(row.low ?? row.value ?? 0),
+                      }))}
+                    />
+                  )
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                    {lang === 'RU' ? 'Нет данных для графика' : 'No chart data yet'}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Button

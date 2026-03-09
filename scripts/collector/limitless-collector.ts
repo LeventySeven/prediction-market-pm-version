@@ -28,10 +28,10 @@ const RECONCILE_INTERVAL_MS = Math.max(
   Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300_000)
 );
 const HEALTH_PORT = Math.max(0, Number(process.env.LIMITLESS_COLLECTOR_HEALTH_PORT ?? 8081));
-const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 450)));
+const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 1200)));
 const HEAD_SNAPSHOT_LIMIT = Math.max(
   20,
-  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 200))
+  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 400))
 );
 const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.LIMITLESS_COLLECTOR_PRUNE_INTERVAL_MS ?? 3_600_000));
 const PRUNE_EXPIRED_AFTER_DAYS = Math.max(
@@ -42,7 +42,7 @@ const ENABLE_MISSING_MARKET_PRUNE =
   (process.env.LIMITLESS_COLLECTOR_ENABLE_MISSING_MARKET_PRUNE || "true").trim().toLowerCase() === "true";
 const MISSING_MARKET_SCAN_LIMIT = Math.max(
   50,
-  Math.min(2500, Number(process.env.LIMITLESS_COLLECTOR_MISSING_MARKET_SCAN_LIMIT ?? 1200))
+  Math.min(2500, Number(process.env.LIMITLESS_COLLECTOR_MISSING_MARKET_SCAN_LIMIT ?? 2500))
 );
 const MISSING_MARKET_MISS_THRESHOLD = Math.max(
   1,
@@ -774,6 +774,12 @@ const snapshotSync = async (mode: "head" | "full") => {
         scope: "open",
         startedAt,
         errorMessage: null,
+        stats: {
+          trackedMarkets: 0,
+          trackedSubscriptions: wsSubscriptionSlugs.size + wsSubscriptionAddresses.size,
+          trackedSlugs: wsSubscriptionSlugs.size,
+          trackedAddresses: wsSubscriptionAddresses.size,
+        },
       });
     }
 
@@ -851,6 +857,13 @@ const snapshotSync = async (mode: "head" | "full") => {
         startedAt,
         successAt: finishedAt,
         errorMessage: null,
+        stats: {
+          trackedMarkets: markets.length,
+          openMarkets: markets.length,
+          trackedSubscriptions: wsSubscriptionSlugs.size + wsSubscriptionAddresses.size,
+          trackedSlugs: wsSubscriptionSlugs.size,
+          trackedAddresses: wsSubscriptionAddresses.size,
+        },
       });
     }
     const elapsedMs = Date.now() - startedMs;
@@ -864,6 +877,12 @@ const snapshotSync = async (mode: "head" | "full") => {
         scope: "open",
         startedAt,
         errorMessage: message,
+        stats: {
+          trackedMarkets: 0,
+          trackedSubscriptions: wsSubscriptionSlugs.size + wsSubscriptionAddresses.size,
+          trackedSlugs: wsSubscriptionSlugs.size,
+          trackedAddresses: wsSubscriptionAddresses.size,
+        },
       });
     }
   } finally {

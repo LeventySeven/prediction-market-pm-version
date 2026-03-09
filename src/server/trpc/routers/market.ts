@@ -2254,7 +2254,7 @@ export const marketRouter = router({
         .object({
           onlyOpen: z.boolean().optional(),
           page: z.number().int().positive().max(1000).optional(),
-          pageSize: z.number().int().positive().max(100).optional(),
+          pageSize: z.number().int().positive().max(200).optional(),
           sortBy: z.enum(["newest", "volume"]).optional(),
           providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
           providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
@@ -2267,10 +2267,10 @@ export const marketRouter = router({
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
       const onlyOpen = input?.onlyOpen ?? false;
       const page = Math.max(1, Number(input?.page ?? 1));
-      const pageSize = Math.max(1, Math.min(100, Number(input?.pageSize ?? 50)));
+      const pageSize = Math.max(1, Math.min(200, Number(input?.pageSize ?? 50)));
       const sortBy: "newest" | "volume" = input?.sortBy ?? "newest";
       const offset = (page - 1) * pageSize;
-      const candidateLimit = Math.min(4000, Math.max(pageSize * 2, offset + pageSize * 2));
+      const candidateLimit = Math.min(8000, Math.max(pageSize * 2, offset + pageSize * 2));
       const selectedProviders = parseProviderSelection({
         providers: input?.providers,
         providerFilter: input?.providerFilter,

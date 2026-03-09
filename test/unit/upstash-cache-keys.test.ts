@@ -32,7 +32,7 @@ describe("upstash cache key behavior", () => {
         provider: "polymarket",
         providerMarketId: "abc-123",
       })
-    ).toContain("market:detail:v1:polymarket:abc-123");
+    ).toContain("market:detail:v2:polymarket:abc-123");
 
     expect(
       buildMarketTradesCacheKey({
@@ -40,6 +40,6 @@ describe("upstash cache key behavior", () => {
         providerMarketId: "lm-9",
         limit: 75,
       })
-    ).toContain("market:trades:v1:limitless:lm-9:limit:75");
+    ).toContain("market:trades:v2:limitless:lm-9:limit:75");
   });
 });
