@@ -8,6 +8,14 @@ export type ExternalLinkMarket = Pick<Market, "id" | "provider" | "providerMarke
 export const defaultExternalMarketUrl = (provider?: Market["provider"]): string =>
   provider === "limitless" ? LIMITLESS_SITE_URL : POLYMARKET_SITE_URL;
 
+const extractVenueSlug = (value: string): string => {
+  const withoutOrigin = value.replace(/^https?:\/\/[^/]+/i, "");
+  const withoutQuery = withoutOrigin.split(/[?#]/, 1)[0] ?? "";
+  const withoutLeadingSlashes = withoutQuery.replace(/^\/+/, "");
+  const withoutLocale = withoutLeadingSlashes.replace(/^[a-z]{2}(?:-[a-z]{2})?\//i, "");
+  return withoutLocale.replace(/^(event|market|markets)\//i, "").trim();
+};
+
 export const buildCanonicalVenueUrl = (
   provider: Market["provider"] | undefined,
   market?: ExternalLinkMarket | null
@@ -17,12 +25,7 @@ export const buildCanonicalVenueUrl = (
 
   const fromSource = (() => {
     if (!sourceValue) return "";
-    const bare = sourceValue
-      .replace(/^https?:\/\/[^/]+/i, "")
-      .replace(/^\/+/, "")
-      .replace(/^(event|market|markets)\//i, "")
-      .trim();
-    return bare;
+    return extractVenueSlug(sourceValue);
   })();
   const fallbackId = String(market?.providerMarketId ?? market?.id ?? "")
     .trim()
@@ -47,21 +50,17 @@ export const normalizeExternalMarketUrl = (
   if (/^https?:\/\//i.test(value)) return value;
   if (/^\/\//.test(value)) return `https:${value}`;
   if (value.startsWith("/")) {
-    const bare = value.replace(/^\/+/, "");
-    if (provider === "limitless" && /^(event|markets)\//i.test(bare)) {
-      return `${LIMITLESS_SITE_URL}/market/${encodeURIComponent(bare.replace(/^(event|markets)\//i, ""))}`;
-    }
-    if (provider === "polymarket" && /^market\//i.test(bare)) {
-      return `${POLYMARKET_SITE_URL}/event/${encodeURIComponent(bare.replace(/^market\//i, ""))}`;
-    }
-    return `${fallbackBase}/${bare}`;
+    const bare = extractVenueSlug(value);
+    if (!bare) return fallbackBase;
+    return provider === "limitless"
+      ? `${LIMITLESS_SITE_URL}/market/${encodeURIComponent(bare)}`
+      : `${POLYMARKET_SITE_URL}/event/${encodeURIComponent(bare)}`;
   }
-  if (/^(event|market|markets)\//i.test(value)) {
+  if (/^(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:event|market|markets)\//i.test(value)) {
+    const slug = extractVenueSlug(value);
     if (provider === "limitless") {
-      const slug = value.replace(/^(event|market|markets)\//i, "");
       return `${LIMITLESS_SITE_URL}/market/${encodeURIComponent(slug)}`;
     }
-    const slug = value.replace(/^(event|market|markets)\//i, "");
     return `${POLYMARKET_SITE_URL}/event/${encodeURIComponent(slug)}`;
   }
   if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/|$)/i.test(value)) return `https://${value}`;

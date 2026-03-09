@@ -4,6 +4,7 @@ import React, { useMemo, useState } from 'react';
 import { Activity, ArrowUpRight, Clock3, Layers3, Waves } from 'lucide-react';
 import type { Market } from '../types';
 import { formatTimeRemaining } from '../lib/time';
+import { formatCompactUsd, formatPercent, roundPercentValue } from '../src/lib/marketPresentation';
 
 type MarketPulseBoardProps = {
   markets: Market[];
@@ -20,13 +21,6 @@ const formatCompactValue = (value: number, options?: Intl.NumberFormatOptions) =
     maximumFractionDigits: value >= 100 ? 0 : 1,
     ...options,
   }).format(value);
-
-const formatUsd = (value: number | null | undefined) => {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  const safe = Math.max(0, value);
-  if (safe < 1_000) return `$${Math.round(safe).toLocaleString('en-US')}`;
-  return `$${formatCompactValue(safe)}`;
-};
 
 const formatCount = (value: number) => formatCompactValue(Math.max(0, value));
 
@@ -53,13 +47,13 @@ const getSignal = (market: Market, lang: 'RU' | 'EN') => {
     const normalizedChance = rawChance <= 1 ? rawChance * 100 : rawChance;
     return {
       label: top?.title ?? (lang === 'RU' ? 'Лидер' : 'Leader'),
-      chance: Math.round(normalizedChance),
+      chance: roundPercentValue(normalizedChance),
     };
   }
 
   return {
     label: lang === 'RU' ? 'Да' : 'Yes',
-    chance: Math.round(Number.isFinite(market.chance) ? market.chance : (market.yesPrice ?? 0.5) * 100),
+    chance: roundPercentValue(Number.isFinite(market.chance) ? market.chance : market.yesPrice ?? 0.5),
   };
 };
 
@@ -129,7 +123,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
       {
         key: 'volume',
         label: lang === 'RU' ? 'Объем 24ч' : '24h volume',
-        value: formatUsd(volume24h),
+        value: formatCompactUsd(volume24h),
         tone: 'text-white',
         icon: Waves,
       },
@@ -277,7 +271,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                           key={`desktop-market-${market.id}`}
                           type="button"
                           onClick={() => onMarketClick?.(market)}
-                          className="grid w-full grid-cols-[minmax(0,2.6fr)_1fr_1fr_1fr_1.1fr_0.8fr] gap-4 border-b border-zinc-900 px-4 py-4 text-left transition-colors hover:bg-zinc-950/70"
+                          className="grid w-full cursor-pointer grid-cols-[minmax(0,2.6fr)_1fr_1fr_1fr_1.1fr_0.8fr] gap-4 border-b border-zinc-900 px-4 py-4 text-left transition-colors hover:bg-zinc-950/70"
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <img
@@ -300,24 +294,24 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{signal.chance}%</div>
+                            <div className="text-sm font-semibold text-zinc-100">{formatPercent(signal.chance)}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">{signal.label}</div>
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{formatUsd(market.volume24hRaw)}</div>
+                            <div className="text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volume24hRaw)}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">
                               {market.liveUpdatedAt ? (lang === 'RU' ? 'живые данные' : 'live data') : (lang === 'RU' ? 'кэш' : 'cache')}
                             </div>
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{formatUsd(market.volumeRaw)}</div>
+                            <div className="text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volumeRaw)}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">{market.volume}</div>
                           </div>
 
                           <div className="flex flex-col justify-center">
-                            <div className="text-sm font-semibold text-zinc-100">{formatUsd(liquidity)}</div>
+                            <div className="text-sm font-semibold text-zinc-100">{liquidity === null ? '—' : formatCompactUsd(liquidity)}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">
                               {spread === null ? (lang === 'RU' ? 'спред —' : 'spread —') : `${lang === 'RU' ? 'спред' : 'spread'} ${spread.toFixed(1)}%`}
                             </div>
@@ -355,7 +349,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                         key={`mobile-market-${market.id}`}
                         type="button"
                         onClick={() => onMarketClick?.(market)}
-                        className="w-full rounded-3xl border border-zinc-900 bg-zinc-950/55 p-4 text-left transition-colors hover:bg-zinc-950/80"
+                        className="w-full cursor-pointer rounded-3xl border border-zinc-900 bg-zinc-950/55 p-4 text-left transition-colors hover:bg-zinc-950/80"
                       >
                         <div className="flex items-start gap-3">
                           <img
@@ -368,7 +362,7 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                               {lang === 'RU' ? market.titleRu ?? market.title : market.titleEn ?? market.title}
                             </div>
                             <div className="mt-1 text-xs text-zinc-500">
-                              {getProviderName(market)} • {signal.label} {signal.chance}%
+                              {getProviderName(market)} • {signal.label} {formatPercent(signal.chance)}
                             </div>
                           </div>
                           <ArrowUpRight size={14} className="mt-1 text-zinc-600" />
@@ -379,19 +373,19 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                               {lang === 'RU' ? '24ч' : '24h'}
                             </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatUsd(market.volume24hRaw)}</div>
+                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volume24hRaw)}</div>
                           </div>
                           <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                               {lang === 'RU' ? 'Всего' : 'Total'}
                             </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatUsd(market.volumeRaw)}</div>
+                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatCompactUsd(market.volumeRaw)}</div>
                           </div>
                           <div className="rounded-2xl border border-zinc-900 bg-black/40 px-3 py-2">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                               {lang === 'RU' ? 'Ликвидность' : 'Liquidity'}
                             </div>
-                            <div className="mt-2 text-sm font-semibold text-zinc-100">{formatUsd(liquidity)}</div>
+                            <div className="mt-2 text-sm font-semibold text-zinc-100">{liquidity === null ? '—' : formatCompactUsd(liquidity)}</div>
                             <div className="mt-1 text-[11px] text-zinc-500">
                               {spread === null ? '—' : `${spread.toFixed(1)}%`}
                             </div>

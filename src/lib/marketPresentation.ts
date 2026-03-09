@@ -3,13 +3,31 @@ type OutcomeLike = {
   sortOrder?: number | null;
 };
 
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
 const toFiniteNonNegative = (value: number | string | null | undefined): number => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
 };
 
+const trimTrailingZeros = (value: string): string => value.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+
 export const normalizeOutcomeLabel = (title?: string | null): string =>
   String(title ?? "").trim().toLowerCase();
+
+export const normalizePercentValue = (value: number | null | undefined): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  const normalized = Math.abs(value) <= 1.0001 ? value * 100 : value;
+  return Math.max(0, Math.min(100, normalized));
+};
+
+export const roundPercentValue = (
+  value: number | null | undefined,
+  fractionDigits = 0
+): number => Number(normalizePercentValue(value).toFixed(Math.max(0, fractionDigits)));
+
+export const formatPercent = (value: number | null | undefined, fractionDigits = 0): string =>
+  `${trimTrailingZeros(normalizePercentValue(value).toFixed(Math.max(0, fractionDigits)))}%`;
 
 export const pickYesLikeOutcome = <T extends OutcomeLike>(outcomes: T[]): T | null => {
   if (outcomes.length === 0) return null;
@@ -43,3 +61,51 @@ export const computeEffectiveVolumeRaw = (
   baseVolume: number | string | null | undefined,
   rolling24hVolume: number | string | null | undefined
 ): number => Math.max(toFiniteNonNegative(baseVolume), toFiniteNonNegative(rolling24hVolume));
+
+export const formatCompactUsd = (value: number | null | undefined): string => {
+  const numeric = toFiniteNonNegative(value);
+  if (numeric >= 1_000_000_000) {
+    const compact = numeric / 1_000_000_000;
+    return `$${trimTrailingZeros(compact.toFixed(compact >= 100 ? 0 : 1))}b`;
+  }
+  if (numeric >= 1_000_000) {
+    const compact = numeric / 1_000_000;
+    return `$${trimTrailingZeros(compact.toFixed(compact >= 100 ? 0 : 1))}m`;
+  }
+  if (numeric >= 1_000) {
+    const compact = numeric / 1_000;
+    return `$${trimTrailingZeros(compact.toFixed(compact >= 100 ? 0 : 1))}k`;
+  }
+  return `$${Math.round(numeric).toLocaleString("en-US")}`;
+};
+
+const toPrice01 = (value: number | null | undefined): number | null => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return clamp01(value);
+};
+
+export const resolveReliableBinaryPrice = (params: {
+  mid?: number | null;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  lastTradePrice?: number | null;
+  fallbackPrice?: number | null;
+}): number => {
+  const mid = toPrice01(params.mid ?? null);
+  const bestBid = toPrice01(params.bestBid ?? null);
+  const bestAsk = toPrice01(params.bestAsk ?? null);
+  const lastTradePrice = toPrice01(params.lastTradePrice ?? null);
+  const fallbackPrice = toPrice01(params.fallbackPrice ?? null) ?? 0.5;
+
+  const bookMid =
+    bestBid !== null && bestAsk !== null && bestBid > 0 && bestAsk > 0
+      ? clamp01((bestBid + bestAsk) / 2)
+      : null;
+
+  if (mid !== null && mid > 0 && mid < 1) return mid;
+  if (bookMid !== null) return bookMid;
+  if (lastTradePrice !== null && lastTradePrice > 0 && lastTradePrice < 1) return lastTradePrice;
+  if (mid !== null) return mid;
+  if (lastTradePrice !== null) return lastTradePrice;
+  return fallbackPrice;
+};

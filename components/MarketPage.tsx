@@ -6,6 +6,7 @@ import { Bookmark, ChevronLeft, Clock, ShieldCheck, User as UserIcon, Send, Thum
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
 import { buildMarketChartSeries } from '@/src/lib/charts/marketChartSeries';
+import { formatPercent, roundPercentValue } from '@/src/lib/marketPresentation';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
 
@@ -276,8 +277,8 @@ const MarketPage: React.FC<MarketPageProps> = ({
   );
 
   const displayedChance = isMulti
-    ? Math.round(Number((selectedOutcome?.price ?? 0) * 100))
-    : (Number.isFinite(market.chance) ? market.chance : Math.round(Number(market.yesPrice ?? 0.5) * 100));
+    ? roundPercentValue(selectedOutcome?.price ?? 0)
+    : roundPercentValue(Number.isFinite(market.chance) ? market.chance : Number(market.yesPrice ?? 0.5));
   const prevDisplayedChanceRef = useRef(displayedChance);
   const [chanceBump, setChanceBump] = useState(false);
 
@@ -761,7 +762,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     : 'Trading closed. Outcome will be published after resolution.'}
                 </p>
                 <div className="bg-neutral-800 border border-neutral-700 rounded-lg p-3 text-sm text-neutral-400">
-                  {lang === 'RU' ? 'Итог' : 'Summary'}: {market.chance}% {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume}
+                  {lang === 'RU' ? 'Итог' : 'Summary'}: {formatPercent(market.chance)} {lang === 'RU' ? 'Да' : 'Yes'} • Vol: {market.volume}
                   {isResolved && (
                     <div className="text-xs text-neutral-500 mt-2">
                       {lang === 'RU'
@@ -802,7 +803,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                             />
                             <span className="truncate">{o.title}</span>
                           </span>
-                          <span className="font-mono">${o.price.toFixed(2)} • {(o.probability * 100).toFixed(1)}%</span>
+                          <span className="font-mono">${o.price.toFixed(2)} • {formatPercent(o.probability)}</span>
                         </button>
                       );
                     })}

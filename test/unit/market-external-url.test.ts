@@ -21,6 +21,12 @@ describe("market external url normalization", () => {
     expect(normalizeExternalMarketUrl("market/us-election", "polymarket")).toBe(
       "https://polymarket.com/event/us-election"
     );
+    expect(normalizeExternalMarketUrl("/en/event/us-election", "polymarket")).toBe(
+      "https://polymarket.com/event/us-election"
+    );
+    expect(normalizeExternalMarketUrl("https://polymarket.com/en/event/us-election?tid=abc", "polymarket")).toBe(
+      "https://polymarket.com/en/event/us-election?tid=abc"
+    );
   });
 
   it("forces limitless destination when source host is not limitless", () => {

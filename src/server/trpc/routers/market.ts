@@ -48,7 +48,13 @@ import {
   upstashMarketTradesTtlSec,
   writeUpstashCache,
 } from "../../cache/upstash";
-import { pickBinaryOutcomes, pickYesLikeOutcome } from "../../../lib/marketPresentation";
+import {
+  computeEffectiveVolumeRaw,
+  pickBinaryOutcomes,
+  pickYesLikeOutcome,
+  resolveReliableBinaryPrice,
+  roundPercentValue,
+} from "../../../lib/marketPresentation";
 
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
@@ -403,7 +409,9 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     resolvedOutcomeId = matched?.id ?? null;
   }
 
-  const priceYes = yes ? yes.price : 0.5;
+  const priceYes = resolveReliableBinaryPrice({
+    fallbackPrice: yes ? yes.price : 0.5,
+  });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
 
   return {
@@ -434,7 +442,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     priceYes,
     priceNo,
     volume: market.volume,
-    chance: Math.round(priceYes * 100),
+    chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
     bestBid: null,
@@ -492,7 +500,9 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
   const resolvedMatch = resolved
     ? sortedOutcomes.find((outcome) => outcome.title.toLowerCase() === resolved.toLowerCase()) ?? null
     : null;
-  const priceYes = yes ? yes.price : 0.5;
+  const priceYes = resolveReliableBinaryPrice({
+    fallbackPrice: yes ? yes.price : 0.5,
+  });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
 
   return {
@@ -537,7 +547,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     priceYes,
     priceNo,
     volume: market.volume,
-    chance: Math.round(priceYes * 100),
+    chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
     bestBid: null,
@@ -814,20 +824,24 @@ const fetchMarketLiveSnapshots = async (
   return map;
 };
 
-const normalizeMarketVolume = (baseVolumeRaw: number | string | null | undefined): number =>
-  Number.isFinite(Number(baseVolumeRaw)) ? Math.max(0, Number(baseVolumeRaw)) : 0;
-
 const mergeMarketWithLive = (
   market: MappedMarket,
   live: MarketLiveSnapshot | undefined
 ): MappedMarket => {
   if (!live) return market;
   const isBinary = (market.marketType ?? "binary") === "binary";
-  const useMid = isBinary && live.mid !== null && live.mid >= 0 && live.mid <= 1;
-  const nextYes = useMid ? live.mid ?? market.priceYes : market.priceYes;
-  const nextNo = useMid ? Math.max(0, Math.min(1, 1 - nextYes)) : market.priceNo;
-  const liveChance = useMid ? Math.round(nextYes * 100) : market.chance;
-  const effectiveVolume = normalizeMarketVolume(market.volume);
+  const nextYes = isBinary
+    ? resolveReliableBinaryPrice({
+        mid: live.mid,
+        bestBid: live.bestBid,
+        bestAsk: live.bestAsk,
+        lastTradePrice: live.lastTradePrice,
+        fallbackPrice: market.priceYes,
+      })
+    : market.priceYes;
+  const nextNo = isBinary ? Math.max(0, Math.min(1, 1 - nextYes)) : market.priceNo;
+  const liveChance = isBinary ? roundPercentValue(nextYes) : market.chance;
+  const effectiveVolume = computeEffectiveVolumeRaw(market.volume, live.rolling24hVolume);
 
   return {
     ...market,
@@ -1344,12 +1358,15 @@ const listCanonicalProviderMarkets = async (
     const { yes, no } = pickBinaryOutcomes(outcomes);
     const live = liveByMarketId.get(marketRefId);
     const payloadVolume = readVolumeFromPayload(payload);
-    const liveMid = toFiniteNumber(live?.mid as any);
-    const useLiveMid = typeof liveMid === "number" && liveMid >= 0 && liveMid <= 1;
     const fallbackYesPrice = yes ? yes.price : 0.5;
-    const fallbackNoPrice = no ? no.price : clamp01(1 - fallbackYesPrice);
-    const priceYes = useLiveMid ? liveMid : fallbackYesPrice;
-    const priceNo = useLiveMid ? Math.max(0, Math.min(1, 1 - priceYes)) : fallbackNoPrice;
+    const priceYes = resolveReliableBinaryPrice({
+      mid: toFiniteNumber(live?.mid as any),
+      bestBid: toFiniteNumber(live?.best_bid as any),
+      bestAsk: toFiniteNumber(live?.best_ask as any),
+      lastTradePrice: toFiniteNumber(live?.last_trade_price as any),
+      fallbackPrice: fallbackYesPrice,
+    });
+    const priceNo = Math.max(0, Math.min(1, 1 - priceYes));
 
     const stateRaw = String(row.state ?? "open").trim().toLowerCase();
     const state: z.infer<typeof marketOutput>["state"] =
@@ -1384,8 +1401,8 @@ const listCanonicalProviderMarkets = async (
       liquidityB: null,
       priceYes,
       priceNo,
-      volume: Math.max(0, payloadVolume ?? 0),
-      chance: Math.round(priceYes * 100),
+      volume: computeEffectiveVolumeRaw(payloadVolume, toFiniteNumber(live?.rolling_24h_volume as any)),
+      chance: roundPercentValue(priceYes),
       creatorName: null,
       creatorAvatarUrl: null,
       bestBid: toFiniteNumber(live?.best_bid as any),

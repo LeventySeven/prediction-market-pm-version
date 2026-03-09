@@ -12,6 +12,7 @@ import {
 import { resolveRolling24hVolumeFromWsPayload } from "../../src/server/venues/limitlessCollectorUtils";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
 import { venueToCanonicalId, type VenueMarket } from "../../src/server/venues/types";
+import { resolveReliableBinaryPrice } from "../../src/lib/marketPresentation";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -961,16 +962,23 @@ const handleWsPayload = (payload: Record<string, unknown>) => {
   const sourceTsMs = parseTsMs(payload.source_ts ?? payload.timestamp ?? payload.ts) ?? Date.now();
   const sourceTsIso = new Date(sourceTsMs).toISOString();
 
-  const mid =
+  const rawMid =
     toPriceProb(payload.mid) ??
     toPriceProb(payload.price) ??
     toPriceProb(payload.last_trade_price) ??
     toPriceProb(payload.lastPrice) ??
     0.5;
-  const bestBid = toPriceProb(payload.best_bid) ?? toPriceProb(payload.bid) ?? clamp01(mid - 0.01);
-  const bestAsk = toPriceProb(payload.best_ask) ?? toPriceProb(payload.ask) ?? clamp01(mid + 0.01);
+  const bestBid = toPriceProb(payload.best_bid) ?? toPriceProb(payload.bid) ?? clamp01(rawMid - 0.01);
+  const bestAsk = toPriceProb(payload.best_ask) ?? toPriceProb(payload.ask) ?? clamp01(rawMid + 0.01);
   const lastTradePrice =
-    toPriceProb(payload.last_trade_price) ?? toPriceProb(payload.price) ?? toPriceProb(payload.lastPrice) ?? mid;
+    toPriceProb(payload.last_trade_price) ?? toPriceProb(payload.price) ?? toPriceProb(payload.lastPrice) ?? rawMid;
+  const mid = resolveReliableBinaryPrice({
+    mid: rawMid,
+    bestBid,
+    bestAsk,
+    lastTradePrice,
+    fallbackPrice: rawMid,
+  });
   const lastTradeSize = Math.max(0, parseNumber(payload.last_trade_size) ?? parseNumber(payload.size) ?? 0);
   const previousRolling24h =
     pendingLiveByProviderMarketId.get(providerMarketId)?.rolling_24h_volume ??

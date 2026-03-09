@@ -8,6 +8,7 @@ import {
   writeUpstashMarketLivePatches,
 } from "../../src/server/cache/upstash";
 import { upsertProviderSyncState } from "../../src/server/venues/catalogStore";
+import { resolveReliableBinaryPrice } from "../../src/lib/marketPresentation";
 import type { Database, Json } from "../../src/types/database";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -831,12 +832,14 @@ const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
 
   const bestBid = clampPrice(bestBidRaw > 1 ? bestBidRaw / 100 : bestBidRaw);
   const bestAsk = clampPrice(bestAskRaw > 1 ? bestAskRaw / 100 : bestAskRaw);
-  const derivedMid = bestBid > 0 && bestAsk > 0 ? clampPrice((bestBid + bestAsk) / 2) : prev?.mid ?? 0;
-  const normalizedMid =
-    mid !== null
-      ? clampPrice(mid > 1 ? mid / 100 : mid)
-      : derivedMid;
   const normalizedTradePrice = clampPrice(lastTradePrice > 1 ? lastTradePrice / 100 : lastTradePrice);
+  const normalizedMid = resolveReliableBinaryPrice({
+    mid: mid !== null ? clampPrice(mid > 1 ? mid / 100 : mid) : null,
+    bestBid,
+    bestAsk,
+    lastTradePrice: normalizedTradePrice,
+    fallbackPrice: prev?.mid ?? normalizedTradePrice ?? 0.5,
+  });
 
   return {
     market_id: marketId,

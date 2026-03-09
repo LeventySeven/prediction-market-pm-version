@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Clock } from 'lucide-react';
 import type { Market } from '../types';
 import { formatTimeRemaining } from '../lib/time';
+import { formatPercent, roundPercentValue } from '../src/lib/marketPresentation';
 
 interface MarketFeedItemProps {
   market: Market;
@@ -27,7 +28,7 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
   const sortedOutcomes = isMulti ? [...(market.outcomes ?? [])].sort((a, b) => b.probability - a.probability) : [];
   const winningYes = market.outcome === 'YES';
   const displayChance = isMulti
-    ? Math.round((sortedOutcomes[0]?.probability ?? 0) * 100)
+    ? roundPercentValue(sortedOutcomes[0]?.probability ?? 0)
     : (isResolved ? (winningYes ? 100 : 0) : market.chance);
 
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
@@ -96,7 +97,7 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
                     <span className="w-3.5 h-3.5 rounded-full bg-zinc-800" />
                   )}
                   <span className="truncate max-w-[100px]">{o.title}</span>
-                  <span className="font-mono">{(o.probability * 100).toFixed(1)}%</span>
+                  <span className="font-mono">{formatPercent(o.probability)}</span>
                 </span>
               ))}
             </div>
@@ -117,5 +118,4 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
 };
 
 export default MarketFeedItem;
-
 

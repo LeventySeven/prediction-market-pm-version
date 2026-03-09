@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Market } from '../types';
 import { Clock } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
+import { formatPercent, roundPercentValue } from '../src/lib/marketPresentation';
 
 interface MarketCardProps {
   market: Market;
@@ -31,7 +32,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
     : [];
   const winningYes = market.outcome === 'YES';
   const displayChance = isMulti
-    ? Math.round((sortedOutcomes[0]?.probability ?? 0) * 100)
+    ? roundPercentValue(sortedOutcomes[0]?.probability ?? 0)
     : (isResolved ? (winningYes ? 100 : 0) : market.chance);
   const isAboveMidpoint = displayChance > 50;
   const yesLabel = lang === 'RU' ? 'Да' : 'Yes';
@@ -182,7 +183,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
                   )}
                   <span className="truncate">{o.title}</span>
                 </span>
-                <span className="font-mono text-zinc-400">{(o.probability * 100).toFixed(1)}%</span>
+                <span className="font-mono text-zinc-400">{formatPercent(o.probability)}</span>
               </div>
             ))}
           </div>
@@ -198,10 +199,10 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
                 onQuickBet?.("YES");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(190,255,29,1)] hover:text-white active:border-[rgba(190,255,29,1)] active:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${yesLabel} ${market.chance}%`}
+              aria-label={`${yesLabel} ${formatPercent(market.chance)}`}
             >
               <span>{yesLabel}</span>
-              <span className="font-mono">{market.chance}%</span>
+              <span className="font-mono">{formatPercent(market.chance)}</span>
             </button>
             <button
               type="button"
@@ -210,10 +211,10 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
                 onQuickBet?.("NO");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${noLabel} ${100 - market.chance}%`}
+              aria-label={`${noLabel} ${formatPercent(100 - market.chance)}`}
             >
               <span>{noLabel}</span>
-              <span className="font-mono">{100 - market.chance}%</span>
+              <span className="font-mono">{formatPercent(100 - market.chance)}</span>
             </button>
           </div>
         )}

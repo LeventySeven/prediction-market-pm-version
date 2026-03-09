@@ -55,7 +55,13 @@ import {
 } from "@/src/lib/avatarPalette";
 import { applyStableCatalogOrder } from "@/src/lib/catalogStableOrder";
 import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
-import { computeEffectiveVolumeRaw, pickBinaryOutcomes } from "@/src/lib/marketPresentation";
+import {
+  computeEffectiveVolumeRaw,
+  formatCompactUsd,
+  pickBinaryOutcomes,
+  resolveReliableBinaryPrice,
+  roundPercentValue,
+} from "@/src/lib/marketPresentation";
 import MarketPulseBoard from "@/components/MarketPulseBoard";
 
 // VCOIN decimals for display
@@ -192,25 +198,12 @@ type MergedMarketCacheEntry = {
   merged: Market;
 };
 type TelegramWindow = Window & {
-  Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } };
-};
-
-const trimTrailingZeros = (value: string): string => value.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
-
-const formatUsdVolume = (value: number): string => {
-  const numeric = Number.isFinite(value) ? Math.max(0, value) : 0;
-  if (numeric >= 1_000_000_000) {
-    const compact = numeric >= 10_000_000_000 ? numeric / 1_000_000_000 : Number((numeric / 1_000_000_000).toFixed(1));
-    return `$${trimTrailingZeros(String(compact))}b`;
-  }
-  if (numeric >= 1_000_000) {
-    const compact = numeric >= 10_000_000 ? numeric / 1_000_000 : Number((numeric / 1_000_000).toFixed(1));
-    return `$${trimTrailingZeros(String(compact))}m`;
-  }
-  if (numeric >= 1_000) {
-    return `$${Math.round(numeric / 1_000)}k`;
-  }
-  return `$${Math.round(numeric).toLocaleString("en-US")}`;
+  Telegram?: {
+    WebApp?: {
+      initDataUnsafe?: { start_param?: string };
+      openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+    };
+  };
 };
 
 const parseUsdVolume = (value: string): number => {
@@ -274,21 +267,34 @@ const clearStoredLimitlessAuth = () => {
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
   const binaryOutcomes = pickBinaryOutcomes(Array.isArray(m.outcomes) ? m.outcomes : []);
-  const derivedYesPrice =
+  const isBinary = (m.marketType ?? "binary") === "binary";
+  const fallbackYesPrice =
     typeof binaryOutcomes.yes?.price === "number" && Number.isFinite(binaryOutcomes.yes.price)
       ? binaryOutcomes.yes.price
       : Number(m.priceYes);
-  const derivedNoPrice =
-    typeof binaryOutcomes.no?.price === "number" && Number.isFinite(binaryOutcomes.no.price)
+  const derivedYesPrice = isBinary
+    ? resolveReliableBinaryPrice({
+        mid: m.mid ?? null,
+        bestBid: m.bestBid ?? null,
+        bestAsk: m.bestAsk ?? null,
+        lastTradePrice: m.lastTradePrice ?? null,
+        fallbackPrice: fallbackYesPrice,
+      })
+    : fallbackYesPrice;
+  const derivedNoPrice = isBinary
+    ? Math.max(0, Math.min(1, 1 - derivedYesPrice))
+    : typeof binaryOutcomes.no?.price === "number" && Number.isFinite(binaryOutcomes.no.price)
       ? binaryOutcomes.no.price
       : Number(m.priceNo);
   const chanceSource =
-    typeof binaryOutcomes.yes?.probability === "number" && Number.isFinite(binaryOutcomes.yes.probability)
-      ? Math.round(binaryOutcomes.yes.probability * 100)
-      : typeof m.chance === "number"
-        ? m.chance
-        : Math.round(derivedYesPrice * 100);
-  const chance = Number.isFinite(chanceSource) ? Math.round(chanceSource) : 50;
+    isBinary
+      ? derivedYesPrice
+      : typeof binaryOutcomes.yes?.probability === "number" && Number.isFinite(binaryOutcomes.yes.probability)
+        ? binaryOutcomes.yes.probability
+        : typeof m.chance === "number"
+          ? m.chance
+          : derivedYesPrice;
+  const chance = roundPercentValue(chanceSource);
   const baseVolumeRaw = Number.isFinite(Number(m.volume)) ? Math.max(0, Number(m.volume)) : 0;
   const volume24hRaw =
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
@@ -317,9 +323,9 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     categoryLabelRu: m.categoryLabelRu ?? null,
     categoryLabelEn: m.categoryLabelEn ?? null,
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
-    volume: formatUsdVolume(volumeRaw),
+    volume: formatCompactUsd(volumeRaw),
     volumeRaw,
-    volume24h: volume24hRaw === null ? null : formatUsdVolume(volume24hRaw),
+    volume24h: volume24hRaw === null ? null : formatCompactUsd(volume24hRaw),
     volume24hRaw,
     closesAt: m.closesAt,
     expiresAt: m.expiresAt,
@@ -395,10 +401,17 @@ const mergeMarketLivePatch = (
 const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market => {
   if (!patch) return market;
   const isBinary = (market.marketType ?? "binary") === "binary";
-  const useMid = isBinary && typeof patch.mid === "number" && patch.mid >= 0 && patch.mid <= 1;
-  const yesPrice = useMid ? patch.mid : market.yesPrice;
-  const noPrice = useMid ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
-  const chance = useMid ? Math.round(yesPrice * 100) : market.chance;
+  const yesPrice = isBinary
+    ? resolveReliableBinaryPrice({
+        mid: patch.mid,
+        bestBid: patch.bestBid,
+        bestAsk: patch.bestAsk,
+        lastTradePrice: patch.lastTradePrice,
+        fallbackPrice: market.yesPrice,
+      })
+    : market.yesPrice;
+  const noPrice = isBinary ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
+  const chance = isBinary ? roundPercentValue(yesPrice) : market.chance;
   const nextRolling24h =
     typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
       ? Math.max(0, patch.rolling24hVolume)
@@ -419,9 +432,9 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     lastTradeSize: patch.lastTradeSize,
     rolling24hVolume: nextRolling24h,
     volume24hRaw: nextRolling24h,
-    volume24h: nextRolling24h === null ? market.volume24h ?? null : formatUsdVolume(nextRolling24h),
+    volume24h: nextRolling24h === null ? market.volume24h ?? null : formatCompactUsd(nextRolling24h),
     volumeRaw: nextVolumeRaw,
-    volume: formatUsdVolume(nextVolumeRaw),
+    volume: formatCompactUsd(nextVolumeRaw),
     openInterest: patch.openInterest,
     liveUpdatedAt: patch.liveUpdatedAt,
   };
@@ -2906,7 +2919,15 @@ export default function HomePage() {
     });
   }, [user, mergedMarkets, myBetMarketIds, deferredSearchQuery, lang]);
 
-  const marketPulseRows = topMarketPreviewRows.length > 0 ? topMarketPreviewRows : catalogMarkets;
+  const marketPulseRows = useMemo(() => {
+    const sourceRows = topMarketPreviewRows.length > 0 ? topMarketPreviewRows : catalogMarkets;
+    const mergedById = new Map(mergedMarkets.map((market) => [market.id, market] as const));
+    return sourceRows.map((market) => {
+      const merged = mergedById.get(market.id);
+      if (merged) return merged;
+      return applyLivePatchToMarket(market, marketLivePatchById[market.id]);
+    });
+  }, [catalogMarkets, mergedMarkets, marketLivePatchById, topMarketPreviewRows]);
 
   const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
   const bookmarkedMarkets = useMemo(() => {
@@ -3985,12 +4006,24 @@ export default function HomePage() {
     return entry ? entry.hasBets : false;
   }, [selectedMarketId, selectedMarket?.createdBy, user, myCreatedMarkets]);
 
+  const openExternalWindow = useCallback((target: string) => {
+    if (typeof window === "undefined") return;
+    const telegramApp = (window as TelegramWindow).Telegram?.WebApp;
+    if (telegramApp?.openLink) {
+      try {
+        telegramApp.openLink(target, { try_instant_view: false });
+        return;
+      } catch {
+        // Fall through to the default browser open.
+      }
+    }
+    window.open(target, "_blank", "noopener,noreferrer");
+  }, []);
+
   const handleOpenCreateMarket = useCallback(() => {
     const target = process.env.NEXT_PUBLIC_POLYMARKET_CREATE_URL || "https://polymarket.com";
-    if (typeof window !== "undefined") {
-      window.open(target, "_blank", "noopener,noreferrer");
-    }
-  }, []);
+    openExternalWindow(target);
+  }, [openExternalWindow]);
 
   const handleSetBookmarked = useCallback(
     async (marketId: string, bookmarked: boolean) => {
@@ -4148,9 +4181,7 @@ export default function HomePage() {
         ? selectedMarket
         : mergedMarkets.find((m) => m.id === marketId) ?? null;
     const target = getExternalMarketUrl(market);
-    if (typeof window !== "undefined") {
-      window.open(target, "_blank", "noopener,noreferrer");
-    }
+    openExternalWindow(target);
   };
 
   const handleClaimWinnings = async ({
@@ -4164,9 +4195,7 @@ export default function HomePage() {
         ? selectedMarket
         : mergedMarkets.find((m) => m.id === marketId) ?? null;
     const target = getExternalMarketUrl(market);
-    if (typeof window !== "undefined") {
-      window.open(target, "_blank", "noopener,noreferrer");
-    }
+    openExternalWindow(target);
   };
 
   const handlePostMarketComment = useCallback(
@@ -4341,9 +4370,7 @@ export default function HomePage() {
               onOpenExternalTrade={(marketId) => {
                 const market = mergedMarkets.find((m) => m.id === marketId) ?? null;
                 const target = getExternalMarketUrl(market);
-                if (typeof window !== "undefined") {
-                  window.open(target, "_blank", "noopener,noreferrer");
-                }
+                openExternalWindow(target);
               }}
             />
           </main>
