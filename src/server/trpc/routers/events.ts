@@ -1,35 +1,16 @@
+import "server-only";
 import { TRPCError } from "@trpc/server";
-import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import type { Json } from "../../../types/database";
 import { consumeDurableRateLimit } from "../../security/rateLimit";
 import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { parseVenueMarketRef, type VenueProvider } from "../../venues/types";
-
-const jsonValueSchema: z.ZodType<Json> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number().finite(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonValueSchema),
-    z.record(z.string(), jsonValueSchema),
-  ])
-);
-
-const trackInput = z.object({
-  sessionId: z.string().min(8).max(128),
-  marketId: z.string().min(1).max(256),
-  provider: z.enum(["polymarket", "limitless"]).optional(),
-  eventType: z.enum(["view", "dwell", "click", "bookmark", "comment", "trade_intent"]),
-  value: z.number().finite().optional(),
-  metadata: z.record(z.string(), jsonValueSchema).optional(),
-});
-
-const trackOutput = z.object({
-  apiVersion: z.literal("v1"),
-  ok: z.boolean(),
-});
+import {
+  API_VERSION_V1,
+  EVENT_RATE_LIMIT_PER_MINUTE,
+  EVENT_RATE_LIMIT_WINDOW_SECONDS,
+} from "@/src/lib/constants";
+import { EVENT_METADATA_MAX_BYTES, trackEventInput, trackEventOutput } from "@/src/lib/validations/events";
 
 const resolveMarketRefId = async (
   supabaseService: unknown,
@@ -54,15 +35,15 @@ const resolveMarketRefId = async (
 
 export const eventsRouter = router({
   track: publicProcedure
-    .input(trackInput)
-    .output(trackOutput)
+    .input(trackEventInput)
+    .output(trackEventOutput)
     .mutation(async ({ ctx, input }) => {
       const requestIp = getTrustedClientIpFromRequest(ctx.req) ?? "unknown";
       const rateLimitKey = `events:${ctx.authUser?.id ?? "anon"}:${requestIp}:${input.sessionId}`;
       const limit = await consumeDurableRateLimit(ctx.supabaseService, {
         key: rateLimitKey,
-        limit: 90,
-        windowSeconds: 60,
+        limit: EVENT_RATE_LIMIT_PER_MINUTE,
+        windowSeconds: EVENT_RATE_LIMIT_WINDOW_SECONDS,
       });
       if (!limit.allowed) {
         throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "EVENT_RATE_LIMITED" });
@@ -70,7 +51,7 @@ export const eventsRouter = router({
 
       const serialized = JSON.stringify(input.metadata ?? {});
       const safeMetadata =
-        serialized.length <= 1024
+        serialized.length <= EVENT_METADATA_MAX_BYTES
           ? input.metadata ?? {}
           : ({ truncated: true, reason: "metadata_too_large" } as Record<string, Json>);
 
@@ -101,7 +82,7 @@ export const eventsRouter = router({
       }
 
       return {
-        apiVersion: "v1",
+        apiVersion: API_VERSION_V1,
         ok: true,
       };
     }),

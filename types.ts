@@ -63,6 +63,7 @@ export interface Market {
   provider?: "polymarket" | "limitless";
   providerMarketId?: string;
   canonicalMarketId?: string;
+  marketRefId?: string | null;
   title: string;
   titleRu: string | null;
   titleEn: string;
@@ -81,6 +82,7 @@ export interface Market {
   imageUrl: string;
   volume: string;
   volumeRaw?: number | null;
+  totalVolumeUsd?: number | null;
   volume24h?: string | null;
   volume24hRaw?: number | null;
   closesAt: string; // Trading stops
@@ -105,6 +107,10 @@ export interface Market {
   rolling24hVolume?: number | null;
   openInterest?: number | null;
   liveUpdatedAt?: string | null;
+  freshness?: {
+    sourceTs: string | null;
+    stale: boolean;
+  } | null;
   capabilities?: {
     supportsTrading: boolean;
     supportsCandles: boolean;

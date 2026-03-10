@@ -1,5 +1,5 @@
+import "server-only";
 import { TRPCError } from "@trpc/server";
-import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { publicProcedure, router } from "../trpc";
 import { authCookie, clearAuthCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
@@ -15,6 +15,7 @@ import {
   normalizeDisplayName,
   normalizeUsername,
 } from "../../auth/identity";
+import { privyLoginInput } from "@/src/lib/validations/auth";
 
 const publicColumns =
   "id, email, username, display_name, avatar_url, profile_description, avatar_palette, profile_setup_completed_at, telegram_photo_url, referral_code, referral_commission_rate, referral_enabled, created_at, is_admin, privy_user_id, privy_wallet_address, auth_provider";
@@ -280,7 +281,7 @@ const upsertPrivyUser = async (
 
 export const authRouter = router({
   privyLogin: publicProcedure
-    .input(z.object({ accessToken: z.string().min(1) }))
+    .input(privyLoginInput)
     .mutation(async ({ ctx, input }) => {
       try {
         try {

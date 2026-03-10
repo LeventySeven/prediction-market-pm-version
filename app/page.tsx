@@ -34,6 +34,13 @@ import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from 
 import { marketCommentsSchema } from "@/src/schemas/comments";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
+import {
+  CATALOG_REALTIME_FLUSH_MS,
+  CATALOG_VISIBLE_MARKETS_REALTIME_LIMIT,
+  HISTORY_NAVIGATION_THROTTLE_MS,
+  SELECTED_MARKET_FALLBACK_POLL_MS,
+  SELECTED_MARKET_REALTIME_FLUSH_MS,
+} from "@/src/lib/constants";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import {
@@ -91,6 +98,7 @@ type MarketApiRow = {
   provider?: "polymarket" | "limitless";
   providerMarketId?: string;
   canonicalMarketId?: string;
+  marketRefId?: string | null;
   titleRu: string;
   titleEn: string;
   description?: string | null;
@@ -126,6 +134,7 @@ type MarketApiRow = {
   priceYes: number;
   priceNo: number;
   volume: number;
+  totalVolumeUsd?: number | null;
   chance?: number | null;
   creatorName?: string | null;
   creatorAvatarUrl?: string | null;
@@ -137,6 +146,10 @@ type MarketApiRow = {
   rolling24hVolume?: number | null;
   openInterest?: number | null;
   liveUpdatedAt?: string | null;
+  freshness?: {
+    sourceTs: string | null;
+    stale: boolean;
+  } | null;
   capabilities?: {
     supportsTrading: boolean;
     supportsCandles: boolean;
@@ -178,6 +191,17 @@ type InitialCatalogBootstrap = {
 };
 
 type MarketLiveRow = Database["public"]["Tables"]["polymarket_market_live"]["Row"];
+type CanonicalMarketLiveRow = {
+  market_id: string;
+  best_bid: number | null;
+  best_ask: number | null;
+  mid: number | null;
+  last_trade_price: number | null;
+  last_trade_size: number | null;
+  rolling_24h_volume: number | null;
+  open_interest: number | null;
+  source_ts: string | null;
+};
 type CandleRow = Database["public"]["Tables"]["polymarket_candles_1m"]["Row"];
 type TickRow = Database["public"]["Tables"]["polymarket_market_ticks"]["Row"];
 type MarketLivePatch = {
@@ -283,13 +307,20 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
       ? Math.max(0, m.rolling24hVolume)
       : null;
-  const displayVolume = resolveDisplayVolume(m.volume, volume24hRaw);
+  const totalVolumeUsd =
+    typeof m.totalVolumeUsd === "number" && Number.isFinite(m.totalVolumeUsd)
+      ? Math.max(0, m.totalVolumeUsd)
+      : typeof m.volume === "number" && Number.isFinite(m.volume)
+        ? Math.max(0, m.volume)
+        : null;
+  const displayVolume = resolveDisplayVolume(totalVolumeUsd, volume24hRaw, m.volume);
   return {
     id: String(m.id),
     provider: m.provider ?? "polymarket",
     providerMarketId: m.providerMarketId ?? String(m.id),
     canonicalMarketId:
       m.canonicalMarketId ?? `${m.provider ?? "polymarket"}:${m.providerMarketId ?? String(m.id)}`,
+    marketRefId: typeof m.marketRefId === "string" ? m.marketRefId : null,
     title,
     titleRu: m.titleRu,
     titleEn: m.titleEn,
@@ -308,6 +339,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     imageUrl: (m.imageUrl ?? "").trim() || buildInitialsAvatarDataUrl(title, { bg: "#111111", fg: "#ffffff" }),
     volume: displayVolume.label,
     volumeRaw: displayVolume.raw,
+    totalVolumeUsd,
     volume24h: volume24hRaw === null ? null : formatCompactUsd(volume24hRaw),
     volume24hRaw,
     closesAt: m.closesAt,
@@ -330,6 +362,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     rolling24hVolume: m.rolling24hVolume ?? null,
     openInterest: m.openInterest ?? null,
     liveUpdatedAt: m.liveUpdatedAt ?? null,
+    freshness: m.freshness ?? null,
     capabilities: m.capabilities ?? null,
     tradeMeta: m.tradeMeta ?? null,
   };
@@ -399,7 +432,7 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
       ? Math.max(0, patch.rolling24hVolume)
       : null;
-  const displayVolume = resolveDisplayVolume(market.volumeRaw, nextRolling24h);
+  const displayVolume = resolveDisplayVolume(market.totalVolumeUsd, nextRolling24h);
 
   return {
     ...market,
@@ -418,6 +451,13 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     volume: displayVolume.label,
     openInterest: patch.openInterest,
     liveUpdatedAt: patch.liveUpdatedAt,
+    freshness:
+      market.freshness || patch.liveUpdatedAt
+        ? {
+            sourceTs: patch.liveUpdatedAt ?? market.freshness?.sourceTs ?? null,
+            stale: market.freshness?.stale ?? false,
+          }
+        : null,
   };
 };
 
@@ -734,6 +774,7 @@ export default function HomePage() {
   const [limitlessCredentialsOpen, setLimitlessCredentialsOpen] = useState(false);
   const [limitlessCredentialsError, setLimitlessCredentialsError] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
+  const lastHistoryMutationRef = useRef<{ url: string; at: number; mode: "push" | "replace" } | null>(null);
   const bootstrapRef = useRef<InitialCatalogBootstrap | null>(readWarmCatalogBootstrap());
   const [enabledProviders, setEnabledProviders] = useState<Array<"polymarket" | "limitless">>(() =>
     sanitizeEnabledProviders(bootstrapRef.current?.enabledProviders)
@@ -849,24 +890,43 @@ export default function HomePage() {
     setCurrentView("CATALOG");
   }, []);
   const [currentView, setCurrentView] = useState<ViewType>(() => getViewFromLocation());
+  const commitHistoryNavigation = useCallback(
+    (mode: "push" | "replace", nextUrl: string, state: Record<string, unknown>) => {
+      if (typeof window === "undefined") return;
+      const currentUrl = `${window.location.pathname}${window.location.search}`;
+      if (currentUrl === nextUrl) return;
+
+      const now = Date.now();
+      const last = lastHistoryMutationRef.current;
+      if (last && last.url === nextUrl && now - last.at < HISTORY_NAVIGATION_THROTTLE_MS) {
+        return;
+      }
+
+      const method = mode === "push" ? "pushState" : "replaceState";
+      window.history[method](state, "", nextUrl);
+      lastHistoryMutationRef.current = {
+        url: nextUrl,
+        at: now,
+        mode,
+      };
+    },
+    []
+  );
   const navigateToMarketUrl = useCallback((marketId: string, title?: string | null) => {
     if (typeof window === "undefined") return;
     const next = buildMarketPath(marketId, title);
-    if (window.location.pathname + window.location.search === next) return;
-    window.history.pushState({ marketId }, "", next);
-  }, []);
+    commitHistoryNavigation("push", next, { marketId });
+  }, [commitHistoryNavigation]);
   const navigateToCatalogUrl = useCallback(() => {
     if (typeof window === "undefined") return;
     const nextPath = getCatalogPathForProvider(activeProviderFilter);
-    if (window.location.pathname === nextPath) return;
-    window.history.pushState({}, "", nextPath + window.location.search);
-  }, [activeProviderFilter]);
+    commitHistoryNavigation("push", nextPath + window.location.search, {});
+  }, [activeProviderFilter, commitHistoryNavigation]);
   const navigateToViewUrl = useCallback((view: ViewType) => {
     if (typeof window === "undefined") return;
     const next = view === "CATALOG" ? getCatalogPathForProvider(activeProviderFilter) : getPathForView(view);
-    if (window.location.pathname === next && !window.location.search) return;
-    window.history.pushState({ view }, "", next);
-  }, [activeProviderFilter]);
+    commitHistoryNavigation("push", next, { view });
+  }, [activeProviderFilter, commitHistoryNavigation]);
 
   const applyCatalogStateFromUrl = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -943,17 +1003,14 @@ export default function HomePage() {
 
     const nextPath = getCatalogPathForProvider(activeProviderFilter);
     const params = new URLSearchParams();
-    if (searchQuery.trim()) params.set("q", searchQuery.trim());
+    if (deferredSearchQuery.trim()) params.set("q", deferredSearchQuery.trim());
     if (activeCategoryId !== "all") params.set("category", activeCategoryId);
     if (catalogSort !== "CREATED_DESC") params.set("sort", catalogSort);
     if (catalogStatus !== "ALL") params.set("status", catalogStatus);
     if (catalogTimeFilter !== "ANY") params.set("time", catalogTimeFilter);
     if (catalogPage > 1) params.set("page", String(catalogPage));
     const nextUrl = params.toString().length > 0 ? `${nextPath}?${params.toString()}` : nextPath;
-    const currentUrl = `${window.location.pathname}${window.location.search}`;
-    if (currentUrl !== nextUrl) {
-      window.history.replaceState({ view: "CATALOG" }, "", nextUrl);
-    }
+    commitHistoryNavigation("replace", nextUrl, { view: "CATALOG" });
   }, [
     activeCategoryId,
     activeProviderFilter,
@@ -962,8 +1019,9 @@ export default function HomePage() {
     catalogStatus,
     catalogTimeFilter,
     currentView,
-    searchQuery,
+    deferredSearchQuery,
     selectedMarketId,
+    commitHistoryNavigation,
   ]);
   const [myPositions, setMyPositions] = useState<Position[]>([]);
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
@@ -1831,12 +1889,9 @@ export default function HomePage() {
     setActiveProviderFilter("all");
     if (typeof window !== "undefined") {
       const next = `/catalog${window.location.search}`;
-      const current = `${window.location.pathname}${window.location.search}`;
-      if (next !== current) {
-        window.history.replaceState({ view: "CATALOG" }, "", next);
-      }
+      commitHistoryNavigation("replace", next, { view: "CATALOG" });
     }
-  }, [activeProviderFilter, currentView, enabledProviderSet, enabledProvidersResolved, selectedMarketId]);
+  }, [activeProviderFilter, commitHistoryNavigation, currentView, enabledProviderSet, enabledProvidersResolved, selectedMarketId]);
 
   type CatalogFetchParams = {
     page: number;
@@ -2390,21 +2445,37 @@ export default function HomePage() {
 
   useEffect(() => {
     if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) return;
-    const targetIds = Array.from(new Set(visibleCatalogMarketIds.filter(Boolean))).slice(0, 200);
+    const targetIds = Array.from(new Set(visibleCatalogMarketIds.filter(Boolean))).slice(
+      0,
+      CATALOG_VISIBLE_MARKETS_REALTIME_LIMIT
+    );
     if (targetIds.length === 0) return;
+    const marketById = new Map(markets.map((market) => [market.id, market] as const));
 
     const startSupabaseVisibleSubscription = () => {
       const supabase = getBrowserSupabaseClient();
       if (!supabase) return () => undefined;
 
-      const pendingRows = new Map<string, MarketLiveRow>();
+      const targets = targetIds
+        .map((marketId) => {
+          const market = marketById.get(marketId);
+          const marketRefId =
+            market && typeof market.marketRefId === "string" && market.marketRefId.trim().length > 0
+              ? market.marketRefId.trim()
+              : "";
+          return marketRefId ? { marketId, marketRefId } : null;
+        })
+        .filter((target): target is { marketId: string; marketRefId: string } => Boolean(target));
+      if (targets.length === 0) return () => undefined;
+
+      const pendingRows = new Map<string, CanonicalMarketLiveRow>();
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
       let fallbackTriggered = false;
 
       const flushLiveRows = () => {
         flushTimer = null;
         if (pendingRows.size === 0) return;
-        const batch = Array.from(pendingRows.values());
+        const batch = Array.from(pendingRows.entries());
         pendingRows.clear();
         incrementClientCounter("catalog.realtime.flushes");
         incrementClientCounter("catalog.realtime.rowsApplied", batch.length);
@@ -2413,8 +2484,7 @@ export default function HomePage() {
           let changed = false;
           const next = { ...prev };
 
-          for (const row of batch) {
-            const marketId = row.market_id.trim();
+          for (const [marketId, row] of batch) {
             if (!marketId) continue;
             const incomingPatch: MarketLivePatch = {
               bestBid: asNumber(row.best_bid),
@@ -2443,33 +2513,32 @@ export default function HomePage() {
         });
       };
 
-      const queueLiveRow = (row: MarketLiveRow) => {
-        const marketId = row.market_id.trim();
+      const queueLiveRow = (marketId: string, row: CanonicalMarketLiveRow) => {
         if (!marketId) return;
         pendingRows.set(marketId, row);
         incrementClientCounter("catalog.realtime.rowsReceived");
         if (!flushTimer) {
-          flushTimer = setTimeout(flushLiveRows, 250);
+          flushTimer = setTimeout(flushLiveRows, CATALOG_REALTIME_FLUSH_MS);
         }
       };
 
-      const channel = supabase.channel(`markets-live-visible-${targetIds.length}`);
-      for (const marketId of targetIds) {
+      const channel = supabase.channel(`markets-live-visible-${targets.length}`);
+      for (const target of targets) {
         channel.on(
           "postgres_changes",
-          { event: "INSERT", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+          { event: "INSERT", schema: "public", table: "market_live", filter: `market_id=eq.${target.marketRefId}` },
           (payload) => {
             if (payload.new && typeof payload.new === "object") {
-              queueLiveRow(payload.new as MarketLiveRow);
+              queueLiveRow(target.marketId, payload.new as CanonicalMarketLiveRow);
             }
           }
         );
         channel.on(
           "postgres_changes",
-          { event: "UPDATE", schema: "public", table: "polymarket_market_live", filter: `market_id=eq.${marketId}` },
+          { event: "UPDATE", schema: "public", table: "market_live", filter: `market_id=eq.${target.marketRefId}` },
           (payload) => {
             if (payload.new && typeof payload.new === "object") {
-              queueLiveRow(payload.new as MarketLiveRow);
+              queueLiveRow(target.marketId, payload.new as CanonicalMarketLiveRow);
             }
           }
         );
@@ -2602,9 +2671,8 @@ export default function HomePage() {
         }
       };
     }
-
     return startSupabaseVisibleSubscription();
-  }, [currentView, selectedMarketId, documentVisible, visibleCatalogMarketIds]);
+  }, [currentView, selectedMarketId, documentVisible, markets, visibleCatalogMarketIds]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -2838,7 +2906,7 @@ export default function HomePage() {
 
   const catalogMarkets = useMemo(() => {
     const parseVol = (m: Market) =>
-      resolveDisplayVolume(m.volumeRaw, m.volume).raw ?? 0;
+      resolveDisplayVolume(m.totalVolumeUsd, m.rolling24hVolume ?? m.volume24hRaw, m.volumeRaw).raw ?? 0;
     const categoryLabel = (m: Market) => {
       const raw =
         lang === "RU"
@@ -3155,14 +3223,70 @@ export default function HomePage() {
       pendingPatches.set(cleanMarketId, mergeMarketLivePatch(pending, patch));
       incrementClientCounter("market.realtime.selected.rowsReceived");
       if (!flushTimer) {
-        flushTimer = setTimeout(flushPatches, 120);
+        flushTimer = setTimeout(flushPatches, SELECTED_MARKET_REALTIME_FLUSH_MS);
       }
     };
 
-    const startPolymarketSupabaseFallback = () => {
-      if (selectedProvider !== "polymarket") return () => undefined;
+    const startCanonicalSupabaseFallback = () => {
+      const marketRefId =
+        selectedMarket && typeof selectedMarket.marketRefId === "string" && selectedMarket.marketRefId.trim().length > 0
+          ? selectedMarket.marketRefId.trim()
+          : "";
+      if (!marketRefId) return null;
       const supabase = getBrowserSupabaseClient();
-      if (!supabase) return () => undefined;
+      if (!supabase) return null;
+
+      const channel = supabase.channel(`market-live-selected-${marketRefId}`);
+      const queueRow = (row: CanonicalMarketLiveRow) => {
+        queuePatch(streamMarketId, {
+          bestBid: asNumber(row.best_bid),
+          bestAsk: asNumber(row.best_ask),
+          mid: asNumber(row.mid),
+          lastTradePrice: asNumber(row.last_trade_price),
+          lastTradeSize: asNumber(row.last_trade_size),
+          rolling24hVolume: asNumber(row.rolling_24h_volume),
+          openInterest: asNumber(row.open_interest),
+          liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
+        });
+      };
+
+      channel.on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "market_live",
+          filter: `market_id=eq.${marketRefId}`,
+        },
+        (payload) => {
+          if (!payload.new || typeof payload.new !== "object") return;
+          queueRow(payload.new as CanonicalMarketLiveRow);
+        }
+      );
+      channel.on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "market_live",
+          filter: `market_id=eq.${marketRefId}`,
+        },
+        (payload) => {
+          if (!payload.new || typeof payload.new !== "object") return;
+          queueRow(payload.new as CanonicalMarketLiveRow);
+        }
+      );
+      channel.subscribe();
+
+      return () => {
+        void supabase.removeChannel(channel);
+      };
+    };
+
+    const startPolymarketSupabaseFallback = () => {
+      if (selectedProvider !== "polymarket") return null;
+      const supabase = getBrowserSupabaseClient();
+      if (!supabase) return null;
 
       const polymarketMarketId = streamMarketId.startsWith("polymarket:")
         ? streamMarketId.slice("polymarket:".length)
@@ -3223,9 +3347,11 @@ export default function HomePage() {
     };
 
     const startSelectedMarketFallback = () => {
-      if (selectedProvider === "polymarket") {
-        return startPolymarketSupabaseFallback();
-      }
+      const canonicalFallback = startCanonicalSupabaseFallback();
+      if (canonicalFallback) return canonicalFallback;
+
+      const polymarketFallback = startPolymarketSupabaseFallback();
+      if (polymarketFallback) return polymarketFallback;
 
       let stopped = false;
       let timer: ReturnType<typeof setInterval> | null = null;
@@ -3258,7 +3384,7 @@ export default function HomePage() {
       void refreshFromApi();
       timer = setInterval(() => {
         void refreshFromApi();
-      }, 2_000);
+      }, SELECTED_MARKET_FALLBACK_POLL_MS);
 
       return () => {
         stopped = true;
@@ -3329,7 +3455,7 @@ export default function HomePage() {
       pendingPatches.clear();
       stopSupabaseFallback();
     };
-  }, [selectedMarketId, selectedMarket?.id, selectedMarket?.providerMarketId, selectedProvider]);
+  }, [selectedMarketId, selectedMarket?.id, selectedMarket?.marketRefId, selectedMarket?.providerMarketId, selectedProvider]);
 
   const goToView = useCallback(
     (view: ViewType) => {
@@ -4654,9 +4780,11 @@ export default function HomePage() {
                                 setActiveProviderFilter(provider.id);
                                 if (typeof window !== "undefined" && currentView === "CATALOG") {
                                   const nextPath = getCatalogPathForProvider(provider.id);
-                                  if (window.location.pathname !== nextPath) {
-                                    window.history.pushState({ view: "CATALOG" }, "", `${nextPath}${window.location.search}`);
-                                  }
+                                  commitHistoryNavigation(
+                                    "push",
+                                    `${nextPath}${window.location.search}`,
+                                    { view: "CATALOG" }
+                                  );
                                 }
                               }}
                               className={`shrink-0 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${

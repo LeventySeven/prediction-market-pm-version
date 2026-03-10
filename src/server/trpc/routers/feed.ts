@@ -1,9 +1,11 @@
-import { z } from "zod";
+import "server-only";
 import { publicProcedure, router } from "../trpc";
 import { listMirroredPolymarketMarkets } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
 import { listEnabledProviders } from "../../venues/registry";
 import { resolveDisplayVolume } from "../../../lib/marketPresentation";
+import { API_VERSION_V1, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from "@/src/lib/constants";
+import { feedOutput, getFeedInput } from "@/src/lib/validations/feed";
 
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
 type MarketLiveFeedRow = Pick<
@@ -17,18 +19,6 @@ type FeedMarketCandidate = {
   category: string;
   fallbackVolume: number;
 };
-
-const feedItemOutput = z.object({
-  marketId: z.string(),
-  score: z.number(),
-  reason: z.string(),
-});
-
-const feedOutput = z.object({
-  apiVersion: z.literal("v1"),
-  items: z.array(feedItemOutput),
-  nextCursor: z.string().nullable(),
-});
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
@@ -58,17 +48,10 @@ const eventWeight: Record<FeedEventType, number> = {
 
 export const feedRouter = router({
   getForYou: publicProcedure
-    .input(
-      z
-        .object({
-          cursor: z.string().nullable().optional(),
-          limit: z.number().int().positive().max(30).optional(),
-        })
-        .optional()
-    )
+    .input(getFeedInput)
     .output(feedOutput)
     .query(async ({ ctx, input }) => {
-      const limit = Math.max(1, Math.min(30, Number(input?.limit ?? 16)));
+      const limit = Math.max(1, Math.min(MAX_FEED_LIMIT, Number(input?.limit ?? DEFAULT_FEED_LIMIT)));
       const offset = decodeCursor(input?.cursor);
 
       const polymarketRows = await listMirroredPolymarketMarkets(ctx.supabaseService, {
@@ -157,7 +140,7 @@ export const feedRouter = router({
       }
 
       if (candidates.length === 0) {
-        return { apiVersion: "v1", items: [], nextCursor: null };
+        return { apiVersion: API_VERSION_V1, items: [], nextCursor: null };
       }
 
       const affinityByMarket = new Map<string, number>();
@@ -234,7 +217,7 @@ export const feedRouter = router({
       const nextCursor = nextOffset < diversified.length ? encodeCursor(nextOffset) : null;
 
       return {
-        apiVersion: "v1",
+        apiVersion: API_VERSION_V1,
         items,
         nextCursor,
       };

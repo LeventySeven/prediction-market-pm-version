@@ -16,6 +16,15 @@ const queryClient = new QueryClient({
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  const isTelegramMiniApp =
+    typeof window !== 'undefined' &&
+    Boolean(
+      (window as Window & {
+        Telegram?: {
+          WebApp?: unknown;
+        };
+      }).Telegram?.WebApp
+    );
 
   const privyConfig = useMemo(
     () => ({
@@ -29,10 +38,16 @@ export function Providers({ children }: { children: React.ReactNode }) {
           createOnLogin: 'users-without-wallets' as const,
         },
       },
+      externalWallets: {
+        disableAllExternalWallets: isTelegramMiniApp,
+        walletConnect: {
+          enabled: !isTelegramMiniApp,
+        },
+      },
       defaultChain: polygon,
       supportedChains: [polygon],
     }),
-    []
+    [isTelegramMiniApp]
   );
 
   if (!appId) {

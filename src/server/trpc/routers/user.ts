@@ -1,9 +1,10 @@
+import "server-only";
 import { TRPCError } from "@trpc/server";
-import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { publicProcedure, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
+import { DEFAULT_LEADERBOARD_LIMIT } from "@/src/lib/constants";
 import { authCookie, signAuthToken } from "../../auth/jwt";
 import {
   isPlaceholderDisplayName,
@@ -12,31 +13,29 @@ import {
   normalizeDisplayName,
   normalizeUsername,
 } from "../../auth/identity";
+import {
+  avatarPaletteShape,
+  checkUsernameAvailabilityInput,
+  completeProfileSetupInput,
+  createReferralLinkOutput,
+  leaderboardInput,
+  leaderboardOutput,
+  publicUserCommentsInput,
+  publicUserCommentsOutput,
+  publicUserInput,
+  publicUserOutput,
+  publicUserStatsInput,
+  publicUserStatsOutput,
+  publicUserVotesInput,
+  publicUserVotesOutput,
+  updateAvatarUrlInput,
+  updateDisplayNameInput,
+  updateProfileIdentityInput,
+  userShape,
+  usernameAvailabilityOutput,
+} from "@/src/lib/validations/user";
 
 const PRIVY_PLACEHOLDER_DOMAIN = "@privy.local";
-const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
-const avatarPaletteShape = z.object({
-  primary: z.string().regex(hexColorRegex),
-  secondary: z.string().regex(hexColorRegex),
-});
-
-const userShape = z.object({
-  id: z.string(),
-  email: z.string().email(),
-  username: z.string(),
-  displayName: z.string().nullable(),
-  avatarUrl: z.string().nullable(),
-  profileDescription: z.string().nullable(),
-  avatarPalette: avatarPaletteShape.nullable(),
-  needsProfileSetup: z.boolean(),
-  telegramPhotoUrl: z.string().nullable(),
-  referralCode: z.string().nullable(),
-  referralCommissionRate: z.number().nullable(),
-  referralEnabled: z.boolean().nullable(),
-  balance: z.number(),
-  createdAt: z.string(),
-  isAdmin: z.boolean(),
-});
 
 const normalizeDescription = (value: string | null | undefined) => {
   const normalized = String(value ?? "").trim();
@@ -110,32 +109,10 @@ const requireServiceRoleForUserWrite = (hasServiceRole: boolean) => {
   });
 };
 
-const usernameAvailabilityOutput = z.object({
-  available: z.boolean(),
-  normalized: z.string(),
-  reason: z
-    .enum([
-      "INVALID_FORMAT",
-      "RESERVED",
-      "TAKEN",
-      "CHECK_FAILED",
-      "UNCHANGED",
-    ])
-    .optional(),
-});
-
 export const userRouter = router({
   publicUser: publicProcedure
-    .input(z.object({ userId: z.string() }))
-    .output(
-      z.object({
-        id: z.string(),
-        username: z.string(),
-        displayName: z.string().nullable(),
-        avatarUrl: z.string().nullable(),
-        telegramPhotoUrl: z.string().nullable(),
-      })
-    )
+    .input(publicUserInput)
+    .output(publicUserOutput)
     .query(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
       const row = await (supabaseService as any)
@@ -154,14 +131,8 @@ export const userRouter = router({
     }),
 
   publicUserStats: publicProcedure
-    .input(z.object({ userId: z.string() }))
-    .output(
-      z.object({
-        userId: z.string(),
-        pnlMajor: z.number(),
-        betsCount: z.number(),
-      })
-    )
+    .input(publicUserStatsInput)
+    .output(publicUserStatsOutput)
     .query(async ({ input }) => ({
       userId: input.userId,
       pnlMajor: 0,
@@ -169,33 +140,13 @@ export const userRouter = router({
     })),
 
   publicUserVotes: publicProcedure
-    .input(z.object({ userId: z.string(), limit: z.number().int().positive().max(500).optional() }))
-    .output(
-      z.array(
-        z.object({
-          marketId: z.string(),
-          outcome: z.enum(["YES", "NO"]).nullable(),
-          lastBetAt: z.string(),
-          isActive: z.boolean(),
-        })
-      )
-    )
+    .input(publicUserVotesInput)
+    .output(publicUserVotesOutput)
     .query(async () => []),
 
   publicUserComments: publicProcedure
-    .input(z.object({ userId: z.string(), limit: z.number().int().positive().max(500).optional() }))
-    .output(
-      z.array(
-        z.object({
-          id: z.string(),
-          marketId: z.string(),
-          parentId: z.string().nullable(),
-          body: z.string(),
-          createdAt: z.string(),
-          likesCount: z.number(),
-        })
-      )
-    )
+    .input(publicUserCommentsInput)
+    .output(publicUserCommentsOutput)
     .query(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
       const limit = input.limit ?? 100;
@@ -227,7 +178,7 @@ export const userRouter = router({
     }),
 
   checkUsernameAvailability: publicProcedure
-    .input(z.object({ username: z.string().min(1).max(64) }))
+    .input(checkUsernameAvailabilityInput)
     .output(usernameAvailabilityOutput)
     .query(async ({ ctx, input }) => {
       const normalized = normalizeHandleInput(input.username);
@@ -260,7 +211,7 @@ export const userRouter = router({
     }),
 
   updateDisplayName: publicProcedure
-    .input(z.object({ displayName: z.string().min(2).max(32) }))
+    .input(updateDisplayNameInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
@@ -278,12 +229,7 @@ export const userRouter = router({
     }),
 
   updateProfileIdentity: publicProcedure
-    .input(
-      z.object({
-        username: z.string().min(3).max(32),
-        displayName: z.string().min(2).max(32),
-      })
-    )
+    .input(updateProfileIdentityInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
@@ -333,7 +279,7 @@ export const userRouter = router({
     }),
 
   updateAvatarUrl: publicProcedure
-    .input(z.object({ avatarUrl: z.string().url().nullable(), avatarPalette: avatarPaletteShape.nullable().optional() }))
+    .input(updateAvatarUrlInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
@@ -358,16 +304,7 @@ export const userRouter = router({
     }),
 
   completeProfileSetup: publicProcedure
-    .input(
-      z.object({
-        username: z.string().min(3).max(32),
-        displayName: z.string().min(2).max(32),
-        email: z.string().trim().email().max(254).optional(),
-        profileDescription: z.string().max(280).nullable().optional(),
-        avatarUrl: z.string().url().nullable().optional(),
-        avatarPalette: avatarPaletteShape.nullable().optional(),
-      })
-    )
+    .input(completeProfileSetupInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
@@ -453,13 +390,7 @@ export const userRouter = router({
     }),
 
   createReferralLink: publicProcedure
-    .output(
-      z.object({
-        referralCode: z.string(),
-        referralCommissionRate: z.number().nullable(),
-        referralEnabled: z.boolean().nullable(),
-      })
-    )
+    .output(createReferralLinkOutput)
     .mutation(async ({ ctx }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
@@ -511,25 +442,11 @@ export const userRouter = router({
     }),
 
   leaderboard: publicProcedure
-    .input(z.object({ limit: z.number().int().positive().max(500).optional(), sortBy: z.enum(["pnl", "bets"]).optional() }).optional())
-    .output(
-      z.array(
-        z.object({
-          id: z.string(),
-          rank: z.number(),
-          name: z.string(),
-          username: z.string().optional(),
-          avatar: z.string(),
-          balance: z.number(),
-          pnl: z.number(),
-          referrals: z.number().optional(),
-          betCount: z.number().optional(),
-        })
-      )
-    )
+    .input(leaderboardInput)
+    .output(leaderboardOutput)
     .query(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
-      const limit = input?.limit ?? 100;
+      const limit = input?.limit ?? DEFAULT_LEADERBOARD_LIMIT;
       const users = await (supabaseService as any)
         .from("users")
         .select("id, username, display_name, avatar_url, telegram_photo_url, created_at")

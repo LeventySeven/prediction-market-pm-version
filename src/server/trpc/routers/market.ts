@@ -1,9 +1,66 @@
+import "server-only";
 import { TRPCError } from "@trpc/server";
-import { z } from "zod";
 import { createHash, createHmac } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { publicProcedure, router } from "../trpc";
+import {
+  API_VERSION_V1,
+  DEFAULT_MARKET_ACTIVITY_LIMIT,
+  DEFAULT_MARKET_COMMENT_LIMIT,
+  DEFAULT_MARKET_LIST_PAGE_SIZE,
+  DEFAULT_MARKET_SEARCH_LIMIT,
+  DEFAULT_MARKET_SIMILAR_LIMIT,
+  DEFAULT_PUBLIC_TRADES_LIMIT,
+  MAX_MARKET_ACTIVITY_LIMIT,
+  MAX_MARKET_LIST_CANDIDATE_LIMIT,
+  MAX_MARKET_LIST_PAGE_SIZE,
+  MAX_MARKET_LIVE_HYDRATION_LIMIT,
+  MAX_MARKET_SEARCH_LIMIT,
+  MAX_MARKET_SIMILAR_LIMIT,
+} from "@/src/lib/constants";
+import {
+  type CandleInterval,
+  type LimitlessTradeMetaOutput,
+  type LiveActivityTickOutput,
+  type MarketCategoryOutput,
+  type MarketOutput,
+  type PriceCandleOutput,
+  type PublicTradeOutput,
+  enabledProvidersOutput,
+  generateMarketContextInput,
+  getLiveActivityInput,
+  getMarketCommentsInput,
+  getMarketInput,
+  getPriceCandlesInput,
+  getPublicTradesInput,
+  getSimilarMarketsInput,
+  liveActivityTickOutput,
+  liveActivityTickOutputArray,
+  listMarketCategoriesInput,
+  listMarketsInput,
+  marketBookmarkOutputArray,
+  marketCategoryOutputArray,
+  marketCommentOutput,
+  marketCommentOutputArray,
+  marketContextOutput,
+  marketListV1Output,
+  marketOutput,
+  marketOutputArray,
+  myCommentOutputArray,
+  myCommentsInput,
+  postMarketCommentInput,
+  priceCandleOutputArray,
+  publicTradeOutputArray,
+  relaySignedOrderInput,
+  relaySignedOrderOutput,
+  searchSemanticInput,
+  setBookmarkInput,
+  setBookmarkOutput,
+  similarMarketsV1Output,
+  toggleMarketCommentLikeInput,
+  toggleMarketCommentLikeOutput,
+} from "@/src/lib/validations/market";
 import { generateMarketContext } from "../../ai/marketContextAgent";
 import {
   type PolymarketMarket,
@@ -60,271 +117,10 @@ import { extractTotalVolumeFromPayload } from "../../../lib/marketVolumePayload"
 const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
 
-const marketCategoryOutput = z.object({
-  id: z.string(),
-  labelRu: z.string(),
-  labelEn: z.string(),
-});
-
-const enabledProvidersOutput = z.object({
-  providers: z.array(z.enum(["polymarket", "limitless"])),
-});
-
-const marketOutcomeOutput = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  providerOutcomeId: z.string().nullable().optional(),
-  providerTokenId: z.string().nullable().optional(),
-  tokenId: z.string().nullable().optional(),
-  slug: z.string(),
-  title: z.string(),
-  iconUrl: z.string().nullable(),
-  chartColor: z.string().nullable().optional(),
-  sortOrder: z.number(),
-  isActive: z.boolean(),
-  probability: z.number(),
-  price: z.number(),
-});
-
-const limitlessTradeMetaOutput = z.object({
-  marketSlug: z.string(),
-  exchangeAddress: z.string(),
-  adapterAddress: z.string().nullable(),
-  collateralTokenAddress: z.string(),
-  collateralTokenDecimals: z.number().int().positive(),
-  minOrderSize: z.number().nullable(),
-  positionIds: z.tuple([z.string(), z.string()]),
-});
-
-const marketOutput = z.object({
-  id: z.string(),
-  provider: z.enum(["polymarket", "limitless"]).optional(),
-  providerMarketId: z.string().optional(),
-  canonicalMarketId: z.string().optional(),
-  titleRu: z.string(),
-  titleEn: z.string(),
-  description: z.string().nullable().optional(),
-  source: z.string().nullable().optional(),
-  imageUrl: z.string().optional(),
-  state: z.enum(["open", "closed", "resolved", "cancelled"]),
-  createdAt: z.string(),
-  closesAt: z.string(),
-  expiresAt: z.string(),
-  marketType: z.enum(["binary", "multi_choice"]).optional(),
-  resolvedOutcomeId: z.string().nullable().optional(),
-  outcomes: z.array(marketOutcomeOutput).optional(),
-  outcome: z.enum(["YES", "NO"]).nullable(),
-  createdBy: z.string().nullable().optional(),
-  categoryId: z.string().nullable().optional(),
-  categoryLabelRu: z.string().nullable().optional(),
-  categoryLabelEn: z.string().nullable().optional(),
-  settlementAsset: z.string().nullable().optional(),
-  feeBps: z.number().nullable().optional(),
-  liquidityB: z.number().nullable().optional(),
-  priceYes: z.number(),
-  priceNo: z.number(),
-  volume: z.number(),
-  chance: z.number().nullable().optional(),
-  creatorName: z.string().nullable().optional(),
-  creatorAvatarUrl: z.string().nullable().optional(),
-  bestBid: z.number().nullable().optional(),
-  bestAsk: z.number().nullable().optional(),
-  mid: z.number().nullable().optional(),
-  lastTradePrice: z.number().nullable().optional(),
-  lastTradeSize: z.number().nullable().optional(),
-  rolling24hVolume: z.number().nullable().optional(),
-  openInterest: z.number().nullable().optional(),
-  liveUpdatedAt: z.string().nullable().optional(),
-  capabilities: z
-    .object({
-      supportsTrading: z.boolean(),
-      supportsCandles: z.boolean(),
-      supportsPublicTrades: z.boolean(),
-      chainId: z.number().nullable(),
-    })
-    .optional(),
-  tradeMeta: z
-    .object({
-      limitless: limitlessTradeMetaOutput.nullable().optional(),
-    })
-    .nullable()
-    .optional(),
-});
-
-const marketBookmarkOutput = z.object({
-  marketId: z.string(),
-  createdAt: z.string(),
-});
-
-const priceCandleOutput = z.object({
-  bucket: z.string(),
-  outcomeId: z.string().nullable().optional(),
-  outcomeTitle: z.string().nullable().optional(),
-  outcomeColor: z.string().nullable().optional(),
-  open: z.number(),
-  high: z.number(),
-  low: z.number(),
-  close: z.number(),
-  volume: z.number(),
-  tradesCount: z.number(),
-});
-
-const candleIntervalSchema = z.enum(["1m", "1h"]);
-type CandleInterval = z.infer<typeof candleIntervalSchema>;
-
-const publicTradeOutput = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  action: z.enum(["buy", "sell"]),
-  outcome: z.enum(["YES", "NO"]).nullable(),
-  outcomeId: z.string().nullable().optional(),
-  outcomeTitle: z.string().nullable().optional(),
-  collateralGross: z.number(),
-  sharesDelta: z.number(),
-  priceBefore: z.number(),
-  priceAfter: z.number(),
-  createdAt: z.string(),
-});
-
-const liveActivityTickOutput = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  tradeId: z.string().nullable(),
-  side: z.enum(["BUY", "SELL", "UNKNOWN"]),
-  outcome: z.string().nullable(),
-  price: z.number(),
-  size: z.number(),
-  notional: z.number(),
-  sourceTs: z.string(),
-  createdAt: z.string(),
-});
-
-const marketCommentOutput = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  userId: z.string(),
-  parentId: z.string().nullable(),
-  body: z.string(),
-  createdAt: z.string(),
-  authorName: z.string(),
-  authorUsername: z.string().nullable(),
-  authorAvatarUrl: z.string().nullable(),
-  likesCount: z.number(),
-  likedByMe: z.boolean(),
-});
-
-const myCommentOutput = z.object({
-  id: z.string(),
-  marketId: z.string(),
-  parentId: z.string().nullable(),
-  body: z.string(),
-  createdAt: z.string(),
-  marketTitleRu: z.string(),
-  marketTitleEn: z.string(),
-  likesCount: z.number(),
-});
-
-const marketContextOutput = z.object({
-  marketId: z.string(),
-  context: z.string(),
-  sources: z.array(z.string()),
-  updatedAt: z.string(),
-  generated: z.boolean(),
-});
-
-const apiVersionV1 = z.literal("v1");
-
-const marketListV1Output = z.object({
-  apiVersion: apiVersionV1,
-  items: z.array(
-    z.object({
-      market: marketOutput,
-      score: z.number(),
-    })
-  ),
-});
-
-const similarMarketsV1Output = z.object({
-  apiVersion: apiVersionV1,
-  items: z.array(
-    z.object({
-      market: marketOutput,
-      score: z.number(),
-    })
-  ),
-});
-
-const jsonValueSchema: z.ZodType<Database["public"]["Tables"]["user_events"]["Row"]["metadata"]> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number().finite(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonValueSchema),
-    z.record(z.string(), jsonValueSchema),
-  ])
-);
-
-const relaySignedOrderInput = z.object({
-  provider: z.enum(["polymarket", "limitless"]).default("polymarket"),
-  marketId: z.string().min(1).optional(),
-  marketSlug: z.string().min(1).max(256).optional(),
-  signedOrder: z.record(z.string(), jsonValueSchema),
-  orderType: z.enum(["FOK", "GTC"]),
-  idempotencyKey: z.string().min(8).max(128),
-  clientOrderId: z.string().min(1).max(128).optional(),
-  apiCreds: z
-    .object({
-      key: z.string().min(1).max(512),
-      secret: z.string().min(1).max(1024),
-      passphrase: z.string().min(1).max(1024),
-    })
-    .optional(),
-  limitlessAuth: z
-    .object({
-      apiKey: z.string().min(1).max(512),
-      ownerId: z.number().int().positive().max(2_147_483_647),
-    })
-    .optional(),
-}).superRefine((value, ctx) => {
-  if (value.provider === "polymarket") {
-    if (!value.apiCreds) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "POLYMARKET_API_CREDS_REQUIRED",
-        path: ["apiCreds"],
-      });
-    }
-    return;
-  }
-
-  if (!value.limitlessAuth) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "LIMITLESS_AUTH_REQUIRED",
-      path: ["limitlessAuth"],
-    });
-  }
-  if (!value.marketSlug) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "LIMITLESS_MARKET_SLUG_REQUIRED",
-      path: ["marketSlug"],
-    });
-  }
-});
-
-const relaySignedOrderOutput = z.object({
-  success: z.boolean(),
-  status: z.number(),
-  payload: jsonValueSchema.optional(),
-  error: z.string().optional(),
-});
-
 const CATEGORY_ROWS_CACHE_TTL_MS = Math.max(10_000, Number(process.env.MARKET_CATEGORIES_CACHE_TTL_MS ?? 60_000));
 const cachedCategoryRowsByProviderKey = new Map<
   string,
-  { expiresAt: number; rows: Array<z.infer<typeof marketCategoryOutput>> }
+  { expiresAt: number; rows: MarketCategoryOutput[] }
 >();
 
 const normalizeCategoryLabel = (value: unknown): string | null => {
@@ -372,7 +168,7 @@ const addCategoryValue = (
   }
 };
 
-const sortCategoryRows = (categories: Map<string, string>): Array<z.infer<typeof marketCategoryOutput>> =>
+const sortCategoryRows = (categories: Map<string, string>): MarketCategoryOutput[] =>
   Array.from(categories.entries())
     .sort((a, b) => a[1].localeCompare(b[1], "en", { sensitivity: "base" }))
     .map(([id, label]) => ({
@@ -420,6 +216,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     provider: "polymarket" as const,
     providerMarketId: market.id,
     canonicalMarketId: venueToCanonicalId("polymarket", market.id),
+    marketRefId: null,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -443,6 +240,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     priceYes,
     priceNo,
     volume: market.volume,
+    totalVolumeUsd: market.volume,
     chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
@@ -459,6 +257,10 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
       supportsCandles: true,
       supportsPublicTrades: true,
       chainId: Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137),
+    },
+    freshness: {
+      sourceTs: null,
+      stale: false,
     },
     tradeMeta: null,
   };
@@ -511,6 +313,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     provider: market.provider,
     providerMarketId: market.providerMarketId,
     canonicalMarketId: venueToCanonicalId(market.provider, market.providerMarketId),
+    marketRefId: null,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -548,6 +351,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     priceYes,
     priceNo,
     volume: market.volume,
+    totalVolumeUsd: market.volume,
     chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
@@ -560,6 +364,10 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     openInterest: null,
     liveUpdatedAt: null,
     capabilities: market.capabilities,
+    freshness: {
+      sourceTs: null,
+      stale: false,
+    },
     tradeMeta: market.tradeMeta ?? null,
   };
 };
@@ -745,11 +553,15 @@ type MarketCommentLikeRow = Pick<
   Database["public"]["Tables"]["market_comment_likes"]["Row"],
   "comment_id" | "user_id"
 >;
+type MarketFreshness = {
+  sourceTs: string | null;
+  stale: boolean;
+};
 
 const sortMarketRows = (
-  rows: Array<z.infer<typeof marketOutput>>,
+  rows: MarketOutput[],
   sortBy: "newest" | "volume"
-): Array<z.infer<typeof marketOutput>> => {
+): Array<MarketOutput> => {
   const sorted = [...rows];
   sorted.sort((a, b) => {
     if (sortBy === "newest") {
@@ -769,7 +581,7 @@ const sortMarketRows = (
   return sorted;
 };
 
-const hasSuspiciousBinaryPresentation = (row: z.infer<typeof marketOutput>): boolean => {
+const hasSuspiciousBinaryPresentation = (row: MarketOutput): boolean => {
   if ((row.marketType ?? "binary") !== "binary") return false;
   if (row.state !== "open") return false;
   const chance = Number(row.chance ?? NaN);
@@ -783,8 +595,8 @@ const hasSuspiciousBinaryPresentation = (row: z.infer<typeof marketOutput>): boo
 };
 
 const shouldPreferLiveHydratedRow = (
-  current: z.infer<typeof marketOutput>,
-  live: z.infer<typeof marketOutput>
+  current: MarketOutput,
+  live: MarketOutput
 ): boolean => {
   if (Number(live.volume ?? 0) > Number(current.volume ?? 0)) return true;
   if (!hasSuspiciousBinaryPresentation(current)) return false;
@@ -868,7 +680,11 @@ const mergeMarketWithLive = (
     : market.priceYes;
   const nextNo = isBinary ? Math.max(0, Math.min(1, 1 - nextYes)) : market.priceNo;
   const liveChance = isBinary ? roundPercentValue(nextYes) : market.chance;
-  const effectiveVolume = computeEffectiveVolumeRaw(market.volume, live.rolling24hVolume);
+  const totalVolumeUsd =
+    typeof market.totalVolumeUsd === "number" && Number.isFinite(market.totalVolumeUsd)
+      ? market.totalVolumeUsd
+      : market.volume;
+  const effectiveVolume = computeEffectiveVolumeRaw(totalVolumeUsd, live.rolling24hVolume);
 
   return {
     ...market,
@@ -881,9 +697,11 @@ const mergeMarketWithLive = (
     lastTradePrice: live.lastTradePrice,
     lastTradeSize: live.lastTradeSize,
     volume: effectiveVolume,
+    totalVolumeUsd,
     rolling24hVolume: live.rolling24hVolume,
     openInterest: live.openInterest,
     liveUpdatedAt: live.sourceTs,
+    freshness: buildMarketFreshness("polymarket", live.sourceTs),
   };
 };
 
@@ -922,6 +740,20 @@ const isTimestampFresh = (
   const parsed = Date.parse(isoValue);
   if (!Number.isFinite(parsed)) return false;
   return now - parsed <= staleAfterMs;
+};
+
+const buildMarketFreshness = (
+  provider: VenueProvider,
+  sourceTs: string | null | undefined
+): MarketFreshness => {
+  const iso = typeof sourceTs === "string" && sourceTs.trim().length > 0 ? sourceTs : null;
+  const staleAfterMs =
+    provider === "polymarket" ? POLYMARKET_WORKER_STALE_AFTER_MS : LIMITLESS_WORKER_STALE_AFTER_MS;
+
+  return {
+    sourceTs: iso,
+    stale: iso ? !isTimestampFresh(iso, staleAfterMs) : false,
+  };
 };
 
 const isPolymarketWorkerFresh = async (
@@ -1107,7 +939,7 @@ const readStringArrayFromPayloadPath = (
 const buildLimitlessTradeMetaFromPayload = (
   payload: Record<string, unknown> | null,
   outcomes: Array<{ tokenId?: string | null }> = []
-): z.infer<typeof limitlessTradeMetaOutput> | null => {
+): LimitlessTradeMetaOutput | null => {
   if (!payload) return null;
 
   const marketSlug =
@@ -1237,7 +1069,7 @@ const listCanonicalProviderMarkets = async (
     limit: number;
     providerMarketId?: string;
   }
-): Promise<Array<z.infer<typeof marketOutput>>> => {
+): Promise<MarketOutput[]> => {
   let query = (supabaseService as any)
     .from("market_catalog")
     .select(
@@ -1363,7 +1195,7 @@ const listCanonicalProviderMarkets = async (
     const priceNo = Math.max(0, Math.min(1, 1 - priceYes));
 
     const stateRaw = String(row.state ?? "open").trim().toLowerCase();
-    const state: z.infer<typeof marketOutput>["state"] =
+    const state: MarketOutput["state"] =
       stateRaw === "open" || stateRaw === "closed" || stateRaw === "resolved" || stateRaw === "cancelled"
         ? stateRaw
         : "open";
@@ -1373,6 +1205,7 @@ const listCanonicalProviderMarkets = async (
       provider,
       providerMarketId,
       canonicalMarketId: outputId,
+      marketRefId,
       titleRu: String(row.title ?? "Untitled market"),
       titleEn: String(row.title ?? "Untitled market"),
       description: typeof row.description === "string" ? row.description : null,
@@ -1396,6 +1229,7 @@ const listCanonicalProviderMarkets = async (
       priceYes,
       priceNo,
       volume: computeEffectiveVolumeRaw(payloadVolume, toFiniteNumber(live?.rolling_24h_volume as any)),
+      totalVolumeUsd: payloadVolume,
       chance: roundPercentValue(priceYes),
       creatorName: null,
       creatorAvatarUrl: null,
@@ -1408,6 +1242,10 @@ const listCanonicalProviderMarkets = async (
       openInterest: toFiniteNumber(live?.open_interest as any),
       liveUpdatedAt: typeof live?.source_ts === "string" ? live.source_ts : null,
       capabilities,
+      freshness: buildMarketFreshness(
+        provider,
+        typeof live?.source_ts === "string" ? live.source_ts : fallbackIso
+      ),
       tradeMeta:
         provider === "limitless"
           ? {
@@ -1417,7 +1255,7 @@ const listCanonicalProviderMarkets = async (
               ),
             }
           : null,
-    } satisfies z.infer<typeof marketOutput>;
+    } satisfies MarketOutput;
   });
 };
 
@@ -1425,7 +1263,7 @@ const listLocalCandles = async (
   supabaseService: SupabaseServiceClient,
   marketId: string,
   limit: number
-): Promise<Array<z.infer<typeof priceCandleOutput>>> => {
+): Promise<PriceCandleOutput[]> => {
   if (!marketId) return [];
   const { data, error } = await supabaseService
     .from("polymarket_candles_1m")
@@ -1463,7 +1301,7 @@ const listCanonicalCandles = async (
   marketRefId: string,
   limit: number,
   outcomeKey: string | null = "__market__"
-): Promise<Array<z.infer<typeof priceCandleOutput>>> => {
+): Promise<PriceCandleOutput[]> => {
   if (!marketRefId) return [];
 
   let query = (supabaseService as any)
@@ -1508,7 +1346,7 @@ const listCanonicalCandles = async (
     );
 };
 
-type PriceCandleRow = z.infer<typeof priceCandleOutput>;
+type PriceCandleRow = PriceCandleOutput;
 
 const CANDLE_MIN_POINTS_FOR_COVERAGE = Math.max(
   24,
@@ -1768,7 +1606,7 @@ const listLocalLiveActivityTicks = async (
   supabaseService: SupabaseServiceClient,
   marketId: string,
   limit: number
-): Promise<Array<z.output<typeof liveActivityTickOutput>>> => {
+): Promise<LiveActivityTickOutput[]> => {
   if (!marketId) return [];
   const safeLimit = Math.max(1, Math.min(limit, 200));
   const { data, error } = await supabaseService
@@ -1781,7 +1619,7 @@ const listLocalLiveActivityTicks = async (
 
   if (error || !Array.isArray(data) || data.length === 0) return [];
 
-  const out: Array<z.output<typeof liveActivityTickOutput>> = [];
+  const out: LiveActivityTickOutput[] = [];
   for (const row of data as MarketTickRow[]) {
     const sideRaw = typeof row.side === "string" ? row.side.toUpperCase() : "UNKNOWN";
     const side: "BUY" | "SELL" | "UNKNOWN" =
@@ -2006,7 +1844,7 @@ const collectCategoryValuesFromRows = (
 const loadDynamicCategoryRows = async (
   supabaseService: unknown,
   providers: VenueProvider[]
-): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
+): Promise<MarketCategoryOutput[]> => {
   const categories = new Map<string, string>();
   const selectedProviders = Array.from(new Set(providers));
 
@@ -2084,7 +1922,7 @@ const loadDynamicCategoryRows = async (
 const getCachedDynamicCategoryRows = async (
   supabaseService: unknown,
   providers: VenueProvider[]
-): Promise<Array<z.infer<typeof marketCategoryOutput>>> => {
+): Promise<MarketCategoryOutput[]> => {
   const now = Date.now();
   const cacheKey = buildProviderSelectionCacheKey(providers);
   const cached = cachedCategoryRowsByProviderKey.get(cacheKey);
@@ -2153,6 +1991,62 @@ const resolveMarketCatalogRefId = async (
   } catch {
     return null;
   }
+};
+
+const attachMarketCatalogRefIds = async (
+  supabaseService: unknown,
+  rows: MarketOutput[]
+): Promise<MarketOutput[]> => {
+  if (!supabaseService || rows.length === 0) return rows;
+
+  const resolvedByKey = new Map<string, string>();
+  const grouped = new Map<VenueProvider, Set<string>>();
+
+  for (const row of rows) {
+    const provider = row.provider ?? "polymarket";
+    const providerMarketId = String(row.providerMarketId ?? row.id ?? "").trim();
+    if (!providerMarketId) continue;
+
+    if (row.marketRefId) {
+      resolvedByKey.set(`${provider}:${providerMarketId}`, row.marketRefId);
+      continue;
+    }
+
+    const ids = grouped.get(provider) ?? new Set<string>();
+    ids.add(providerMarketId);
+    grouped.set(provider, ids);
+  }
+
+  for (const [provider, providerMarketIds] of grouped.entries()) {
+    const values = Array.from(providerMarketIds);
+    for (let i = 0; i < values.length; i += 250) {
+      const chunk = values.slice(i, i + 250);
+      const { data, error } = await (supabaseService as any)
+        .from("market_catalog")
+        .select("id, provider_market_id")
+        .eq("provider", provider)
+        .in("provider_market_id", chunk);
+      if (error) continue;
+
+      for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+        const providerMarketId = String(row.provider_market_id ?? "").trim();
+        const marketRefId = String(row.id ?? "").trim();
+        if (!providerMarketId || !marketRefId) continue;
+        resolvedByKey.set(`${provider}:${providerMarketId}`, marketRefId);
+      }
+    }
+  }
+
+  return rows.map((row) => {
+    if (row.marketRefId) return row;
+    const provider = row.provider ?? "polymarket";
+    const providerMarketId = String(row.providerMarketId ?? row.id ?? "").trim();
+    if (!providerMarketId) return row;
+    return {
+      ...row,
+      marketRefId: resolvedByKey.get(`${provider}:${providerMarketId}`) ?? null,
+    };
+  });
 };
 
 const buildOrderHash = (payload: string): string =>
@@ -2245,15 +2139,8 @@ const finalizeRelayAudit = async (
 
 export const marketRouter = router({
   listCategories: publicProcedure
-    .input(
-      z
-        .object({
-          providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
-          providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
-        })
-        .optional()
-    )
-    .output(z.array(marketCategoryOutput))
+    .input(listMarketCategoriesInput)
+    .output(marketCategoryOutputArray)
     .query(async ({ ctx, input }) => {
       const selectedProviders = parseProviderSelection({
         providers: input?.providers,
@@ -2273,28 +2160,20 @@ export const marketRouter = router({
     }),
 
   listMarkets: publicProcedure
-    .input(
-      z
-        .object({
-          onlyOpen: z.boolean().optional(),
-          page: z.number().int().positive().max(1000).optional(),
-          pageSize: z.number().int().positive().max(200).optional(),
-          sortBy: z.enum(["newest", "volume"]).optional(),
-          providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
-          providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
-        })
-        .optional()
-    )
-    .output(z.array(marketOutput))
+    .input(listMarketsInput)
+    .output(marketOutputArray)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
       const onlyOpen = input?.onlyOpen ?? false;
       const page = Math.max(1, Number(input?.page ?? 1));
-      const pageSize = Math.max(1, Math.min(200, Number(input?.pageSize ?? 50)));
+      const pageSize = Math.max(1, Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE)));
       const sortBy: "newest" | "volume" = input?.sortBy ?? "newest";
       const offset = (page - 1) * pageSize;
-      const candidateLimit = Math.min(8000, Math.max(pageSize * 2, offset + pageSize * 2));
+      const candidateLimit = Math.min(
+        MAX_MARKET_LIST_CANDIDATE_LIMIT,
+        Math.max(pageSize * 2, offset + pageSize * 2)
+      );
       const selectedProviders = parseProviderSelection({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
@@ -2320,7 +2199,7 @@ export const marketRouter = router({
         providers: selectedCacheProviders,
       });
       if (workersFreshForSelection) {
-        const cachedList = await readUpstashCache(listCacheKey, z.array(marketOutput));
+        const cachedList = await readUpstashCache(listCacheKey, marketOutputArray);
         if (cachedList) {
           incrementRealtimeMetricCounter("upstash.cache.marketList.hit");
           recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
@@ -2329,7 +2208,7 @@ export const marketRouter = router({
         incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
       }
 
-      const loadPolymarketRows = async (): Promise<Array<z.infer<typeof marketOutput>>> => {
+      const loadPolymarketRows = async (): Promise<MarketOutput[]> => {
         const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
           onlyOpen,
           limit: candidateLimit,
@@ -2344,8 +2223,8 @@ export const marketRouter = router({
         return onlyOpen ? merged.filter((m) => m.state === "open") : merged;
       };
 
-      const loadLimitlessRows = async (): Promise<Array<z.infer<typeof marketOutput>>> => {
-        const providerRows: Array<z.infer<typeof marketOutput>> = [];
+      const loadLimitlessRows = async (): Promise<MarketOutput[]> => {
+        const providerRows: MarketOutput[] = [];
         let hasLiveLimitlessRows = false;
         const adapter = getVenueAdapter("limitless");
         if (limitlessWorkerFresh) {
@@ -2398,7 +2277,7 @@ export const marketRouter = router({
           try {
             const liveRows = await adapter.listMarketsSnapshot({
               onlyOpen,
-              limit: Math.min(candidateLimit, 400),
+              limit: Math.min(candidateLimit, MAX_MARKET_LIVE_HYDRATION_LIMIT),
               sortBy,
             });
             if (liveRows.length > 0) {
@@ -2424,7 +2303,7 @@ export const marketRouter = router({
       const providerTasks: Array<
         Promise<{
           provider: "polymarket" | "limitless";
-          rows: Array<z.infer<typeof marketOutput>>;
+          rows: MarketOutput[];
           error?: unknown;
         }>
       > = [];
@@ -2444,7 +2323,7 @@ export const marketRouter = router({
       }
 
       const providerResults = await Promise.all(providerTasks);
-      const responseRows: Array<z.infer<typeof marketOutput>> = [];
+      const responseRows: MarketOutput[] = [];
       for (const result of providerResults) {
         if (result.error) {
           console.warn(`listMarkets provider ${result.provider} failed`, result.error);
@@ -2457,7 +2336,7 @@ export const marketRouter = router({
         if (firstFailure?.error) throw firstFailure.error;
       }
 
-      const deduped = new Map<string, z.infer<typeof marketOutput>>();
+      const deduped = new Map<string, MarketOutput>();
       for (const row of responseRows) {
         const key = row.canonicalMarketId ?? `${row.provider ?? "polymarket"}:${row.id}`;
         if (!deduped.has(key)) {
@@ -2465,7 +2344,11 @@ export const marketRouter = router({
         }
       }
 
-      const sorted = sortMarketRows(Array.from(deduped.values()), sortBy);
+      const hydratedRows = await attachMarketCatalogRefIds(
+        ctx.supabaseService,
+        Array.from(deduped.values())
+      );
+      const sorted = sortMarketRows(hydratedRows, sortBy);
       const out = sorted.slice(offset, offset + pageSize);
       if (workersFreshForSelection) {
         void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
@@ -2475,7 +2358,7 @@ export const marketRouter = router({
     }),
 
   getMarket: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), provider: z.enum(["polymarket", "limitless"]).optional() }))
+    .input(getMarketInput)
     .output(marketOutput)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
@@ -2508,7 +2391,9 @@ export const marketRouter = router({
         }
         const mapped = mapPolymarketMarket(row);
         const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
-        const out = mergeMarketWithLive(mapped, liveByMarket.get(mapped.id));
+        const [out] = await attachMarketCatalogRefIds(ctx.supabaseService, [
+          mergeMarketWithLive(mapped, liveByMarket.get(mapped.id)),
+        ]);
         void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
         recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
         return out;
@@ -2545,6 +2430,7 @@ export const marketRouter = router({
               }
             }
           }
+          [resolved] = await attachMarketCatalogRefIds(ctx.supabaseService, [resolved]);
           void writeUpstashCache(detailCacheKey, resolved, upstashMarketDetailTtlSec);
           recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
           return resolved;
@@ -2565,25 +2451,19 @@ export const marketRouter = router({
           // Canonical table sync is best effort.
         });
       }
-      const out = mapVenueMarketToMarketOutput(row);
+      const [out] = await attachMarketCatalogRefIds(ctx.supabaseService, [
+        mapVenueMarketToMarketOutput(row),
+      ]);
       void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
       recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
       return out;
     }),
 
   searchSemantic: publicProcedure
-    .input(
-      z.object({
-        query: z.string().min(2).max(256),
-        limit: z.number().int().positive().max(30).optional(),
-        onlyOpen: z.boolean().optional(),
-        providers: z.array(z.enum(["polymarket", "limitless"])).optional(),
-        providerFilter: z.enum(["all", "polymarket", "limitless"]).optional(),
-      })
-    )
+    .input(searchSemanticInput)
     .output(marketListV1Output)
     .query(async ({ ctx, input }) => {
-      const limit = Math.max(1, Math.min(30, Number(input.limit ?? 15)));
+      const limit = Math.max(1, Math.min(MAX_MARKET_SEARCH_LIMIT, Number(input.limit ?? DEFAULT_MARKET_SEARCH_LIMIT)));
       const onlyOpen = input.onlyOpen ?? true;
       const query = input.query.trim();
       const selectedProviders = parseProviderSelection({
@@ -2594,10 +2474,10 @@ export const marketRouter = router({
         ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
         : false;
       if (query.length < 2) {
-        return { apiVersion: "v1", items: [] };
+        return { apiVersion: API_VERSION_V1, items: [] };
       }
 
-      const scoredItems: Array<{ market: z.infer<typeof marketOutput>; score: number }> = [];
+      const scoredItems: Array<{ market: MarketOutput; score: number }> = [];
 
       if (selectedProviders.includes("polymarket")) {
         const primary = await searchMirroredPolymarketMarkets(ctx.supabaseService, query, limit * 8);
@@ -2711,7 +2591,7 @@ export const marketRouter = router({
         }
       }
 
-      const deduped = new Map<string, { market: z.infer<typeof marketOutput>; score: number }>();
+      const deduped = new Map<string, { market: MarketOutput; score: number }>();
       for (const item of scoredItems) {
         const key =
           item.market.canonicalMarketId ??
@@ -2727,13 +2607,13 @@ export const marketRouter = router({
         .slice(0, limit);
 
       return {
-        apiVersion: "v1",
+        apiVersion: API_VERSION_V1,
         items,
       };
     }),
 
   getSimilar: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(30).optional() }))
+    .input(getSimilarMarketsInput)
     .output(similarMarketsV1Output)
     .query(async ({ ctx, input }) => {
       const baseMarket = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
@@ -2741,7 +2621,7 @@ export const marketRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
 
-      const limit = Math.max(1, Math.min(30, Number(input.limit ?? 10)));
+      const limit = Math.max(1, Math.min(MAX_MARKET_SIMILAR_LIMIT, Number(input.limit ?? DEFAULT_MARKET_SIMILAR_LIMIT)));
       const targetVector = await getEmbeddingByMarketId(ctx.supabaseService, baseMarket.id);
 
       if (!targetVector) {
@@ -2759,7 +2639,7 @@ export const marketRouter = router({
           mapped.map((m) => m.id)
         );
         return {
-          apiVersion: "v1",
+          apiVersion: API_VERSION_V1,
           items: mergeMarketsWithLive(mapped, liveByMarket).map((market) => ({
             market,
             score: clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6),
@@ -2806,7 +2686,7 @@ export const marketRouter = router({
       );
 
       return {
-        apiVersion: "v1",
+        apiVersion: API_VERSION_V1,
         items: mapped.map((item) => ({
           market: mergeMarketWithLive(item.market, liveByMarket.get(item.market.id)),
           score: item.score,
@@ -2934,7 +2814,7 @@ export const marketRouter = router({
     }),
 
   generateMarketContext: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), provider: z.enum(["polymarket", "limitless"]).optional() }))
+    .input(generateMarketContextInput)
     .output(marketContextOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService } = ctx;
@@ -3002,7 +2882,7 @@ export const marketRouter = router({
     }),
 
   myBookmarks: publicProcedure
-    .output(z.array(marketBookmarkOutput))
+    .output(marketBookmarkOutputArray)
     .query(async ({ ctx }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
@@ -3019,14 +2899,8 @@ export const marketRouter = router({
     }),
 
   setBookmark: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        provider: z.enum(["polymarket", "limitless"]).optional(),
-        bookmarked: z.boolean(),
-      })
-    )
-    .output(z.object({ marketId: z.string(), bookmarked: z.boolean() }))
+    .input(setBookmarkInput)
+    .output(setBookmarkOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
@@ -3057,15 +2931,8 @@ export const marketRouter = router({
     }),
 
   getPriceCandles: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        provider: z.enum(["polymarket", "limitless"]).optional(),
-        interval: candleIntervalSchema.optional().default("1h"),
-        limit: z.number().int().positive().max(20000).optional(),
-      })
-    )
-    .output(z.array(priceCandleOutput))
+    .input(getPriceCandlesInput)
+    .output(priceCandleOutputArray)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getPriceCandles.calls");
@@ -3288,19 +3155,13 @@ export const marketRouter = router({
     }),
 
   getLiveActivity: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        provider: z.enum(["polymarket", "limitless"]).optional(),
-        limit: z.number().int().positive().max(200).optional(),
-      })
-    )
-    .output(z.array(liveActivityTickOutput))
+    .input(getLiveActivityInput)
+    .output(liveActivityTickOutputArray)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getLiveActivity.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-      const limit = Math.max(1, Math.min(input.limit ?? 80, 200));
+      const limit = Math.max(1, Math.min(input.limit ?? DEFAULT_MARKET_ACTIVITY_LIMIT, MAX_MARKET_ACTIVITY_LIMIT));
 
       if (ref.provider !== "polymarket") {
         recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
@@ -3335,25 +3196,19 @@ export const marketRouter = router({
     }),
 
   getPublicTrades: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        provider: z.enum(["polymarket", "limitless"]).optional(),
-        limit: z.number().int().positive().max(200).optional(),
-      })
-    )
-    .output(z.array(publicTradeOutput))
+    .input(getPublicTradesInput)
+    .output(publicTradeOutputArray)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getPublicTrades.calls");
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-      const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
+      const limit = Math.max(1, Math.min(input.limit ?? DEFAULT_PUBLIC_TRADES_LIMIT, MAX_MARKET_ACTIVITY_LIMIT));
       const tradesCacheKey = buildMarketTradesCacheKey({
         provider: ref.provider,
         providerMarketId: ref.providerMarketId,
         limit,
       });
-      const cachedTrades = await readUpstashCache(tradesCacheKey, z.array(publicTradeOutput));
+      const cachedTrades = await readUpstashCache(tradesCacheKey, publicTradeOutputArray);
       if (cachedTrades) {
         incrementRealtimeMetricCounter("upstash.cache.marketTrades.hit");
         recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
@@ -3398,7 +3253,7 @@ export const marketRouter = router({
               priceBefore: tick.price,
               priceAfter: tick.price,
               createdAt: tick.sourceTs || tick.createdAt,
-            } satisfies z.output<typeof publicTradeOutput>;
+            } satisfies PublicTradeOutput;
           };
 
           const redisTicks = await readUpstashActivityTicks(marketId, limit);
@@ -3452,7 +3307,7 @@ export const marketRouter = router({
         const outcomesByTitle = new Map(
           market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
         );
-        const out: Array<z.output<typeof publicTradeOutput>> = rows.map((t) => {
+        const out: PublicTradeOutput[] = rows.map((t) => {
           const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
           const outcome = outcomesByTitle.get(normalizedOutcome);
           const action: "buy" | "sell" = t.side === "SELL" ? "sell" : "buy";
@@ -3495,7 +3350,7 @@ export const marketRouter = router({
       const outcomesByTitle = new Map(
         market.outcomes.map((outcome) => [outcome.title.trim().toLowerCase(), outcome] as const)
       );
-      const out: Array<z.output<typeof publicTradeOutput>> = rows.map((trade) => {
+      const out: PublicTradeOutput[] = rows.map((trade) => {
         const normalizedOutcome = (trade.outcome ?? "").trim().toLowerCase();
         const outcome = outcomesByTitle.get(normalizedOutcome);
         const action: "buy" | "sell" = trade.side === "SELL" ? "sell" : "buy";
@@ -3525,8 +3380,8 @@ export const marketRouter = router({
     }),
 
   getMarketComments: publicProcedure
-    .input(z.object({ marketId: z.string().min(1), limit: z.number().int().positive().max(200).optional() }))
-    .output(z.array(marketCommentOutput))
+    .input(getMarketCommentsInput)
+    .output(marketCommentOutputArray)
     .query(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       const { data: comments, error } = await supabaseService
@@ -3534,7 +3389,7 @@ export const marketRouter = router({
         .select("id, market_id, user_id, parent_id, body, created_at")
         .eq("market_id", input.marketId)
         .order("created_at", { ascending: true })
-        .limit(input.limit ?? 100);
+        .limit(input.limit ?? DEFAULT_MARKET_COMMENT_LIMIT);
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
 
       const commentRows = (comments ?? []) as MarketCommentRow[];
@@ -3583,14 +3438,7 @@ export const marketRouter = router({
     }),
 
   postMarketComment: publicProcedure
-    .input(
-      z.object({
-        marketId: z.string().min(1),
-        provider: z.enum(["polymarket", "limitless"]).optional(),
-        body: z.string().min(1).max(2000),
-        parentId: z.string().nullable().optional(),
-      })
-    )
+    .input(postMarketCommentInput)
     .output(marketCommentOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
@@ -3641,8 +3489,8 @@ export const marketRouter = router({
     }),
 
   toggleMarketCommentLike: publicProcedure
-    .input(z.object({ commentId: z.string().min(1) }))
-    .output(z.object({ commentId: z.string(), liked: z.boolean(), likesCount: z.number() }))
+    .input(toggleMarketCommentLikeInput)
+    .output(toggleMarketCommentLikeOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
@@ -3682,8 +3530,8 @@ export const marketRouter = router({
     }),
 
   myComments: publicProcedure
-    .input(z.object({ limit: z.number().int().positive().max(500).optional() }).optional())
-    .output(z.array(myCommentOutput))
+    .input(myCommentsInput)
+    .output(myCommentOutputArray)
     .query(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
       if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });

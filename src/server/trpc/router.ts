@@ -1,3 +1,4 @@
+import "server-only";
 import { userRouter } from "./routers/user";
 import { marketRouter } from "./routers/market";
 import { authRouter } from "./routers/auth";
