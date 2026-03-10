@@ -769,6 +769,32 @@ const sortMarketRows = (
   return sorted;
 };
 
+const hasSuspiciousBinaryPresentation = (row: z.infer<typeof marketOutput>): boolean => {
+  if ((row.marketType ?? "binary") !== "binary") return false;
+  if (row.state !== "open") return false;
+  const chance = Number(row.chance ?? NaN);
+  const suspiciousChance = chance === 0 || chance === 50 || chance === 100;
+  const hasLiveSignal =
+    row.bestBid !== null ||
+    row.bestAsk !== null ||
+    row.mid !== null ||
+    row.lastTradePrice !== null;
+  return suspiciousChance && !hasLiveSignal;
+};
+
+const shouldPreferLiveHydratedRow = (
+  current: z.infer<typeof marketOutput>,
+  live: z.infer<typeof marketOutput>
+): boolean => {
+  if (Number(live.volume ?? 0) > Number(current.volume ?? 0)) return true;
+  if (!hasSuspiciousBinaryPresentation(current)) return false;
+  return (
+    Number(live.chance ?? NaN) !== Number(current.chance ?? NaN) ||
+    Number(live.priceYes ?? NaN) !== Number(current.priceYes ?? NaN) ||
+    Number(live.priceNo ?? NaN) !== Number(current.priceNo ?? NaN)
+  );
+};
+
 type UserProfileRow = Pick<
   Database["public"]["Tables"]["users"]["Row"],
   "id" | "display_name" | "username" | "avatar_url" | "telegram_photo_url"
@@ -2365,7 +2391,10 @@ export const marketRouter = router({
           }
         }
 
-        if (providerRows.some((row) => Number(row.volume ?? 0) <= 0) && adapter.isEnabled()) {
+        if (
+          providerRows.some((row) => Number(row.volume ?? 0) <= 0 || hasSuspiciousBinaryPresentation(row)) &&
+          adapter.isEnabled()
+        ) {
           try {
             const liveRows = await adapter.listMarketsSnapshot({
               onlyOpen,
@@ -2377,10 +2406,10 @@ export const marketRouter = router({
                 liveRows.map((row) => [row.providerMarketId, mapVenueMarketToMarketOutput(row)] as const)
               );
               return providerRows.map((row) => {
-                if (Number(row.volume ?? 0) > 0) return row;
+                if (Number(row.volume ?? 0) > 0 && !hasSuspiciousBinaryPresentation(row)) return row;
                 const providerMarketId = String(row.providerMarketId ?? row.id ?? "").trim();
                 const live = liveByProviderMarketId.get(providerMarketId) ?? null;
-                if (!live || Number(live.volume ?? 0) <= Number(row.volume ?? 0)) return row;
+                if (!live || !shouldPreferLiveHydratedRow(row, live)) return row;
                 return live;
               });
             }
@@ -2495,14 +2524,14 @@ export const marketRouter = router({
         const canonical = canonicalRows[0] ?? null;
         if (canonical) {
           let resolved = canonical;
-          if (Number(canonical.volume ?? 0) <= 0) {
+          if (Number(canonical.volume ?? 0) <= 0 || hasSuspiciousBinaryPresentation(canonical)) {
             const adapter = getVenueAdapter(ref.provider);
             if (adapter.isEnabled()) {
               try {
                 const liveRow = await adapter.getMarketById(ref.providerMarketId);
                 if (liveRow) {
                   const live = mapVenueMarketToMarketOutput(liveRow);
-                  if (Number(live.volume ?? 0) > Number(resolved.volume ?? 0)) {
+                  if (shouldPreferLiveHydratedRow(resolved, live)) {
                     resolved = live;
                   }
                   if (ENABLE_CATALOG_SYNC_ON_READ) {
