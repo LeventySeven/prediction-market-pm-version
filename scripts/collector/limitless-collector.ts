@@ -49,6 +49,10 @@ const MISSING_MARKET_MISS_THRESHOLD = Math.max(
   Math.min(20, Number(process.env.LIMITLESS_COLLECTOR_MISSING_MARKET_MISS_THRESHOLD ?? 3))
 );
 const PROBE_THROTTLE_MS = Math.max(30_000, Number(process.env.LIMITLESS_COLLECTOR_PROBE_THROTTLE_MS ?? 300_000));
+const VOLUME_ENRICH_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.LIMITLESS_COLLECTOR_VOLUME_ENRICH_CONCURRENCY ?? 6))
+);
 const LIMITLESS_WS_CONFIG = limitlessAdapter.wsCollectorConfig?.();
 const LIMITLESS_BASE_URL = (process.env.LIMITLESS_API_BASE_URL || "https://api.limitless.exchange").trim();
 const COLLECTOR_VERSION = "limitless-collector-v2026-03-04a";
@@ -493,6 +497,36 @@ const chunkStrings = (values: string[], size: number): string[][] => {
   return out;
 };
 
+const enrichMarketsWithMissingVolume = async (markets: VenueMarket[]): Promise<VenueMarket[]> => {
+  const missing = markets.filter((market) => Number(market.volume ?? 0) <= 0);
+  if (missing.length === 0) return markets;
+
+  const replacements = new Map<string, VenueMarket>();
+  for (let i = 0; i < missing.length; i += VOLUME_ENRICH_CONCURRENCY) {
+    const batch = missing.slice(i, i + VOLUME_ENRICH_CONCURRENCY);
+    await Promise.all(
+      batch.map(async (market) => {
+        try {
+          const enriched = await limitlessAdapter.getMarketById(market.providerMarketId);
+          if (!enriched) return;
+          if (Number(enriched.volume ?? 0) <= Number(market.volume ?? 0)) return;
+          replacements.set(market.providerMarketId, enriched);
+        } catch (error) {
+          console.warn(
+            "[limitless-collector] volume enrich failed",
+            market.providerMarketId,
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+      })
+    );
+  }
+
+  if (replacements.size === 0) return markets;
+  console.log(`[limitless-collector] volume enrich repaired=${replacements.size}`);
+  return markets.map((market) => replacements.get(market.providerMarketId) ?? market);
+};
+
 const deleteCanonicalLimitlessRowsByProviderIds = async (providerMarketIds: string[]) => {
   if (providerMarketIds.length === 0) return;
   for (const chunk of chunkStrings(providerMarketIds, 400)) {
@@ -783,10 +817,11 @@ const snapshotSync = async (mode: "head" | "full") => {
       });
     }
 
-    const markets = await limitlessAdapter.listMarketsSnapshot({
+    const fetchedMarkets = await limitlessAdapter.listMarketsSnapshot({
       onlyOpen: true,
       limit,
     });
+    const markets = await enrichMarketsWithMissingVolume(fetchedMarkets);
 
     console.log(`[limitless-collector] ${mode} snapshot fetched ${markets.length} markets`);
 

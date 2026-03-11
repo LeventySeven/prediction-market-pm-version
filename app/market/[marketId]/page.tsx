@@ -1,31 +1,14 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import HomePage from "../../page";
-import { getPolymarketMarketById } from "@/src/server/polymarket/client";
-import { limitlessAdapter } from "@/src/server/venues/limitlessAdapter";
+import HomePageClient from "@/components/HomePageClient";
+import { getCanonicalMarket } from "@/src/server/markets/readService";
+import { getMarketRouteInitialData } from "@/src/server/markets/pageData";
 
 type PageProps = {
   params: Promise<{ marketId: string }>;
 };
 
 const isMarketId = (v: string) => /^[A-Za-z0-9:_-]{6,}$/.test(v);
-
-const parseMarketRef = (marketId: string): { provider: "polymarket" | "limitless"; providerMarketId: string } => {
-  const clean = marketId.trim();
-  if (clean.startsWith("limitless:")) {
-    return {
-      provider: "limitless",
-      providerMarketId: clean.slice("limitless:".length),
-    };
-  }
-  if (clean.startsWith("polymarket:")) {
-    return {
-      provider: "polymarket",
-      providerMarketId: clean.slice("polymarket:".length),
-    };
-  }
-  return { provider: "polymarket", providerMarketId: clean };
-};
 
 const getBaseUrl = async () => {
   const h = await headers();
@@ -35,23 +18,19 @@ const getBaseUrl = async () => {
 };
 
 const fetchMarketPreview = async (marketId: string) => {
-  const ref = parseMarketRef(marketId);
-  if (ref.provider === "limitless") {
-    const market = await limitlessAdapter.getMarketById(ref.providerMarketId);
+  try {
+    const market = await getCanonicalMarket({ marketId });
     if (!market) return null;
     return {
-      title: market.title.trim() || "Yalla Market",
+      title: (market.titleEn || market.titleRu || "").trim() || "Yalla Market",
       imageUrl: market.imageUrl?.trim() || null,
     };
+  } catch {
+    return null;
   }
-
-  const market = await getPolymarketMarketById(ref.providerMarketId);
-  if (!market) return null;
-  return {
-    title: market.title.trim() || "Yalla Market",
-    imageUrl: market.imageUrl?.trim() || null,
-  };
 };
+
+export const dynamic = "force-dynamic";
 
 export const generateMetadata = async ({ params }: PageProps): Promise<Metadata> => {
   const { marketId } = await params;
@@ -82,6 +61,9 @@ export const generateMetadata = async ({ params }: PageProps): Promise<Metadata>
   };
 };
 
-export default function MarketRoutePage() {
-  return <HomePage />;
+export default async function MarketRoutePage({ params }: PageProps) {
+  const { marketId } = await params;
+  const initialData = await getMarketRouteInitialData(marketId);
+
+  return <HomePageClient {...initialData} />;
 }

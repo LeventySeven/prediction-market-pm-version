@@ -1,5 +1,13 @@
-import HomePage from "../page";
+import HomePageClient from "@/components/HomePageClient";
+import { getHomePageInitialData } from "@/src/server/markets/pageData";
 
-export default function CatalogPage() {
-  return <HomePage />;
+export const dynamic = "force-dynamic";
+
+export default async function CatalogPage() {
+  const initialData = await getHomePageInitialData({
+    initialView: "CATALOG",
+    providerFilter: "all",
+  });
+
+  return <HomePageClient {...initialData} />;
 }

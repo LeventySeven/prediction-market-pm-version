@@ -1,5 +1,13 @@
-import HomePage from "../page";
+import HomePageClient from "@/components/HomePageClient";
+import { getHomePageInitialData } from "@/src/server/markets/pageData";
 
-export default function MyBetsPage() {
-  return <HomePage />;
+export const dynamic = "force-dynamic";
+
+export default async function MyBetsPage() {
+  const initialData = await getHomePageInitialData({
+    initialView: "FEED",
+    providerFilter: "all",
+  });
+
+  return <HomePageClient {...initialData} />;
 }

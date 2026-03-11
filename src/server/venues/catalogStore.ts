@@ -60,6 +60,12 @@ type CatalogRowPayload = {
   category: string | null;
   source_url: string | null;
   image_url: string | null;
+  market_created_at: string;
+  closes_at: string;
+  expires_at: string;
+  market_type: "binary" | "multi_choice";
+  resolved_outcome_title: string | null;
+  total_volume_usd: number;
   provider_payload: unknown;
 };
 
@@ -74,6 +80,12 @@ const catalogRowsEqual = (existing: ExistingCatalogRow, next: CatalogRowPayload)
   normText(existing.category) === normText(next.category) &&
   normText(existing.source_url) === normText(next.source_url) &&
   normText(existing.image_url) === normText(next.image_url) &&
+  normText((existing as Record<string, unknown>).market_created_at) === normText(next.market_created_at) &&
+  normText((existing as Record<string, unknown>).closes_at) === normText(next.closes_at) &&
+  normText((existing as Record<string, unknown>).expires_at) === normText(next.expires_at) &&
+  normText((existing as Record<string, unknown>).market_type) === normText(next.market_type) &&
+  normText((existing as Record<string, unknown>).resolved_outcome_title) === normText(next.resolved_outcome_title) &&
+  approxEqual((existing as Record<string, unknown>).total_volume_usd, next.total_volume_usd, 1e-8) &&
   stableJson(existing.provider_payload) === stableJson(next.provider_payload);
 
 type OutcomeRowPayload = {
@@ -128,6 +140,12 @@ export const upsertVenueMarketsToCatalog = async (
       category: market.category,
       source_url: market.sourceUrl,
       image_url: market.imageUrl,
+      market_created_at: market.createdAt,
+      closes_at: market.closesAt,
+      expires_at: market.expiresAt,
+      market_type: market.outcomes.length > 2 ? "multi_choice" : "binary",
+      resolved_outcome_title: market.resolvedOutcomeTitle,
+      total_volume_usd: Math.max(0, Number.isFinite(market.volume) ? market.volume : 0),
       provider_payload: {
         ...providerPayload,
         capabilities: market.capabilities,
@@ -154,7 +172,7 @@ export const upsertVenueMarketsToCatalog = async (
     const { data, error } = await (supabaseService as any)
       .from("market_catalog")
       .select(
-        "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, provider_payload"
+        "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload"
       )
       .in("provider", providers)
       .in("provider_market_id", providerMarketIds);

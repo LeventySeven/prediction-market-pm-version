@@ -14,6 +14,8 @@
     "lint": "next lint",
     "collector:polymarket": "bun --env-file .env scripts/collector/polymarket-collector.ts",
     "collector:limitless": "bun --env-file .env scripts/collector/limitless-collector.ts",
+    "ops:reset-market-data": "bun --env-file .env scripts/supabase/reset-market-data.ts",
+    "ops:reset-app-data": "bun --env-file .env scripts/supabase/reset-app-data.ts",
     "test:unit": "bun test test/unit",
     "test:unit:watch": "bun test --watch test/unit",
     "test:e2e": "playwright test",

@@ -200,12 +200,6 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       },
     });
 
-    chart.priceScale('volume').applyOptions({
-      visible: false,
-      scaleMargins: { top: 0.8, bottom: 0.02 },
-      borderVisible: false,
-    });
-
     chartRef.current = chart;
 
     return () => {
@@ -229,6 +223,11 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
         base: 0,
         priceLineVisible: false,
         lastValueVisible: false,
+      });
+      chart.priceScale('volume').applyOptions({
+        visible: false,
+        scaleMargins: { top: 0.8, bottom: 0.02 },
+        borderVisible: false,
       });
     }
     volumeSeriesRef.current.setData(normalizedVolume);

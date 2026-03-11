@@ -106,6 +106,12 @@ import {
   writeUpstashCache,
 } from "../../cache/upstash";
 import {
+  getCanonicalMarket,
+  getCanonicalPriceCandles,
+  getPublicEnabledProviders,
+  listCanonicalMarkets,
+} from "../../markets/readService";
+import {
   computeEffectiveVolumeRaw,
   pickBinaryOutcomes,
   pickYesLikeOutcome,
@@ -684,7 +690,6 @@ const mergeMarketWithLive = (
     typeof market.totalVolumeUsd === "number" && Number.isFinite(market.totalVolumeUsd)
       ? market.totalVolumeUsd
       : market.volume;
-  const effectiveVolume = computeEffectiveVolumeRaw(totalVolumeUsd, live.rolling24hVolume);
 
   return {
     ...market,
@@ -696,7 +701,7 @@ const mergeMarketWithLive = (
     mid: live.mid,
     lastTradePrice: live.lastTradePrice,
     lastTradeSize: live.lastTradeSize,
-    volume: effectiveVolume,
+    volume: totalVolumeUsd,
     totalVolumeUsd,
     rolling24hVolume: live.rolling24hVolume,
     openInterest: live.openInterest,
@@ -1228,7 +1233,7 @@ const listCanonicalProviderMarkets = async (
       liquidityB: null,
       priceYes,
       priceNo,
-      volume: computeEffectiveVolumeRaw(payloadVolume, toFiniteNumber(live?.rolling_24h_volume as any)),
+      volume: payloadVolume ?? 0,
       totalVolumeUsd: payloadVolume,
       chance: roundPercentValue(priceYes),
       creatorName: null,
@@ -2153,7 +2158,7 @@ export const marketRouter = router({
   listEnabledProviders: publicProcedure
     .output(enabledProvidersOutput)
     .query(() => {
-      const providers = normalizePublicEnabledProviders(listEnabledVenueProviders());
+      const providers = getPublicEnabledProviders();
       return {
         providers,
       };
@@ -2165,196 +2170,22 @@ export const marketRouter = router({
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
-      const onlyOpen = input?.onlyOpen ?? false;
-      const page = Math.max(1, Number(input?.page ?? 1));
-      const pageSize = Math.max(1, Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE)));
-      const sortBy: "newest" | "volume" = input?.sortBy ?? "newest";
-      const offset = (page - 1) * pageSize;
-      const candidateLimit = Math.min(
-        MAX_MARKET_LIST_CANDIDATE_LIMIT,
-        Math.max(pageSize * 2, offset + pageSize * 2)
-      );
-      const selectedProviders = parseProviderSelection({
-        providers: input?.providers,
-        providerFilter: input?.providerFilter,
-      });
-      const [polymarketWorkerFresh, limitlessWorkerFresh] = await Promise.all([
-        selectedProviders.includes("polymarket")
-          ? isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
-          : Promise.resolve(true),
-        selectedProviders.includes("limitless")
-          ? isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
-          : Promise.resolve(true),
-      ]);
-      const workersFreshForSelection = polymarketWorkerFresh && limitlessWorkerFresh;
-      const selectedCacheProviders = selectedProviders
-        .filter((provider): provider is "polymarket" | "limitless" => provider === "polymarket" || provider === "limitless")
-        .sort();
-
-      const listCacheKey = buildMarketListCacheKey({
-        onlyOpen,
-        page,
-        pageSize,
-        sortBy,
-        providers: selectedCacheProviders,
-      });
-      if (workersFreshForSelection) {
-        const cachedList = await readUpstashCache(listCacheKey, marketOutputArray);
-        if (cachedList) {
-          incrementRealtimeMetricCounter("upstash.cache.marketList.hit");
-          recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
-          return cachedList;
-        }
-        incrementRealtimeMetricCounter("upstash.cache.marketList.miss");
-      }
-
-      const loadPolymarketRows = async (): Promise<MarketOutput[]> => {
-        const rows = await listMarketsFromMirrorOrLive(ctx.supabaseService, {
-          onlyOpen,
-          limit: candidateLimit,
-          sortBy,
+      try {
+        return await listCanonicalMarkets({
+          supabaseService: ctx.supabaseService,
+          onlyOpen: input?.onlyOpen ?? false,
+          page: input?.page ?? 1,
+          pageSize: Math.max(
+            1,
+            Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
+          ),
+          sortBy: input?.sortBy ?? "newest",
+          providers: input?.providers,
+          providerFilter: input?.providerFilter,
         });
-        const mapped = rows.map(mapPolymarketMarket);
-        const liveByMarket = await fetchMarketLiveSnapshots(
-          ctx.supabaseService,
-          mapped.map((m) => m.id)
-        );
-        const merged = mergeMarketsWithLive(mapped, liveByMarket);
-        return onlyOpen ? merged.filter((m) => m.state === "open") : merged;
-      };
-
-      const loadLimitlessRows = async (): Promise<MarketOutput[]> => {
-        const providerRows: MarketOutput[] = [];
-        let hasLiveLimitlessRows = false;
-        const adapter = getVenueAdapter("limitless");
-        if (limitlessWorkerFresh) {
-          const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
-            provider: "limitless",
-            onlyOpen,
-            limit: candidateLimit,
-          });
-          if (canonicalRows.length > 0) {
-            hasLiveLimitlessRows = true;
-            providerRows.push(...canonicalRows);
-          }
-        }
-        if (!hasLiveLimitlessRows && adapter.isEnabled()) {
-          try {
-            const liveRows = await adapter.listMarketsSnapshot({
-              onlyOpen,
-              limit: candidateLimit,
-              sortBy,
-            });
-            if (liveRows.length > 0) {
-              hasLiveLimitlessRows = true;
-              if (ENABLE_CATALOG_SYNC_ON_READ) {
-                void upsertVenueMarketsToCatalog(ctx.supabaseService, liveRows).catch(() => {
-                  // Best effort only for canonical table sync.
-                });
-              }
-              providerRows.push(...liveRows.map((row) => mapVenueMarketToMarketOutput(row)));
-            }
-          } catch (err) {
-            console.warn("Limitless live listMarkets failed, falling back to canonical cache", err);
-          }
-        }
-
-        if (!hasLiveLimitlessRows) {
-          const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
-            provider: "limitless",
-            onlyOpen,
-            limit: candidateLimit,
-          });
-          if (canonicalRows.length > 0) {
-            providerRows.push(...canonicalRows);
-          }
-        }
-
-        if (
-          providerRows.some((row) => Number(row.volume ?? 0) <= 0 || hasSuspiciousBinaryPresentation(row)) &&
-          adapter.isEnabled()
-        ) {
-          try {
-            const liveRows = await adapter.listMarketsSnapshot({
-              onlyOpen,
-              limit: Math.min(candidateLimit, MAX_MARKET_LIVE_HYDRATION_LIMIT),
-              sortBy,
-            });
-            if (liveRows.length > 0) {
-              const liveByProviderMarketId = new Map(
-                liveRows.map((row) => [row.providerMarketId, mapVenueMarketToMarketOutput(row)] as const)
-              );
-              return providerRows.map((row) => {
-                if (Number(row.volume ?? 0) > 0 && !hasSuspiciousBinaryPresentation(row)) return row;
-                const providerMarketId = String(row.providerMarketId ?? row.id ?? "").trim();
-                const live = liveByProviderMarketId.get(providerMarketId) ?? null;
-                if (!live || !shouldPreferLiveHydratedRow(row, live)) return row;
-                return live;
-              });
-            }
-          } catch (err) {
-            console.warn("Limitless live volume hydration failed", err);
-          }
-        }
-
-        return providerRows;
-      };
-
-      const providerTasks: Array<
-        Promise<{
-          provider: "polymarket" | "limitless";
-          rows: MarketOutput[];
-          error?: unknown;
-        }>
-      > = [];
-      if (selectedProviders.includes("polymarket")) {
-        providerTasks.push(
-          loadPolymarketRows()
-            .then((rows) => ({ provider: "polymarket" as const, rows }))
-            .catch((error) => ({ provider: "polymarket" as const, rows: [], error }))
-        );
+      } finally {
+        recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
       }
-      if (selectedProviders.includes("limitless")) {
-        providerTasks.push(
-          loadLimitlessRows()
-            .then((rows) => ({ provider: "limitless" as const, rows }))
-            .catch((error) => ({ provider: "limitless" as const, rows: [], error }))
-        );
-      }
-
-      const providerResults = await Promise.all(providerTasks);
-      const responseRows: MarketOutput[] = [];
-      for (const result of providerResults) {
-        if (result.error) {
-          console.warn(`listMarkets provider ${result.provider} failed`, result.error);
-          continue;
-        }
-        responseRows.push(...result.rows);
-      }
-      if (responseRows.length === 0) {
-        const firstFailure = providerResults.find((result) => result.error);
-        if (firstFailure?.error) throw firstFailure.error;
-      }
-
-      const deduped = new Map<string, MarketOutput>();
-      for (const row of responseRows) {
-        const key = row.canonicalMarketId ?? `${row.provider ?? "polymarket"}:${row.id}`;
-        if (!deduped.has(key)) {
-          deduped.set(key, row);
-        }
-      }
-
-      const hydratedRows = await attachMarketCatalogRefIds(
-        ctx.supabaseService,
-        Array.from(deduped.values())
-      );
-      const sorted = sortMarketRows(hydratedRows, sortBy);
-      const out = sorted.slice(offset, offset + pageSize);
-      if (workersFreshForSelection) {
-        void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
-      }
-      recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
-      return out;
     }),
 
   getMarket: publicProcedure
@@ -2363,100 +2194,19 @@ export const marketRouter = router({
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getMarket.calls");
-      const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-      const workerFreshForProvider =
-        ref.provider === "polymarket"
-          ? await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false)
-          : ref.provider === "limitless"
-            ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
-            : false;
-      const detailCacheKey = buildMarketDetailCacheKey({
-        provider: ref.provider,
-        providerMarketId: ref.providerMarketId,
-      });
-      if (workerFreshForProvider) {
-        const cachedDetail = await readUpstashCache(detailCacheKey, marketOutput);
-        if (cachedDetail) {
-          incrementRealtimeMetricCounter("upstash.cache.marketDetail.hit");
-          recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-          return cachedDetail;
-        }
-        incrementRealtimeMetricCounter("upstash.cache.marketDetail.miss");
-      }
-
-      if (ref.provider === "polymarket") {
-        const row = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
+      try {
+        const row = await getCanonicalMarket({
+          supabaseService: ctx.supabaseService,
+          marketId: input.marketId,
+          provider: input.provider ?? null,
+        });
         if (!row) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
         }
-        const mapped = mapPolymarketMarket(row);
-        const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, [mapped.id]);
-        const [out] = await attachMarketCatalogRefIds(ctx.supabaseService, [
-          mergeMarketWithLive(mapped, liveByMarket.get(mapped.id)),
-        ]);
-        void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
+        return row;
+      } finally {
         recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-        return out;
       }
-
-      if (workerFreshForProvider) {
-        const canonicalRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
-          provider: ref.provider,
-          onlyOpen: false,
-          limit: 1,
-          providerMarketId: ref.providerMarketId,
-        });
-        const canonical = canonicalRows[0] ?? null;
-        if (canonical) {
-          let resolved = canonical;
-          if (Number(canonical.volume ?? 0) <= 0 || hasSuspiciousBinaryPresentation(canonical)) {
-            const adapter = getVenueAdapter(ref.provider);
-            if (adapter.isEnabled()) {
-              try {
-                const liveRow = await adapter.getMarketById(ref.providerMarketId);
-                if (liveRow) {
-                  const live = mapVenueMarketToMarketOutput(liveRow);
-                  if (shouldPreferLiveHydratedRow(resolved, live)) {
-                    resolved = live;
-                  }
-                  if (ENABLE_CATALOG_SYNC_ON_READ) {
-                    void upsertVenueMarketsToCatalog(ctx.supabaseService, [liveRow]).catch(() => {
-                      // Canonical table sync is best effort.
-                    });
-                  }
-                }
-              } catch (err) {
-                console.warn("Live detail hydration for canonical market failed", err);
-              }
-            }
-          }
-          [resolved] = await attachMarketCatalogRefIds(ctx.supabaseService, [resolved]);
-          void writeUpstashCache(detailCacheKey, resolved, upstashMarketDetailTtlSec);
-          recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-          return resolved;
-        }
-      }
-
-      const adapter = getVenueAdapter(ref.provider);
-      if (!adapter.isEnabled()) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market provider unavailable" });
-      }
-
-      const row = await adapter.getMarketById(ref.providerMarketId);
-      if (!row) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
-      }
-      if (ENABLE_CATALOG_SYNC_ON_READ) {
-        void upsertVenueMarketsToCatalog(ctx.supabaseService, [row]).catch(() => {
-          // Canonical table sync is best effort.
-        });
-      }
-      const [out] = await attachMarketCatalogRefIds(ctx.supabaseService, [
-        mapVenueMarketToMarketOutput(row),
-      ]);
-      void writeUpstashCache(detailCacheKey, out, upstashMarketDetailTtlSec);
-      recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
-      return out;
     }),
 
   searchSemantic: publicProcedure
@@ -2937,218 +2687,14 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getPriceCandles.calls");
       try {
-        const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
-        const interval: CandleInterval = input.interval ?? "1h";
-        const limit = Math.max(1, Math.min(input.limit ?? 200, 20_000));
-        const rawLimit = Math.min(
-          20_000,
-          Math.max(
-            interval === "1h" ? limit * 90 : limit * 4,
-            interval === "1h" ? 8_000 : 4_000
-          )
-        );
-
-        if (ref.provider === "polymarket") {
-          let cachedCandles: PriceCandleRow[] = [];
-          const marketRefId = await resolveMarketCatalogRefId(
-            ctx.supabaseService,
-            ref.provider,
-            ref.providerMarketId
-          );
-          if (marketRefId) {
-            const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
-            if (canonical.length > 0) {
-              const normalizedCanonical = normalizeCandlesForChart(canonical, limit, interval);
-              if (interval === "1m" && !isSparseCandleCoverage(normalizedCanonical, interval)) {
-                return normalizedCanonical;
-              }
-              cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
-            }
-          }
-
-          const localCandles = await listLocalCandles(ctx.supabaseService, ref.providerMarketId, rawLimit);
-          if (localCandles.length > 0) {
-            const normalizedLocal = normalizeCandlesForChart(localCandles, limit, interval);
-            if (interval === "1m" && !isSparseCandleCoverage(normalizedLocal, interval)) {
-              return normalizedLocal;
-            }
-            cachedCandles = pickBetterCandleSet(cachedCandles, normalizedLocal);
-          }
-
-          const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-          if (!market) {
-            return cachedCandles.length > 0
-              ? cachedCandles
-              : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
-          }
-
-          if (marketRefId && market.outcomes.length > 2) {
-            const canonicalOutcomeRows = await listCanonicalCandles(
-              ctx.supabaseService,
-              marketRefId,
-              rawLimit,
-              null
-            );
-            if (canonicalOutcomeRows.length > 0) {
-              const normalizedByOutcome = normalizeCandlesForChart(
-                canonicalOutcomeRows,
-                limit,
-                interval
-              );
-              if (normalizedByOutcome.some((row) => Boolean(row.outcomeId))) {
-                if (interval === "1m" && !isSparseCandleCoverage(normalizedByOutcome, interval)) {
-                  return normalizedByOutcome;
-                }
-                cachedCandles = pickBetterCandleSet(cachedCandles, normalizedByOutcome);
-              }
-            }
-          }
-
-          const withToken = market.outcomes.filter((o) => Boolean(o.tokenId));
-          if (withToken.length === 0) {
-            const baseline = buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
-            return pickBetterCandleSet(cachedCandles, baseline);
-          }
-
-          const isBinary = market.outcomes.length <= 2;
-          const yesOutcome =
-            market.outcomes.find((o) => o.title.trim().toLowerCase() === "yes") ??
-            market.outcomes.find((o) => o.sortOrder === 0) ??
-            market.outcomes[0] ??
-            null;
-          const targetOutcomes = isBinary ? withToken.filter((o) => o.id === yesOutcome?.id) : withToken;
-
-          const histories = await Promise.all(
-            targetOutcomes.map(async (o) => ({
-              outcome: o,
-              history: await getPolymarketPriceHistory(String(o.tokenId), { interval }),
-            }))
-          );
-
-          const candles = histories
-            .flatMap(({ outcome, history }) => {
-              const deduped = history
-                .slice()
-                .sort((a, b) => a.ts - b.ts)
-                .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
-
-              return deduped.map((point, idx) => {
-                const prev = deduped[idx - 1] ?? point;
-                const open = prev.price;
-                const close = point.price;
-                return {
-                  bucket: new Date(point.ts * 1000).toISOString(),
-                  outcomeId: outcome.id,
-                  outcomeTitle: outcome.title,
-                  outcomeColor: null,
-                  open,
-                  high: Math.max(open, close),
-                  low: Math.min(open, close),
-                  close,
-                  volume: 0,
-                  tradesCount: 0,
-                };
-              });
-            })
-            .sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket));
-          if (candles.length === 0) {
-            const baseline = buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
-            return pickBetterCandleSet(cachedCandles, baseline);
-          }
-          const normalizedHistory = normalizeCandlesForChart(candles, limit, interval);
-          const best = pickBetterCandleSet(cachedCandles, normalizedHistory);
-          if (best.length > 0) return best;
-          return buildBaselineCandlesFromPolymarketMarket(market, limit, interval);
-        }
-
-        const adapter = getVenueAdapter(ref.provider);
-        let cachedCandles: PriceCandleRow[] = [];
-
-        const marketRefId = await resolveMarketCatalogRefId(
-          ctx.supabaseService,
-          ref.provider,
-          ref.providerMarketId
-        );
-        if (marketRefId) {
-          const canonical = await listCanonicalCandles(ctx.supabaseService, marketRefId, rawLimit);
-          if (canonical.length > 0) {
-            const normalizedCanonical = normalizeCandlesForChart(canonical, limit, interval);
-            if (interval === "1m" && !isSparseCandleCoverage(normalizedCanonical, interval)) {
-              return normalizedCanonical;
-            }
-            cachedCandles = pickBetterCandleSet(cachedCandles, normalizedCanonical);
-          }
-        }
-
-        if (!adapter.isEnabled()) {
-          return cachedCandles.length > 0
-            ? cachedCandles
-            : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
-        }
-
-        const market = await adapter.getMarketById(ref.providerMarketId);
-        if (!market) {
-          return cachedCandles.length > 0
-            ? cachedCandles
-            : buildFlatBaselineCandles(limit, 0.5, null, null, interval);
-        }
-
-        if (marketRefId && market.outcomes.length > 2) {
-          const canonicalOutcomeRows = await listCanonicalCandles(
-            ctx.supabaseService,
-            marketRefId,
-            rawLimit,
-            null
-          );
-          if (canonicalOutcomeRows.length > 0) {
-            const normalizedByOutcome = normalizeCandlesForChart(
-              canonicalOutcomeRows,
-              limit,
-              interval
-            );
-            if (normalizedByOutcome.some((row) => Boolean(row.outcomeId))) {
-              if (interval === "1m" && !isSparseCandleCoverage(normalizedByOutcome, interval)) {
-                return normalizedByOutcome;
-              }
-              cachedCandles = pickBetterCandleSet(cachedCandles, normalizedByOutcome);
-            }
-          }
-        }
-
-        const history = await adapter.getPriceHistory(market, Math.max(limit * 6, 720), {
-          interval,
+        return await getCanonicalPriceCandles({
+          supabaseService: ctx.supabaseService,
+          marketId: input.marketId,
+          provider: input.provider ?? null,
+          interval: input.interval ?? "1h",
+          limit: input.limit ?? 200,
+          range: input.range ?? null,
         });
-        if (history.length === 0) {
-          const baseline = buildBaselineCandlesFromVenueMarket(market, limit, interval);
-          return pickBetterCandleSet(cachedCandles, baseline);
-        }
-
-        const deduped = history
-          .slice()
-          .sort((a, b) => a.ts - b.ts)
-          .filter((point, idx, arr) => idx === arr.length - 1 || point.ts !== arr[idx + 1]?.ts);
-        const outcome = market.outcomes[0] ?? null;
-        const candles = deduped.map((point, idx) => {
-          const prev = deduped[idx - 1] ?? point;
-          const open = prev.price;
-          const close = point.price;
-          return {
-            bucket: new Date(point.ts * 1000).toISOString(),
-            outcomeId: outcome?.id ?? null,
-            outcomeTitle: outcome?.title ?? null,
-            outcomeColor: null,
-            open,
-            high: Math.max(open, close),
-            low: Math.min(open, close),
-            close,
-            volume: 0,
-            tradesCount: 0,
-          };
-        });
-        const normalizedHistory = normalizeCandlesForChart(candles, limit, interval);
-        const best = pickBetterCandleSet(cachedCandles, normalizedHistory);
-        if (best.length > 0) return best;
-        return buildBaselineCandlesFromVenueMarket(market, limit, interval);
       } finally {
         recordRealtimeMetricTiming("trpc.market.getPriceCandles.ms", Date.now() - startedAt);
       }
@@ -3189,10 +2735,8 @@ export const marketRouter = router({
         return mappedRedisTicks;
       }
       incrementRealtimeMetricCounter("upstash.cache.liveActivity.miss");
-
-      const rows = await listLocalLiveActivityTicks(ctx.supabaseService, marketId, limit);
       recordRealtimeMetricTiming("trpc.market.getLiveActivity.ms", Date.now() - startedAt);
-      return rows;
+      return [];
     }),
 
   getPublicTrades: publicProcedure
@@ -3218,165 +2762,68 @@ export const marketRouter = router({
 
       if (ref.provider === "polymarket") {
         const marketId = ref.providerMarketId;
-        const workerFresh = await isPolymarketWorkerFresh(ctx.supabaseService).catch(() => false);
-        if (workerFresh) {
-          const mapTickToTrade = (
-            tick: {
-              id: string;
-              marketId: string;
-              tradeId: string | null;
-              side: "BUY" | "SELL" | "UNKNOWN";
-              outcome: string | null;
-              price: number;
-              size: number;
-              sourceTs: string;
-              createdAt: string;
-            }
-          ) => {
-            const normalizedOutcome = (tick.outcome ?? "").trim().toLowerCase();
-            const yn =
-              normalizedOutcome === "yes"
-                ? ("YES" as const)
-                : normalizedOutcome === "no"
-                  ? ("NO" as const)
-                  : null;
-            const action: "buy" | "sell" = tick.side === "SELL" ? "sell" : "buy";
-            return {
-              id: tick.tradeId ?? tick.id,
-              marketId: tick.marketId,
-              action,
-              outcome: yn,
-              outcomeId: null,
-              outcomeTitle: tick.outcome,
-              collateralGross: tick.size * tick.price,
-              sharesDelta: tick.size,
-              priceBefore: tick.price,
-              priceAfter: tick.price,
-              createdAt: tick.sourceTs || tick.createdAt,
-            } satisfies PublicTradeOutput;
-          };
-
-          const redisTicks = await readUpstashActivityTicks(marketId, limit);
-          if (redisTicks.length > 0) {
-            const out = redisTicks.map((tick) =>
-              mapTickToTrade({
-                id: tick.id,
-                marketId: tick.marketId,
-                tradeId: tick.tradeId,
-                side: tick.side,
-                outcome: tick.outcome,
-                price: tick.price,
-                size: tick.size,
-                sourceTs: tick.sourceTs,
-                createdAt: tick.createdAt,
-              })
-            );
-            void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
-            recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-            return out;
+        const mapTickToTrade = (
+          tick: {
+            id: string;
+            marketId: string;
+            tradeId: string | null;
+            side: "BUY" | "SELL" | "UNKNOWN";
+            outcome: string | null;
+            price: number;
+            size: number;
+            sourceTs: string;
+            createdAt: string;
           }
-
-          const localTicks = await listLocalLiveActivityTicks(ctx.supabaseService, marketId, limit);
-          if (localTicks.length > 0) {
-            const out = localTicks.map((tick) =>
-              mapTickToTrade({
-                id: tick.id,
-                marketId: tick.marketId,
-                tradeId: tick.tradeId,
-                side: tick.side,
-                outcome: tick.outcome,
-                price: tick.price,
-                size: tick.size,
-                sourceTs: tick.sourceTs,
-                createdAt: tick.createdAt,
-              })
-            );
-            void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
-            recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-            return out;
-          }
-        }
-
-        const market = await getMarketFromMirrorOrLive(ctx.supabaseService, ref.providerMarketId);
-        if (!market) {
-          recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-          return [];
-        }
-
-        const rows = await getPolymarketPublicTrades(market.conditionId, limit);
-        const outcomesByTitle = new Map(
-          market.outcomes.map((o) => [o.title.trim().toLowerCase(), o] as const)
-        );
-        const out: PublicTradeOutput[] = rows.map((t) => {
-          const normalizedOutcome = (t.outcome ?? "").trim().toLowerCase();
-          const outcome = outcomesByTitle.get(normalizedOutcome);
-          const action: "buy" | "sell" = t.side === "SELL" ? "sell" : "buy";
+        ) => {
+          const normalizedOutcome = (tick.outcome ?? "").trim().toLowerCase();
           const yn =
             normalizedOutcome === "yes"
               ? ("YES" as const)
               : normalizedOutcome === "no"
                 ? ("NO" as const)
                 : null;
+          const action: "buy" | "sell" = tick.side === "SELL" ? "sell" : "buy";
           return {
-            id: t.id,
-            marketId: market.id,
+            id: tick.tradeId ?? tick.id,
+            marketId: tick.marketId,
             action,
             outcome: yn,
-            outcomeId: outcome?.id ?? null,
-            outcomeTitle: outcome?.title ?? (t.outcome ?? null),
-            collateralGross: t.size * t.price,
-            sharesDelta: t.size,
-            priceBefore: t.price,
-            priceAfter: t.price,
-            createdAt: new Date(t.timestamp * 1000).toISOString(),
-          };
-        });
-        void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
+            outcomeId: null,
+            outcomeTitle: tick.outcome,
+            collateralGross: tick.size * tick.price,
+            sharesDelta: tick.size,
+            priceBefore: tick.price,
+            priceAfter: tick.price,
+            createdAt: tick.sourceTs || tick.createdAt,
+          } satisfies PublicTradeOutput;
+        };
+
+        const redisTicks = await readUpstashActivityTicks(marketId, limit);
+        if (redisTicks.length > 0) {
+          const out = redisTicks.map((tick) =>
+            mapTickToTrade({
+              id: tick.id,
+              marketId: tick.marketId,
+              tradeId: tick.tradeId,
+              side: tick.side,
+              outcome: tick.outcome,
+              price: tick.price,
+              size: tick.size,
+              sourceTs: tick.sourceTs,
+              createdAt: tick.createdAt,
+            })
+          );
+          void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
+          recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
+          return out;
+        }
+
         recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-        return out;
+        return [];
       }
 
-      const adapter = getVenueAdapter(ref.provider);
-      if (!adapter.isEnabled()) {
-        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-        return [];
-      }
-      const market = await adapter.getMarketById(ref.providerMarketId);
-      if (!market) {
-        recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-        return [];
-      }
-      const rows = await adapter.getPublicTrades(market, limit);
-      const outcomesByTitle = new Map(
-        market.outcomes.map((outcome) => [outcome.title.trim().toLowerCase(), outcome] as const)
-      );
-      const out: PublicTradeOutput[] = rows.map((trade) => {
-        const normalizedOutcome = (trade.outcome ?? "").trim().toLowerCase();
-        const outcome = outcomesByTitle.get(normalizedOutcome);
-        const action: "buy" | "sell" = trade.side === "SELL" ? "sell" : "buy";
-        const yn =
-          normalizedOutcome === "yes"
-            ? ("YES" as const)
-            : normalizedOutcome === "no"
-              ? ("NO" as const)
-              : null;
-        return {
-          id: trade.id,
-          marketId: venueToCanonicalId(ref.provider, ref.providerMarketId),
-          action,
-          outcome: yn,
-          outcomeId: outcome?.id ?? null,
-          outcomeTitle: outcome?.title ?? (trade.outcome ?? null),
-          collateralGross: trade.size * trade.price,
-          sharesDelta: trade.size,
-          priceBefore: trade.price,
-          priceAfter: trade.price,
-          createdAt: new Date(trade.timestamp * 1000).toISOString(),
-        };
-      });
-      void writeUpstashCache(tradesCacheKey, out, upstashMarketTradesTtlSec);
       recordRealtimeMetricTiming("trpc.market.getPublicTrades.ms", Date.now() - startedAt);
-      return out;
+      return [];
     }),
 
   getMarketComments: publicProcedure

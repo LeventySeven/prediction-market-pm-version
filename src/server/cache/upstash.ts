@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { z } from "zod";
 
-const CACHE_VERSION = "v2";
+const CACHE_NAMESPACE = (process.env.UPSTASH_CACHE_NAMESPACE || "").trim() || "v2";
 
 const parseBooleanEnv = (value: string | undefined, fallback: boolean): boolean => {
   if (typeof value !== "string") return fallback;
@@ -72,7 +72,7 @@ const maybeJson = (value: unknown): unknown => {
 
 const cacheEnvelopeSchema = <T>(schema: z.ZodType<T>) =>
   z.object({
-    v: z.literal(CACHE_VERSION),
+    v: z.literal(CACHE_NAMESPACE),
     cachedAt: z.string(),
     data: schema,
   });
@@ -115,7 +115,7 @@ export const writeUpstashCache = async <T>(
     await redis.set(
       key,
       {
-        v: CACHE_VERSION,
+        v: CACHE_NAMESPACE,
         cachedAt: new Date().toISOString(),
         data: value,
       },
@@ -138,7 +138,7 @@ export const buildMarketListCacheKey = (params: {
 }): string =>
   [
     "markets:list",
-    CACHE_VERSION,
+    CACHE_NAMESPACE,
     `open:${params.onlyOpen ? 1 : 0}`,
     `page:${params.page}`,
     `size:${params.pageSize}`,
@@ -150,7 +150,7 @@ export const buildMarketDetailCacheKey = (params: {
   provider: "polymarket" | "limitless";
   providerMarketId: string;
 }): string =>
-  ["market:detail", CACHE_VERSION, params.provider, params.providerMarketId.trim()].join(":");
+  ["market:detail", CACHE_NAMESPACE, params.provider, params.providerMarketId.trim()].join(":");
 
 export const buildMarketTradesCacheKey = (params: {
   provider: "polymarket" | "limitless";
@@ -159,20 +159,20 @@ export const buildMarketTradesCacheKey = (params: {
 }): string =>
   [
     "market:trades",
-    CACHE_VERSION,
+    CACHE_NAMESPACE,
     params.provider,
     params.providerMarketId.trim(),
     `limit:${Math.max(1, params.limit)}`,
   ].join(":");
 
 const buildLiveStateKey = (marketId: string): string =>
-  ["realtime:market:live", CACHE_VERSION, marketId.trim()].join(":");
+  ["realtime:market:live", CACHE_NAMESPACE, marketId.trim()].join(":");
 
 const buildLiveChannelKey = (marketId: string): string =>
-  ["realtime:market:live", CACHE_VERSION, "channel", marketId.trim()].join(":");
+  ["realtime:market:live", CACHE_NAMESPACE, "channel", marketId.trim()].join(":");
 
 const buildActivityListKey = (marketId: string): string =>
-  ["realtime:market:activity", CACHE_VERSION, marketId.trim()].join(":");
+  ["realtime:market:activity", CACHE_NAMESPACE, marketId.trim()].join(":");
 
 export type UpstashMarketLivePatch = {
   marketId: string;

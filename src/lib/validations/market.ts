@@ -360,6 +360,7 @@ export const getPriceCandlesInput = z.object({
   provider: venueProviderSchema.optional(),
   interval: candleIntervalSchema.optional(),
   limit: z.number().int().positive().max(MAX_PRICE_CANDLE_LIMIT).optional(),
+  range: z.enum(["1W", "1M", "Y"]).optional(),
 });
 
 export const getLiveActivityInput = z.object({
