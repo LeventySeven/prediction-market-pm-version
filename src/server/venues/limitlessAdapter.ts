@@ -394,7 +394,73 @@ const parseOutcomes = (
   ];
 };
 
+const isIntegerLikeNumeric = (value: unknown): boolean => {
+  if (typeof value === "number" && Number.isFinite(value)) return Number.isInteger(value);
+  if (typeof value !== "string") return false;
+  return /^-?\d+$/.test(value.trim());
+};
+
+const parseLimitlessFormattedVolume = (row: Record<string, unknown>): number | null => {
+  const formattedCandidates = [
+    row.totalVolumeFormatted,
+    row.total_volume_formatted,
+    row.cumulativeVolumeFormatted,
+    row.cumulative_volume_formatted,
+    row.allTimeVolumeFormatted,
+    row.all_time_volume_formatted,
+    row.volumeFormatted,
+    row.volume_formatted,
+  ];
+  for (const candidate of formattedCandidates) {
+    const parsed = toNumber(candidate);
+    if (parsed !== null) return Math.max(0, parsed);
+  }
+  return null;
+};
+
+const parseLimitlessRawVolume = (row: Record<string, unknown>): { value: number; source: unknown } | null => {
+  const rawCandidates = [
+    row.totalVolume,
+    row.total_volume,
+    row.cumulativeVolume,
+    row.cumulative_volume,
+    row.allTimeVolume,
+    row.all_time_volume,
+    row.volume,
+  ];
+  for (const candidate of rawCandidates) {
+    const parsed = toNumber(candidate);
+    if (parsed !== null) {
+      return {
+        value: Math.max(0, parsed),
+        source: candidate,
+      };
+    }
+  }
+  return null;
+};
+
 const parseLimitlessVolume = (row: Record<string, unknown>): number => {
+  const formatted = parseLimitlessFormattedVolume(row);
+  if (formatted !== null) return formatted;
+
+  const raw = parseLimitlessRawVolume(row);
+  if (raw) {
+    const decimals = Math.max(
+      0,
+      Math.trunc(
+        readNestedNumber(row, ["collateralToken", "decimals"]) ??
+          readNestedNumber(row, ["collateral_token", "decimals"]) ??
+          toNumber(row.collateralTokenDecimals) ??
+          0
+      )
+    );
+    if (decimals > 0 && isIntegerLikeNumeric(raw.source)) {
+      return Math.max(0, raw.value / Math.pow(10, decimals));
+    }
+    return raw.value;
+  }
+
   return Math.max(0, extractTotalVolumeFromPayload(row) ?? 0);
 };
 

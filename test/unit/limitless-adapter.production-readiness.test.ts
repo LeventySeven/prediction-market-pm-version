@@ -35,7 +35,7 @@ const getUrl = (input: Parameters<typeof fetch>[0]): URL => {
 describe("limitlessAdapter production readiness", () => {
   beforeAll(async () => {
     process.env.LIMITLESS_API_BASE_URL = "https://api.limitless.exchange";
-    process.env.LIMITLESS_ACTIVE_PAGE_LIMIT = "120";
+    process.env.LIMITLESS_ACTIVE_PAGE_LIMIT = "200";
     process.env.LIMITLESS_PAGED_FETCH_CONCURRENCY = "2";
     process.env.LIMITLESS_HTTP_TIMEOUT_MS = "10000";
     process.env.LIMITLESS_HTTP_MAX_RETRIES = "2";
@@ -207,6 +207,31 @@ describe("limitlessAdapter production readiness", () => {
     const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 17, sortBy: "volume" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.volume).toBe(1234);
+  });
+
+  it("prefers volumeFormatted so docs-style raw micro-units do not inflate totals", async () => {
+    globalThis.fetch = (async () => {
+      const rows = [
+        {
+          ...makeMarketRow(15),
+          collateralToken: {
+            address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            decimals: 6,
+            symbol: "USDC",
+          },
+          volume: "169487209404",
+          volumeFormatted: "169487.209404",
+        },
+      ];
+      return new Response(JSON.stringify({ data: rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const rows = await limitlessAdapter.listMarketsSnapshot({ onlyOpen: true, limit: 2, sortBy: "volume" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.volume).toBe(169487.209404);
   });
 
   it("does not use liquidity as a volume fallback", async () => {

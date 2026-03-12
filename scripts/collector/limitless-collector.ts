@@ -11,6 +11,7 @@ import {
 } from "../../src/server/venues/limitlessSocketIo";
 import { resolveRolling24hVolumeFromWsPayload } from "../../src/server/venues/limitlessCollectorUtils";
 import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../src/server/venues/catalogStore";
+import { buildVenueCatalogFingerprint } from "../../src/server/venues/catalogFingerprint";
 import { venueToCanonicalId, type VenueMarket } from "../../src/server/venues/types";
 import { resolveReliableBinaryPrice } from "../../src/lib/marketPresentation";
 
@@ -384,37 +385,8 @@ const queueCandleUpdate = (
   pendingCandlesByProviderMarketAndBucket.set(key, existing);
 };
 
-const fingerprintMarket = (market: VenueMarket): string => {
-  const outcomes = [...market.outcomes]
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((outcome) =>
-      [
-        outcome.id,
-        outcome.providerOutcomeId ?? "",
-        outcome.providerTokenId ?? "",
-        outcome.title,
-        outcome.sortOrder,
-        outcome.isActive ? "1" : "0",
-      ].join("|")
-    )
-    .join(";");
-
-  return [
-    market.state,
-    market.marketAddress ?? "",
-    market.slug,
-    market.title,
-    market.description ?? "",
-    market.category ?? "",
-    market.sourceUrl ?? "",
-    market.imageUrl ?? "",
-    market.createdAt,
-    market.closesAt,
-    market.expiresAt,
-    market.resolvedOutcomeTitle ?? "",
-    outcomes,
-  ].join("||");
-};
+const fingerprintMarket = (market: VenueMarket): string =>
+  buildVenueCatalogFingerprint(market);
 
 const selectChangedMarkets = (markets: VenueMarket[]): VenueMarket[] => {
   const changed: VenueMarket[] = [];

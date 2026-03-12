@@ -1078,7 +1078,7 @@ const listCanonicalProviderMarkets = async (
   let query = (supabaseService as any)
     .from("market_catalog")
     .select(
-      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, provider_payload, source_updated_at, last_synced_at"
+      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, total_volume_usd, provider_payload, source_updated_at, last_synced_at"
     )
     .eq("provider", params.provider)
     .order("source_updated_at", { ascending: false })
@@ -1189,6 +1189,7 @@ const listCanonicalProviderMarkets = async (
     const { yes, no } = pickBinaryOutcomes(outcomes);
     const live = liveByMarketId.get(marketRefId);
     const payloadVolume = readVolumeFromPayload(payload);
+    const totalVolumeUsd = toFiniteNumber(row.total_volume_usd as any) ?? payloadVolume ?? 0;
     const fallbackYesPrice = yes ? yes.price : 0.5;
     const priceYes = resolveReliableBinaryPrice({
       mid: toFiniteNumber(live?.mid as any),
@@ -1233,8 +1234,8 @@ const listCanonicalProviderMarkets = async (
       liquidityB: null,
       priceYes,
       priceNo,
-      volume: payloadVolume ?? 0,
-      totalVolumeUsd: payloadVolume,
+      volume: totalVolumeUsd,
+      totalVolumeUsd,
       chance: roundPercentValue(priceYes),
       creatorName: null,
       creatorAvatarUrl: null,

@@ -8,6 +8,7 @@ import {
   writeUpstashMarketLivePatches,
 } from "../../src/server/cache/upstash";
 import { upsertProviderSyncState } from "../../src/server/venues/catalogStore";
+import { buildPolymarketCatalogFingerprint } from "../../src/server/venues/catalogFingerprint";
 import { resolveReliableBinaryPrice } from "../../src/lib/marketPresentation";
 import type { Database, Json } from "../../src/types/database";
 
@@ -200,27 +201,8 @@ const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
   return chunks;
 };
 
-const fingerprintMarket = (market: PolymarketMarket): string => {
-  const outcomes = market.outcomes
-    .map((outcome) => `${outcome.id}|${outcome.tokenId ?? ""}|${outcome.title}|${outcome.sortOrder}`)
-    .join(";");
-  const tokens = market.clobTokenIds.join(",");
-  return [
-    market.state,
-    market.slug,
-    market.title,
-    market.description ?? "",
-    market.imageUrl ?? "",
-    market.sourceUrl ?? "",
-    market.createdAt,
-    market.closesAt,
-    market.expiresAt,
-    market.category ?? "",
-    market.resolvedOutcomeTitle ?? "",
-    outcomes,
-    tokens,
-  ].join("||");
-};
+const fingerprintMarket = (market: PolymarketMarket): string =>
+  buildPolymarketCatalogFingerprint(market);
 
 const selectChangedMarkets = (markets: PolymarketMarket[]): PolymarketMarket[] => {
   const changed: PolymarketMarket[] = [];
