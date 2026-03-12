@@ -33,6 +33,7 @@ export const upstashStreamEnabled =
 
 export const upstashMarketListTtlSec = clampInt(process.env.UPSTASH_MARKETS_LIST_TTL_SEC, 3, 1, 30);
 export const upstashMarketDetailTtlSec = clampInt(process.env.UPSTASH_MARKET_DETAIL_TTL_SEC, 7, 1, 60);
+export const upstashMarketCandlesTtlSec = clampInt(process.env.UPSTASH_MARKET_CANDLES_TTL_SEC, 15, 3, 120);
 export const upstashMarketTradesTtlSec = clampInt(process.env.UPSTASH_MARKET_TRADES_TTL_SEC, 3, 1, 30);
 
 const upstashLiveStateTtlSec = clampInt(process.env.UPSTASH_LIVE_STATE_TTL_SEC, 60, 10, 900);
@@ -163,6 +164,23 @@ export const buildMarketTradesCacheKey = (params: {
     params.provider,
     params.providerMarketId.trim(),
     `limit:${Math.max(1, params.limit)}`,
+  ].join(":");
+
+export const buildMarketCandlesCacheKey = (params: {
+  provider: "polymarket" | "limitless";
+  providerMarketId: string;
+  interval: "1m" | "1h";
+  limit: number;
+  range?: string | null;
+}): string =>
+  [
+    "market:candles",
+    CACHE_NAMESPACE,
+    params.provider,
+    params.providerMarketId.trim(),
+    `interval:${params.interval}`,
+    `limit:${Math.max(1, params.limit)}`,
+    `range:${(params.range ?? "none").toString()}`,
   ].join(":");
 
 const buildLiveStateKey = (marketId: string): string =>

@@ -10,7 +10,7 @@ import { feedOutput, getFeedInput } from "@/src/lib/validations/feed";
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
 type MarketLiveFeedRow = Pick<
   Database["public"]["Tables"]["polymarket_market_live"]["Row"],
-  "market_id" | "rolling_24h_volume" | "source_ts"
+  "market_id" | "source_ts"
 >;
 type FeedEventRow = Pick<Database["public"]["Tables"]["user_events"]["Row"], "market_id" | "event_type">;
 
@@ -65,22 +65,20 @@ export const feedRouter = router({
         fallbackVolume: resolveDisplayVolume(market.volume).raw ?? 0,
       }));
 
-      const liveByMarket = new Map<string, { rolling24hVolume: number; sourceTs: number }>();
+      const freshnessByMarket = new Map<string, { sourceTs: number }>();
 
       if (polymarketRows.length > 0) {
         const marketIds = polymarketRows.map((m) => m.id);
         const liveRes = await ctx.supabaseService
           .from("polymarket_market_live")
-          .select("market_id, rolling_24h_volume, source_ts")
+          .select("market_id, source_ts")
           .in("market_id", marketIds);
 
         for (const row of (liveRes.data ?? []) as MarketLiveFeedRow[]) {
           const marketId = row.market_id.trim();
           if (!marketId) continue;
-          const rolling = Number(row.rolling_24h_volume ?? 0);
           const ts = Date.parse(row.source_ts ?? "");
-          liveByMarket.set(marketId, {
-            rolling24hVolume: Number.isFinite(rolling) ? Math.max(0, rolling) : 0,
+          freshnessByMarket.set(marketId, {
             sourceTs: Number.isFinite(ts) ? ts : 0,
           });
         }
@@ -90,7 +88,7 @@ export const feedRouter = router({
       if (enabledProviders.has("limitless")) {
         const { data: catalogRows } = await (ctx.supabaseService as any)
           .from("market_catalog")
-          .select("id, provider_market_id, category")
+          .select("provider_market_id, category, total_volume_usd, source_updated_at")
           .eq("provider", "limitless")
           .eq("state", "open")
           .limit(500);
@@ -98,43 +96,19 @@ export const feedRouter = router({
         const rows = Array.isArray(catalogRows)
           ? (catalogRows as Array<Record<string, unknown>>)
           : [];
-        const catalogIds = rows
-          .map((row) => String(row.id ?? "").trim())
-          .filter(Boolean);
-
-        const liveByCatalogId = new Map<string, { rolling24hVolume: number; sourceTs: number }>();
-        if (catalogIds.length > 0) {
-          const { data: limitlessLiveRows } = await (ctx.supabaseService as any)
-            .from("market_live")
-            .select("market_id, rolling_24h_volume, source_ts")
-            .in("market_id", catalogIds);
-
-          for (const row of Array.isArray(limitlessLiveRows) ? limitlessLiveRows : []) {
-            const rec = row as Record<string, unknown>;
-            const catalogId = String(rec.market_id ?? "").trim();
-            if (!catalogId) continue;
-            const rolling = Number(rec.rolling_24h_volume ?? 0);
-            const ts = Date.parse(String(rec.source_ts ?? ""));
-            liveByCatalogId.set(catalogId, {
-              rolling24hVolume: Number.isFinite(rolling) ? Math.max(0, rolling) : 0,
-              sourceTs: Number.isFinite(ts) ? ts : 0,
-            });
-          }
-        }
-
         for (const row of rows) {
           const providerMarketId = String(row.provider_market_id ?? "").trim();
-          const catalogId = String(row.id ?? "").trim();
-          if (!providerMarketId || !catalogId) continue;
+          if (!providerMarketId) continue;
           const marketId = `limitless:${providerMarketId}`;
-          const live = liveByCatalogId.get(catalogId);
+          const totalVolumeUsd = Number(row.total_volume_usd ?? 0);
+          const sourceTs = Date.parse(String(row.source_updated_at ?? ""));
           candidates.push({
             marketId,
             category: String(row.category ?? "general"),
-            fallbackVolume: resolveDisplayVolume(live?.rolling24hVolume).raw ?? 0,
+            fallbackVolume: resolveDisplayVolume(totalVolumeUsd).raw ?? 0,
           });
-          if (live) {
-            liveByMarket.set(marketId, live);
+          if (Number.isFinite(sourceTs)) {
+            freshnessByMarket.set(marketId, { sourceTs });
           }
         }
       }
@@ -172,11 +146,11 @@ export const feedRouter = router({
           const affinityRaw = affinityByMarket.get(market.marketId) ?? 0;
           const affinityScore = maxAffinity > 0 ? clamp01(affinityRaw / maxAffinity) : 0;
 
-          const live = liveByMarket.get(market.marketId);
-          const popularityBase = live ? live.rolling24hVolume : market.fallbackVolume;
+          const freshness = freshnessByMarket.get(market.marketId);
+          const popularityBase = market.fallbackVolume;
           const popularityScore = clamp01(Math.log10(Math.max(0, popularityBase) + 1) / 6);
 
-          const ageHours = live?.sourceTs ? Math.max(0, (now - live.sourceTs) / 3_600_000) : 72;
+          const ageHours = freshness?.sourceTs ? Math.max(0, (now - freshness.sourceTs) / 3_600_000) : 72;
           const freshnessScore = clamp01(Math.exp(-ageHours / 72));
 
           const score = clamp01(affinityScore * 0.45 + popularityScore * 0.35 + freshnessScore * 0.2);

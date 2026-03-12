@@ -85,6 +85,8 @@ const CATALOG_PAGE_SIZE = 100;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v4";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
+const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
+const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
 const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v1";
 const MARKET_HIGHLIGHT_MS = {
@@ -568,6 +570,21 @@ const buildCatalogStableContextKey = (params: {
     `search:${params.searchQuery.trim().toLowerCase()}`,
   ].join("|");
 
+const buildMarketCandleCacheKey = (params: {
+  marketId: string;
+  provider: "polymarket" | "limitless";
+  interval: "1m" | "1h";
+  limit: number;
+  range: MarketChartRange;
+}) =>
+  [
+    params.provider,
+    params.marketId.trim(),
+    params.interval,
+    params.limit,
+    params.range,
+  ].join("|");
+
 const readWarmCatalogBootstrap = (): InitialCatalogBootstrap | null => {
   if (typeof window === "undefined") return null;
   try {
@@ -690,6 +707,7 @@ export default function HomePage({
   const mergedMarketCacheRef = useRef<Map<string, MergedMarketCacheEntry>>(new Map());
   const marketOpenStartedAtRef = useRef<number | null>(null);
   const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
+  const marketCandlesCacheRef = useRef<Map<string, { candles: PriceCandle[]; cachedAt: number }>>(new Map());
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(initialSelectedMarketId);
   const [limitlessStoredAuth, setLimitlessStoredAuth] = useState<LimitlessStoredAuth | null>(() =>
     readStoredLimitlessAuth()
@@ -3299,6 +3317,18 @@ export default function HomePage({
     const candleRequest = getChartRangeRequest(marketChartRange);
     const candleInterval = candleRequest.interval;
     const candleLimit = candleRequest.limit;
+    const candleProvider = selectedProvider ?? selectedMarket?.provider ?? "polymarket";
+    const candleCacheKey = buildMarketCandleCacheKey({
+      marketId: activeMarketQueryId,
+      provider: candleProvider,
+      interval: candleInterval,
+      limit: candleLimit,
+      range: marketChartRange,
+    });
+    const cachedCandleEntry = marketCandlesCacheRef.current.get(candleCacheKey);
+    const hasFreshCachedCandles =
+      Boolean(cachedCandleEntry) &&
+      Date.now() - (cachedCandleEntry?.cachedAt ?? 0) <= MARKET_CANDLE_CACHE_TTL_MS;
     void trpcClient.events.track
       .mutate({
         sessionId: sessionIdRef.current,
@@ -3313,8 +3343,10 @@ export default function HomePage({
     // Detail pages no longer open browser Supabase channels for candles/ticks.
     // Upstash SSE remains the primary live path and API polling is the stable fallback.
 
-    async function fetchCandles() {
-      setMarketInsightsLoading(true);
+    async function fetchCandles(options?: { background?: boolean }) {
+      if (!options?.background) {
+        setMarketInsightsLoading(true);
+      }
       setMarketInsightsError(null);
       try {
         const candlesRaw = await trpcClient.market.getPriceCandles.query({
@@ -3338,6 +3370,10 @@ export default function HomePage({
           volume: requireValue(c.volume, "CANDLE_VOLUME_MISSING"),
           tradesCount: requireValue(c.tradesCount, "CANDLE_TRADES_COUNT_MISSING"),
         }));
+        marketCandlesCacheRef.current.set(candleCacheKey, {
+          candles,
+          cachedAt: Date.now(),
+        });
         setMarketCandles(candles);
         if (candles.length > 0 && chartFirstPaintRecordedForMarketRef.current !== activeMarketId) {
           chartFirstPaintRecordedForMarketRef.current = activeMarketId;
@@ -3457,6 +3493,12 @@ export default function HomePage({
       initialSelectedMarketDataRef.current.marketId === activeMarketId;
     if (hasPrefetchedSelectedMarket) {
       initialSelectedMarketDataRef.current.marketId = null;
+      if (initialSelectedMarketDataRef.current.candles.length > 0) {
+        marketCandlesCacheRef.current.set(candleCacheKey, {
+          candles: initialSelectedMarketDataRef.current.candles,
+          cachedAt: Date.now(),
+        });
+      }
       if (
         initialSelectedMarketDataRef.current.candles.length > 0 &&
         chartFirstPaintRecordedForMarketRef.current !== activeMarketId
@@ -3465,19 +3507,27 @@ export default function HomePage({
         incrementClientCounter("market.chart.firstPaint");
       }
     } else {
-      void fetchCandles();
+      if (hasFreshCachedCandles && cachedCandleEntry) {
+        setMarketCandles(cachedCandleEntry.candles);
+        if (
+          cachedCandleEntry.candles.length > 0 &&
+          chartFirstPaintRecordedForMarketRef.current !== activeMarketId
+        ) {
+          chartFirstPaintRecordedForMarketRef.current = activeMarketId;
+          incrementClientCounter("market.chart.firstPaint");
+        }
+        void fetchCandles({ background: true });
+      } else {
+        void fetchCandles();
+      }
       void fetchActivity();
       void fetchComments();
     }
     const pollIntervalMs = candleInterval === "1m"
-      ? selectedProvider === "limitless"
-        ? 3_000
-        : 5_000
-      : selectedProvider === "limitless"
-        ? 10_000
-        : 15_000;
+      ? 15_000
+      : MARKET_CANDLE_POLL_INTERVAL_MS;
     candlePollingTimer = setInterval(() => {
-      void fetchCandles();
+      void fetchCandles({ background: true });
     }, pollIntervalMs);
 
     return () => {

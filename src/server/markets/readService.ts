@@ -10,9 +10,11 @@ import {
   type CandleInterval,
 } from "../../lib/validations/market";
 import {
+  buildMarketCandlesCacheKey,
   buildMarketDetailCacheKey,
   buildMarketListCacheKey,
   readUpstashCache,
+  upstashMarketCandlesTtlSec,
   upstashMarketDetailTtlSec,
   upstashMarketListTtlSec,
   writeUpstashCache,
@@ -802,6 +804,15 @@ export const getCanonicalPriceCandles = async (params: {
     provider: params.provider ?? null,
   });
   if (!market?.marketRefId) return [];
+  const candlesCacheKey = buildMarketCandlesCacheKey({
+    provider: ref.provider,
+    providerMarketId: ref.providerMarketId,
+    interval,
+    limit,
+    range,
+  });
+  const cachedCandles = await readUpstashCache(candlesCacheKey, priceCandleOutputArray);
+  if (cachedCandles) return cachedCandles;
 
   const rawLimit = range === "Y"
     ? 20_000
@@ -824,7 +835,9 @@ export const getCanonicalPriceCandles = async (params: {
   }
 
   if (rows.length > 0) {
-    return normalizeCandlesForChart(rows, { limit, interval, range });
+    const normalized = normalizeCandlesForChart(rows, { limit, interval, range });
+    void writeUpstashCache(candlesCacheKey, normalized, upstashMarketCandlesTtlSec);
+    return normalized;
   }
 
   if (ENABLE_MARKET_HOT_READ_FALLBACK && ref.provider) {

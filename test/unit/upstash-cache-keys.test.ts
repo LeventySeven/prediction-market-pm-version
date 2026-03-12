@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildMarketCandlesCacheKey,
   buildMarketDetailCacheKey,
   buildMarketListCacheKey,
   buildMarketTradesCacheKey,
@@ -41,5 +42,15 @@ describe("upstash cache key behavior", () => {
         limit: 75,
       })
     ).toContain("market:trades:v2:limitless:lm-9:limit:75");
+
+    expect(
+      buildMarketCandlesCacheKey({
+        provider: "polymarket",
+        providerMarketId: "abc-123",
+        interval: "1h",
+        limit: 720,
+        range: "1M",
+      })
+    ).toContain("market:candles:v2:polymarket:abc-123:interval:1h:limit:720:range:1M");
   });
 });

@@ -5,7 +5,6 @@ import { listMirroredPolymarketMarkets, searchMirroredPolymarketMarkets } from "
 import { listPolymarketMarkets, searchPolymarketMarkets } from "@/src/server/polymarket/client";
 import { getVenueAdapter, listEnabledProviders } from "@/src/server/venues/registry";
 import { resolveDisplayVolume } from "@/src/lib/marketPresentation";
-import { extractTotalVolumeFromPayload } from "@/src/lib/marketVolumePayload";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -144,7 +143,7 @@ const fromLimitlessCatalogPool = async (limit: number): Promise<RecMarket[]> => 
 
     const { data: catalogRows } = await (supabase as any)
       .from("market_catalog")
-      .select("id, provider_market_id, title, category, provider_payload")
+      .select("provider_market_id, title, category, total_volume_usd")
       .eq("provider", "limitless")
       .eq("state", "open")
       .order("source_updated_at", { ascending: false })
@@ -153,39 +152,16 @@ const fromLimitlessCatalogPool = async (limit: number): Promise<RecMarket[]> => 
     const rows = Array.isArray(catalogRows) ? (catalogRows as Array<Record<string, unknown>>) : [];
     if (rows.length === 0) return [];
 
-    const ids = rows
-      .map((row) => String(row.id ?? "").trim())
-      .filter(Boolean);
-    const liveById = new Map<string, number>();
-
-    if (ids.length > 0) {
-      const { data: liveRows } = await (supabase as any)
-        .from("market_live")
-        .select("market_id, rolling_24h_volume")
-        .in("market_id", ids);
-
-      for (const row of Array.isArray(liveRows) ? liveRows : []) {
-        const rec = row as Record<string, unknown>;
-        const marketId = String(rec.market_id ?? "").trim();
-        if (!marketId) continue;
-        const volumeRaw = Number(rec.rolling_24h_volume ?? 0);
-        liveById.set(marketId, Number.isFinite(volumeRaw) ? Math.max(0, volumeRaw) : 0);
-      }
-    }
-
     return rows
       .map((row) => {
         const id = String(row.provider_market_id ?? "").trim();
         if (!id) return null;
-        const payload = row.provider_payload as Record<string, unknown> | null;
-        const payloadVolume = Math.max(0, extractTotalVolumeFromPayload(payload) ?? 0);
-        const catalogId = String(row.id ?? "").trim();
-        const liveVolume = liveById.get(catalogId) ?? payloadVolume;
+        const totalVolumeUsd = Number(row.total_volume_usd ?? 0);
         return {
           id: `limitless:${id}`,
           question: String(row.title ?? id),
           tags: [String(row.category ?? "")].filter(Boolean),
-          volume: resolveDisplayVolume(payloadVolume, liveVolume).raw ?? 0,
+          volume: resolveDisplayVolume(totalVolumeUsd).raw ?? 0,
         } satisfies RecMarket;
       })
       .filter((value): value is RecMarket => Boolean(value));
