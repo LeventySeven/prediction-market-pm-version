@@ -1046,6 +1046,7 @@ const syncSnapshot = async (mode: "full" | "head") => {
 
     const markets = await listPolymarketMarketsSnapshot({
       scope: "open",
+      sortBy: mode === "head" ? "created_desc" : "volume",
       pageSize: mode === "head" ? NEW_MARKET_POLL_PAGE_SIZE : SNAPSHOT_PAGE_SIZE,
       maxPages: mode === "head" ? 1 : SNAPSHOT_MAX_PAGES,
       hydrateMidpoints: false,

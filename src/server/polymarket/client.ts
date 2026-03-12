@@ -177,6 +177,34 @@ const isLikelyNoisyMarket = (raw: RawMarket, mappedTitle: string, volume: number
   return false;
 };
 
+const parseLifetimeVolume = (raw: RawMarket): number => {
+  const direct = asNumber(raw.volumeNum) ?? asNumber(raw.volume);
+  if (direct !== null) return Math.max(0, direct);
+
+  const clob = asNumber(raw.volumeClob) ?? asNumber(raw.volume_clob);
+  const amm = asNumber(raw.volumeAmm) ?? asNumber(raw.volume_amm);
+  if (clob !== null || amm !== null) {
+    return Math.max(0, (clob ?? 0) + (amm ?? 0));
+  }
+
+  const yearly = asNumber(raw.volume1yr) ?? asNumber(raw.volume_1yr);
+  if (yearly !== null) return Math.max(0, yearly);
+
+  return 0;
+};
+
+const sortMarkets = (
+  markets: PolymarketMarket[],
+  sortBy: MarketSnapshotSort
+): PolymarketMarket[] => {
+  if (sortBy === "created_desc") {
+    return [...markets].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }
+  return [...markets].sort(
+    (a, b) => b.volume - a.volume || Date.parse(b.createdAt) - Date.parse(a.createdAt)
+  );
+};
+
 const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
   const conditionId =
     asString(raw.conditionId) ??
@@ -206,7 +234,7 @@ const mapMarket = (raw: RawMarket): PolymarketMarket | null => {
   const outcomes = parseOutcomes(raw, id);
   const winningTitle = asString(raw.winningOutcome) ?? null;
   const clobTokenIds = parseClobTokenIds(raw);
-  const volume = asNumber(raw.volumeNum ?? raw.volume) ?? 0;
+  const volume = parseLifetimeVolume(raw);
   if (isLikelyNoisyMarket(raw, title, volume)) return null;
 
   return {
@@ -307,9 +335,11 @@ const hydrateWithMidpoints = async (markets: PolymarketMarket[]): Promise<Polyma
 };
 
 type MarketSnapshotScope = "open" | "all";
+type MarketSnapshotSort = "volume" | "created_desc";
 
 type FetchMarketsPagedOptions = {
   scope?: MarketSnapshotScope;
+  sortBy?: MarketSnapshotSort;
   pageSize?: number;
   maxPages?: number;
 };
@@ -415,9 +445,10 @@ async function fetchOpenMarketsViaEvents(pageSize: number, maxPages: number): Pr
 async function fetchMarketsPaged(options?: FetchMarketsPagedOptions): Promise<RawMarket[]> {
   const base = getBaseUrl();
   const scope = options?.scope ?? "open";
+  const sortBy = options?.sortBy ?? "volume";
   const pageSize = clampInt(options?.pageSize ?? 200, 10, 500);
   const maxPages = clampInt(options?.maxPages ?? 1, 1, 200);
-  if (scope === "open") {
+  if (scope === "open" && sortBy === "created_desc") {
     try {
       const fromEvents = await fetchOpenMarketsViaEvents(Math.min(200, pageSize), maxPages);
       if (fromEvents.length > 0) return fromEvents;
@@ -434,8 +465,10 @@ async function fetchMarketsPaged(options?: FetchMarketsPagedOptions): Promise<Ra
     params.set("limit", String(pageSize));
     params.set("offset", String(offset));
     params.set("archived", "false");
-    params.set("order", "volume");
-    params.set("ascending", "false");
+    if (sortBy === "created_desc") {
+      params.set("order", "id");
+      params.set("ascending", "false");
+    }
     if (scope === "open") {
       params.set("active", "true");
       params.set("closed", "false");
@@ -454,12 +487,13 @@ async function fetchMarketsPaged(options?: FetchMarketsPagedOptions): Promise<Ra
   return dedupeRawMarkets(allRows);
 }
 
-async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
+async function fetchMarkets(limit = 200, sortBy: MarketSnapshotSort = "volume"): Promise<RawMarket[]> {
   const safeLimit = clampInt(limit, 1, 5000);
   const pageSize = Math.min(200, safeLimit);
   const maxPages = Math.max(1, Math.ceil(safeLimit / pageSize));
   const rows = await fetchMarketsPaged({
     scope: "open",
+    sortBy,
     pageSize,
     maxPages,
   });
@@ -468,22 +502,31 @@ async function fetchMarkets(limit = 200): Promise<RawMarket[]> {
 
 export async function listPolymarketMarkets(
   limit = 200,
-  options?: { hydrateMidpoints?: boolean }
+  options?: { hydrateMidpoints?: boolean; sortBy?: MarketSnapshotSort }
 ): Promise<PolymarketMarket[]> {
-  const rows = await fetchMarkets(limit);
-  const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
+  const sortBy = options?.sortBy ?? "volume";
+  const rows = await fetchMarkets(limit, sortBy);
+  const mapped = sortMarkets(
+    rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v)),
+    sortBy
+  );
   const shouldHydrate = options?.hydrateMidpoints ?? true;
   return shouldHydrate ? hydrateWithMidpoints(mapped) : mapped;
 }
 
 export async function listPolymarketMarketsSnapshot(options?: {
   scope?: MarketSnapshotScope;
+  sortBy?: MarketSnapshotSort;
   pageSize?: number;
   maxPages?: number;
   hydrateMidpoints?: boolean;
 }): Promise<PolymarketMarket[]> {
+  const sortBy = options?.sortBy ?? "volume";
   const rows = await fetchMarketsPaged(options);
-  const mapped = rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v));
+  const mapped = sortMarkets(
+    rows.map(mapMarket).filter((v): v is PolymarketMarket => Boolean(v)),
+    sortBy
+  );
   const shouldHydrate = options?.hydrateMidpoints ?? true;
   return shouldHydrate ? hydrateWithMidpoints(mapped) : mapped;
 }

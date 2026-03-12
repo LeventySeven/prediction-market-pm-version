@@ -204,7 +204,9 @@ export const polymarketAdapter: VenueAdapter = {
   },
   isEnabled: () => true,
   listMarketsSnapshot: async (params) => {
-    const rows = await listPolymarketMarkets(Math.max(1, Math.min(params?.limit ?? 500, 2000)));
+    const rows = await listPolymarketMarkets(Math.max(1, Math.min(params?.limit ?? 500, 2000)), {
+      sortBy: params?.sortBy === "newest" ? "created_desc" : "volume",
+    });
     const mapped = rows.map(mapPolymarketToVenue);
     if (params?.onlyOpen) return mapped.filter((m) => m.state === "open");
     return mapped;
