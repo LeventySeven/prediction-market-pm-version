@@ -66,7 +66,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, onCreate
         }`}
       >
         <Home size={20} />
-        <span className="text-[11px] font-medium">{lang === 'RU' ? 'Мои ставки' : 'My bets'}</span>
+        <span className="text-[11px] font-medium">{lang === 'RU' ? 'Лента' : 'Feed'}</span>
       </button>
 
       <button

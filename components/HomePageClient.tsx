@@ -84,7 +84,6 @@ const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 100;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v4";
-const MARKET_PULSE_VISIBILITY_KEY = "market_pulse_visible_v1";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
 const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v1";
@@ -458,7 +457,7 @@ const getPathForView = (view: ViewType) => {
     case "FRIENDS":
       return "/leaderboard";
     case "FEED":
-      return "/mybets";
+      return "/feed";
     case "PROFILE":
       return "/profile";
     case "CATALOG":
@@ -985,14 +984,6 @@ export default function HomePage({
   const [marketsError, setMarketsError] = useState<string | null>(null);
   const [topMarketPreviewRows, setTopMarketPreviewRows] = useState<Market[]>([]);
   const [topMarketPreviewLoading, setTopMarketPreviewLoading] = useState(false);
-  const [marketPulseVisible, setMarketPulseVisible] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      return localStorage.getItem(MARKET_PULSE_VISIBILITY_KEY) !== "0";
-    } catch {
-      return true;
-    }
-  });
   const [betConfirm, setBetConfirm] = useState<{
     open: boolean;
     marketTitle: string;
@@ -1052,14 +1043,6 @@ export default function HomePage({
   const [publicProfileUser, setPublicProfileUser] = useState<PublicProfileUser | null>(null);
   const [publicProfilePnl, setPublicProfilePnl] = useState(0);
   const [publicProfileComments, setPublicProfileComments] = useState<PublicProfileComment[]>([]);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(MARKET_PULSE_VISIBILITY_KEY, marketPulseVisible ? "1" : "0");
-    } catch {
-      // Best-effort preference persistence only.
-    }
-  }, [marketPulseVisible]);
   const [publicProfileBets, setPublicProfileBets] = useState<PublicProfileBet[]>([]);
   const publicProfileRequestIdRef = useRef(0);
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
@@ -2106,14 +2089,12 @@ export default function HomePage({
     lang,
     markCatalogKeyLoaded,
   ]);
-  const showMarketPulseBoard =
-    currentView === "CATALOG" &&
-    searchQuery.trim().length === 0 &&
-    activeCategoryId === "all";
+  const showMarketPulseBoard = currentView === "FEED";
 
   useEffect(() => {
     if (!showMarketPulseBoard) return;
 
+    let cancelled = false;
     const fetchParams: CatalogFetchParams = {
       page: 1,
       providerFilter: activeProviderFilter,
@@ -2123,13 +2104,31 @@ export default function HomePage({
     const cached = catalogPageCacheRef.current.get(cacheKey);
     if (cached) {
       setTopMarketPreviewRows(cached.rows.map((row) => mapMarketApiToMarket(row, lang)));
+      setTopMarketPreviewLoading(false);
     } else {
-      setTopMarketPreviewRows([]);
+      setTopMarketPreviewLoading(true);
+      void fetchCatalogPage(fetchParams)
+        .then((result) => {
+          if (cancelled) return;
+          setTopMarketPreviewRows(result.rows.map((row) => mapMarketApiToMarket(row, lang)));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setTopMarketPreviewRows([]);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setTopMarketPreviewLoading(false);
+        });
+    }
+
+    return () => {
+      cancelled = true;
     };
-    setTopMarketPreviewLoading(false);
   }, [
     activeProviderFilter,
     buildCatalogFetchKey,
+    fetchCatalogPage,
     lang,
     showMarketPulseBoard,
   ]);
@@ -4307,18 +4306,6 @@ export default function HomePage({
                       </div>
                     </div>
 
-                    {showMarketPulseBoard && marketPulseVisible && (
-                      <MarketPulseBoard
-                        markets={marketPulseRows}
-                        loading={topMarketPreviewLoading && marketPulseRows.length === 0}
-                        lang={lang}
-                        onMarketClick={(market) => {
-                          setMarketBetIntent(null);
-                          void openMarketWithAuthCheck(market);
-                        }}
-                      />
-                    )}
-
                     {/* Categories */}
                     <div className="px-4 pb-3 border-b border-zinc-900">
                       <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
@@ -4421,16 +4408,6 @@ export default function HomePage({
                           {lang === "RU" ? "Фильтры" : "Filters"}
                         </div>
                         <div className="flex items-center gap-2">
-                          {showMarketPulseBoard ? (
-                            <button
-                              type="button"
-                              onClick={() => setMarketPulseVisible((prev) => !prev)}
-                              className="inline-flex h-10 items-center gap-2 rounded-2xl border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-950/80 hover:text-white"
-                            >
-                              <span>{lang === "RU" ? "Пульс" : "Pulse"}</span>
-                              <span className="text-zinc-500">{marketPulseVisible ? "ON" : "OFF"}</span>
-                            </button>
-                          ) : null}
                           <button
                             type="button"
                             onClick={() => setShowEligibilityDisclaimer(true)}
@@ -4525,9 +4502,19 @@ export default function HomePage({
                   </div>
                 </div>
 
-                {/* MY BETS (formerly FEED) */}
+                {/* FEED */}
                 <div className={currentView === "FEED" ? "w-full" : "hidden"}>
                   <div>
+                    <MarketPulseBoard
+                      markets={marketPulseRows}
+                      loading={topMarketPreviewLoading && marketPulseRows.length === 0}
+                      lang={lang}
+                      onMarketClick={(market) => {
+                        setMarketBetIntent(null);
+                        void openMarketWithAuthCheck(market);
+                      }}
+                    />
+
                     {user && bookmarkedMarkets.length > 0 && (
                       <>
                         <div className="px-4 pt-3 pb-2">
@@ -4557,7 +4544,7 @@ export default function HomePage({
 
                     <div className="px-4 pt-3 pb-2">
                       <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                        {lang === "RU" ? "Мои ставки" : "My bets"}
+                        {lang === "RU" ? "Ваши ставки" : "Your bets"}
                       </div>
                     </div>
 

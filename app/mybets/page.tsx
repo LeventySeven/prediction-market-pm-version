@@ -1,13 +1,5 @@
-import HomePageClient from "@/components/HomePageClient";
-import { getHomePageInitialData } from "@/src/server/markets/pageData";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-
-export default async function MyBetsPage() {
-  const initialData = await getHomePageInitialData({
-    initialView: "FEED",
-    providerFilter: "all",
-  });
-
-  return <HomePageClient {...initialData} />;
+export default function MyBetsPage() {
+  redirect("/feed");
 }
