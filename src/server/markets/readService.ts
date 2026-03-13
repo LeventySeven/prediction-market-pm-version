@@ -69,9 +69,9 @@ type CanonicalCatalogRow = {
   market_type: "binary" | "multi_choice";
   resolved_outcome_title: string | null;
   total_volume_usd: number;
-  is_fast_market: boolean;
-  catalog_bucket: "main" | "fast";
-  compare_group_id: string | null;
+  is_fast_market?: boolean | null;
+  catalog_bucket?: "main" | "fast" | null;
+  compare_group_id?: string | null;
   provider_payload: Record<string, unknown> | null;
   source_updated_at: string;
   last_synced_at: string;
@@ -155,6 +155,10 @@ export const isCatalogReadError = (value: unknown): value is CatalogReadError =>
 
 const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
+const CANONICAL_MARKET_SELECT_V2 =
+  "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, compare_group_id, provider_payload, source_updated_at, last_synced_at";
+const CANONICAL_MARKET_SELECT_LEGACY =
+  "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload, source_updated_at, last_synced_at";
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
 const POLYMARKET_CLOB_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137);
 const LIMITLESS_API_ROOT = "https://api.limitless.exchange";
@@ -241,6 +245,25 @@ const parseProviderSelection = (input?: {
   const deduped = Array.from(new Set(requested));
   const filtered = deduped.filter((provider) => enabled.has(provider));
   return filtered.length > 0 ? filtered : Array.from(enabled);
+};
+
+const isOptionalCatalogSchemaError = (error: unknown): boolean => {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string"
+          ? String((error as { message: string }).message)
+          : "";
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("compare_group_id") ||
+    normalized.includes("is_fast_market") ||
+    normalized.includes("catalog_bucket") ||
+    normalized.includes("market_compare_groups") ||
+    normalized.includes("market_compare_members")
+  );
 };
 
 const readIsoFromPayload = (
@@ -470,19 +493,10 @@ const fetchCompareGroupAggregates = async (
       .in("compare_group_id", ids),
   ]);
 
-  if (groupsRes.error) {
-    throw new CatalogReadError(
-      { ...context, stage: "market_compare_groups" },
-      String(groupsRes.error.message ?? "CATALOG_READ_FAILED"),
-      groupsRes.error
-    );
-  }
-  if (marketsRes.error) {
-    throw new CatalogReadError(
-      { ...context, stage: "market_compare_members" },
-      String(marketsRes.error.message ?? "CATALOG_READ_FAILED"),
-      marketsRes.error
-    );
+  // Compare-group metadata is an optional enrichment layer. Catalog reads
+  // should stay available even while this schema is rolling out or degraded.
+  if (groupsRes.error || marketsRes.error) {
+    return out;
   }
 
   for (const row of groupsRes.data ?? []) {
@@ -898,27 +912,38 @@ const fetchCanonicalMarketRows = async (
     catalogBucket: params.catalogBucket,
     providerMarketId: params.providerMarketId,
   } satisfies Omit<CatalogReadErrorContext, "stage">;
-  let query = (supabaseService as any)
-    .from("market_catalog")
-    .select(
-      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, compare_group_id, provider_payload, source_updated_at, last_synced_at"
-    )
-    .in("provider", params.providers)
-    .limit(params.candidateLimit);
+  const buildMarketCatalogQuery = (selectClause: string) => {
+    let query = (supabaseService as any)
+      .from("market_catalog")
+      .select(selectClause)
+      .in("provider", params.providers)
+      .limit(params.candidateLimit);
 
-  if (params.onlyOpen) {
-    query = query.eq("state", "open");
-  }
-  if (params.providerMarketId) {
-    query = query.eq("provider_market_id", params.providerMarketId);
-  }
+    if (params.onlyOpen) {
+      query = query.eq("state", "open");
+    }
+    if (params.providerMarketId) {
+      query = query.eq("provider_market_id", params.providerMarketId);
+    }
 
-  query =
-    params.sortBy === "volume"
+    return params.sortBy === "volume"
       ? query.order("total_volume_usd", { ascending: false }).order("market_created_at", { ascending: false })
       : query.order("market_created_at", { ascending: false }).order("total_volume_usd", { ascending: false });
+  };
 
-  const { data: marketRows, error: marketError } = await query;
+  let marketRows: unknown[] | null = null;
+  let marketError: { message?: string | null } | null = null;
+
+  const primaryCatalogRes = await buildMarketCatalogQuery(CANONICAL_MARKET_SELECT_V2);
+  if (primaryCatalogRes.error && isOptionalCatalogSchemaError(primaryCatalogRes.error)) {
+    const legacyCatalogRes = await buildMarketCatalogQuery(CANONICAL_MARKET_SELECT_LEGACY);
+    marketRows = Array.isArray(legacyCatalogRes.data) ? legacyCatalogRes.data : [];
+    marketError = legacyCatalogRes.error;
+  } else {
+    marketRows = Array.isArray(primaryCatalogRes.data) ? primaryCatalogRes.data : [];
+    marketError = primaryCatalogRes.error;
+  }
+
   if (marketError) {
     throw new CatalogReadError(
       { ...errorContextBase, stage: "market_catalog" },
@@ -1425,4 +1450,5 @@ export const __readServiceTestUtils = {
   evenlySampleCandles,
   normalizeCandlesForChart,
   normalizePublicEnabledProviders,
+  isOptionalCatalogSchemaError,
 };

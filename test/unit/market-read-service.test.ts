@@ -1,9 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import { __readServiceTestUtils } from "../../src/server/markets/readService";
 
-const { mapCanonicalRows, normalizeCandlesForChart } = __readServiceTestUtils;
+const { mapCanonicalRows, normalizeCandlesForChart, isOptionalCatalogSchemaError } = __readServiceTestUtils;
 
 describe("market read service", () => {
+  it("recognizes optional schema rollout errors from plain Supabase error objects", () => {
+    expect(
+      isOptionalCatalogSchemaError({
+        message: 'column market_catalog.compare_group_id does not exist',
+      })
+    ).toBe(true);
+    expect(
+      isOptionalCatalogSchemaError({
+        message: "permission denied for table market_catalog",
+      })
+    ).toBe(false);
+  });
+
   it("keeps total volume as the canonical card volume when rolling 24h is higher", () => {
     const rows = mapCanonicalRows(
       [
