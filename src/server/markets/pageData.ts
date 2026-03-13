@@ -17,6 +17,7 @@ import {
   getCanonicalMarket,
   getCanonicalPriceCandles,
   getPublicEnabledProviders,
+  isCatalogReadError,
   listCanonicalMarkets,
 } from "./readService";
 
@@ -79,6 +80,8 @@ const buildCatalogBootstrapEntry = async (
     hasMore: result.hasMore,
     snapshotId: result.snapshotId,
     pageScope: result.pageScope,
+    source: result.source,
+    stale: result.stale,
     updatedAt: Date.now(),
   };
 };
@@ -205,6 +208,7 @@ export const getHomePageInitialData = async (params?: {
       initialProviderFilter: providerFilter,
       initialCatalogBootstrap: await buildInitialCatalogBootstrap(providerFilter, enabledProviders),
       initialEnabledProviders: enabledProviders,
+      initialCatalogError: null,
     };
   } catch (error) {
     logFallbackOnce("route", error);
@@ -213,6 +217,7 @@ export const getHomePageInitialData = async (params?: {
       initialProviderFilter: providerFilter,
       initialCatalogBootstrap: null,
       initialEnabledProviders: enabledProviders,
+      initialCatalogError: isCatalogReadError(error) ? error.code : null,
     };
   }
 };
@@ -242,6 +247,7 @@ export const getMarketRouteInitialData = async (
         initialSelectedMarketId: marketId,
         initialCatalogBootstrap,
         initialEnabledProviders: enabledProviders,
+        initialCatalogError: null,
       };
     }
 
@@ -253,6 +259,7 @@ export const getMarketRouteInitialData = async (
       initialCatalogBootstrap,
       initialSelectedMarket: market,
       initialEnabledProviders: enabledProviders,
+      initialCatalogError: null,
       ...detailData,
     };
   } catch (error) {
@@ -263,6 +270,7 @@ export const getMarketRouteInitialData = async (
       initialSelectedMarketId: marketId,
       initialCatalogBootstrap: null,
       initialEnabledProviders: enabledProviders,
+      initialCatalogError: isCatalogReadError(error) ? error.code : null,
     };
   }
 };

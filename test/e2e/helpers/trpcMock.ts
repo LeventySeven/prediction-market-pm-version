@@ -355,7 +355,15 @@ const resolveMockProcedure = (
         );
       }
       const start = (page - 1) * pageSize;
-      return rows.slice(start, start + pageSize);
+      const items = rows.slice(start, start + pageSize);
+      return {
+        items,
+        snapshotId: 101,
+        pageScope: `catalog:providers:${effectiveProviders.join(",")}:page:${page}:sort:${parsed.sortBy ?? "newest"}`,
+        hasMore: rows.length > start + pageSize,
+        source: "supabase" as const,
+        stale: false,
+      };
     }
     case "market.getMarket": {
       const marketId = String(

@@ -170,6 +170,8 @@ export const marketPageOutput = z.object({
   snapshotId: z.number().int().nullable(),
   pageScope: z.string(),
   hasMore: z.boolean(),
+  source: z.enum(["redis", "supabase"]),
+  stale: z.boolean(),
 });
 
 export const marketBookmarkOutput = z.object({

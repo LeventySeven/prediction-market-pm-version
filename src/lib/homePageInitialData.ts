@@ -109,6 +109,8 @@ export type CatalogBootstrapEntry = {
   hasMore: boolean;
   snapshotId?: number | null;
   pageScope?: string;
+  source?: "redis" | "supabase";
+  stale?: boolean;
   updatedAt: number;
 };
 
@@ -124,6 +126,7 @@ export type HomePageInitialData = {
   initialSelectedMarketId?: string | null;
   initialCatalogBootstrap?: InitialCatalogBootstrap | null;
   initialSelectedMarket?: MarketApiRow | null;
+  initialCatalogError?: string | null;
   initialMarketCandles?: PriceCandle[];
   initialMarketPublicTrades?: PublicTrade[];
   initialMarketLiveActivityTicks?: LiveActivityTick[];

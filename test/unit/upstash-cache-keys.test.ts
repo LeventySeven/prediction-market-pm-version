@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildLatestMarketListCacheKey,
   buildMarketCandlesCacheKey,
   buildMarketDetailCacheKey,
   buildMarketListCacheKey,
@@ -25,6 +26,24 @@ describe("upstash cache key behavior", () => {
     });
 
     expect(keyA).toBe(keyB);
+
+    const latestKeyA = buildLatestMarketListCacheKey({
+      onlyOpen: false,
+      page: 1,
+      pageSize: 50,
+      sortBy: "newest",
+      providers: ["polymarket", "limitless"],
+    });
+
+    const latestKeyB = buildLatestMarketListCacheKey({
+      onlyOpen: false,
+      page: 1,
+      pageSize: 50,
+      sortBy: "newest",
+      providers: ["limitless", "polymarket"],
+    });
+
+    expect(latestKeyA).toBe(latestKeyB);
   });
 
   it("encodes provider + market id in detail/trades keys", () => {

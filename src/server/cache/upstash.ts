@@ -155,6 +155,25 @@ export const buildMarketListCacheKey = (params: {
     `providers:${encodeProviderList(params.providers)}`,
   ].join(":");
 
+export const buildLatestMarketListCacheKey = (params: {
+  onlyOpen: boolean;
+  page: number;
+  pageSize: number;
+  sortBy: "newest" | "volume";
+  catalogBucket?: "all" | "main" | "fast";
+  providers: Array<"polymarket" | "limitless">;
+}): string =>
+  [
+    "markets:list:latest",
+    CACHE_NAMESPACE,
+    `open:${params.onlyOpen ? 1 : 0}`,
+    `page:${params.page}`,
+    `size:${params.pageSize}`,
+    `sort:${params.sortBy}`,
+    `bucket:${params.catalogBucket ?? "main"}`,
+    `providers:${encodeProviderList(params.providers)}`,
+  ].join(":");
+
 export const buildMarketDetailCacheKey = (params: {
   provider: "polymarket" | "limitless";
   providerMarketId: string;
@@ -197,7 +216,11 @@ const buildLiveStateKey = (marketId: string): string =>
 const buildLiveChannelKey = (marketId: string): string =>
   ["realtime:market:live", CACHE_NAMESPACE, "channel", marketId.trim()].join(":");
 
+const buildLiveScopeChannelKey = (scope: string): string =>
+  ["realtime:market:live", CACHE_NAMESPACE, "scope", encodeScopeKey(scope)].join(":");
+
 export const buildUpstashLiveChannelKey = (marketId: string): string => buildLiveChannelKey(marketId);
+export const buildUpstashLiveScopeChannelKey = (scope: string): string => buildLiveScopeChannelKey(scope);
 
 export const buildUpstashLiveChannelPattern = (): string =>
   ["realtime:market:live", CACHE_NAMESPACE, "channel", "*"].join(":");
@@ -492,6 +515,9 @@ export const writeUpstashMarketLivePatches = async (
       const channel = buildLiveChannelKey(marketId);
       pipeline.set(key, enriched, { ex: upstashLiveStateTtlSec });
       pipeline.publish(channel, JSON.stringify(enriched));
+      if (typeof enriched.pageScope === "string" && enriched.pageScope.trim().length > 0) {
+        pipeline.publish(buildLiveScopeChannelKey(enriched.pageScope), JSON.stringify(enriched));
+      }
     }
     if (snapshotId !== null && seq !== null) {
       pipeline.set(

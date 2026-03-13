@@ -113,7 +113,10 @@ import {
   getCanonicalMarket,
   getCanonicalPriceCandles,
   getPublicEnabledProviders,
+  isCatalogReadError,
   listCanonicalMarkets,
+  listCanonicalProviderMarkets,
+  resolveMarketCatalogRefId,
 } from "../../markets/readService";
 import {
   computeEffectiveVolumeRaw,
@@ -167,21 +170,10 @@ const categoryMetaFromRaw = (
   };
 };
 
-const FAST_MARKET_WINDOW_MS = 15 * 60 * 1000;
-const FAST_MARKET_SERIES_RE = /\b(5|10|15)\s*(m|min|mins|minute|minutes)\b/i;
-const FAST_MARKET_SPAM_RE = /\b(up|down)\b/i;
-const FAST_MARKET_ASSET_RE = /\b(sol|solana|btc|bitcoin|eth|ethereum)\b/i;
-
 const inferFastMarketFlags = (params: { title: string; closesAt: string }): { isFastMarket: boolean; catalogBucket: "main" | "fast" } => {
-  const closesAtMs = Date.parse(params.closesAt);
-  const title = params.title;
-  const isFastMarket =
-    (Number.isFinite(closesAtMs) && closesAtMs - Date.now() <= FAST_MARKET_WINDOW_MS) ||
-    FAST_MARKET_SERIES_RE.test(title) ||
-    (FAST_MARKET_SPAM_RE.test(title) && FAST_MARKET_ASSET_RE.test(title));
   return {
-    isFastMarket,
-    catalogBucket: isFastMarket ? "fast" : "main",
+    isFastMarket: true,
+    catalogBucket: "main",
   };
 };
 
@@ -1114,216 +1106,6 @@ const readCapabilitiesFromPayload = (
   };
 };
 
-const listCanonicalProviderMarkets = async (
-  supabaseService: SupabaseServiceClient,
-  params: {
-    provider: VenueProvider;
-    onlyOpen: boolean;
-    limit: number;
-    providerMarketId?: string;
-  }
-): Promise<MarketOutput[]> => {
-  let query = (supabaseService as any)
-    .from("market_catalog")
-    .select(
-      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, total_volume_usd, provider_payload, source_updated_at, last_synced_at"
-    )
-    .eq("provider", params.provider)
-    .order("source_updated_at", { ascending: false })
-    .limit(params.limit);
-
-  if (params.providerMarketId) {
-    query = query.eq("provider_market_id", params.providerMarketId);
-  }
-
-  if (params.onlyOpen) {
-    query = query.eq("state", "open");
-  }
-
-  const { data: marketRows, error: marketError } = await query;
-  if (marketError || !Array.isArray(marketRows) || marketRows.length === 0) return [];
-
-  const marketIds = marketRows
-    .map((row) => String((row as Record<string, unknown>).id ?? "").trim())
-    .filter(Boolean);
-
-  const [outcomesRes, liveRes] = await Promise.all([
-    (supabaseService as any)
-      .from("market_outcomes")
-      .select(
-        "market_id, provider_outcome_id, provider_token_id, outcome_key, title, sort_order, probability, price, is_active"
-      )
-      .in("market_id", marketIds),
-    (supabaseService as any)
-      .from("market_live")
-      .select("market_id, best_bid, best_ask, mid, last_trade_price, last_trade_size, rolling_24h_volume, open_interest, source_ts")
-      .in("market_id", marketIds),
-  ]);
-
-  const outcomesByMarketId = new Map<string, Array<Record<string, unknown>>>();
-  for (const row of (outcomesRes.data ?? []) as Record<string, unknown>[]) {
-    const marketId = String(row.market_id ?? "").trim();
-    if (!marketId) continue;
-    const rows = outcomesByMarketId.get(marketId) ?? [];
-    rows.push(row);
-    outcomesByMarketId.set(marketId, rows);
-  }
-
-  for (const rows of outcomesByMarketId.values()) {
-    rows.sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));
-  }
-
-  const liveByMarketId = new Map<string, Record<string, unknown>>();
-  for (const row of (liveRes.data ?? []) as Record<string, unknown>[]) {
-    const marketId = String(row.market_id ?? "").trim();
-    if (!marketId) continue;
-    liveByMarketId.set(marketId, row);
-  }
-
-  return marketRows.map((rawRow) => {
-    const row = rawRow as Record<string, unknown>;
-    const marketRefId = String(row.id ?? "").trim();
-    const provider = String(row.provider ?? params.provider).trim() as VenueProvider;
-    const providerMarketId = String(row.provider_market_id ?? "").trim();
-    const payload = asObject(row.provider_payload);
-    const categorySource = normalizeCategoryLabel(row.category) ?? readCategoryFromPayload(payload);
-    const category = categoryMetaFromRaw(categorySource);
-    const fallbackTs = Date.parse(String(row.source_updated_at ?? row.last_synced_at ?? ""));
-    const fallbackIso = Number.isFinite(fallbackTs)
-      ? new Date(fallbackTs).toISOString()
-      : new Date().toISOString();
-
-    const createdAt = readIsoFromPayload(payload, ["created_at", "createdAt", "market_created_at"], fallbackIso);
-    const closesAt = readIsoFromPayload(payload, ["closes_at", "closesAt"], createdAt);
-    const expiresAt = readIsoFromPayload(payload, ["expires_at", "expiresAt"], closesAt);
-    const capabilities = readCapabilitiesFromPayload(payload, provider);
-
-    const outcomeRows = outcomesByMarketId.get(marketRefId) ?? [];
-    const outputId = venueToCanonicalId(provider, providerMarketId);
-    const outcomes = outcomeRows.map((outcome, idx) => {
-      const providerOutcomeIdRaw = outcome.provider_outcome_id;
-      const outcomeKey = String(outcome.outcome_key ?? "").trim();
-      const providerOutcomeId =
-        typeof providerOutcomeIdRaw === "string" && providerOutcomeIdRaw.trim().length > 0
-          ? providerOutcomeIdRaw.trim()
-          : outcomeKey || `${providerMarketId}:${idx}`;
-      const title =
-        typeof outcome.title === "string" && outcome.title.trim().length > 0
-          ? outcome.title.trim()
-          : `Outcome ${idx + 1}`;
-      const probability = clamp01(toFiniteNumber(outcome.probability as any) ?? 0);
-      const price = clamp01(toFiniteNumber(outcome.price as any) ?? probability);
-      const providerTokenId =
-        typeof outcome.provider_token_id === "string" && outcome.provider_token_id.trim().length > 0
-          ? outcome.provider_token_id.trim()
-          : null;
-      return {
-        id: providerOutcomeId,
-        marketId: outputId,
-        providerOutcomeId,
-        providerTokenId,
-        tokenId: providerTokenId,
-        slug: title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
-        title,
-        iconUrl: null,
-        chartColor: null,
-        sortOrder: Number.isFinite(Number(outcome.sort_order)) ? Number(outcome.sort_order) : idx,
-        isActive: outcome.is_active !== false,
-        probability,
-        price,
-      };
-    });
-
-    const { yes, no } = pickBinaryOutcomes(outcomes);
-    const live = liveByMarketId.get(marketRefId);
-    const payloadVolume = readVolumeFromPayload(payload);
-    const totalVolumeUsd = toFiniteNumber(row.total_volume_usd as any) ?? payloadVolume ?? 0;
-    const fallbackYesPrice = yes ? yes.price : 0.5;
-    const priceYes = resolveReliableBinaryPrice({
-      mid: toFiniteNumber(live?.mid as any),
-      bestBid: toFiniteNumber(live?.best_bid as any),
-      bestAsk: toFiniteNumber(live?.best_ask as any),
-      lastTradePrice: toFiniteNumber(live?.last_trade_price as any),
-      fallbackPrice: fallbackYesPrice,
-    });
-    const priceNo = Math.max(0, Math.min(1, 1 - priceYes));
-    const { isFastMarket, catalogBucket } = inferFastMarketFlags({
-      title: String(row.title ?? "Untitled market"),
-      closesAt,
-    });
-
-    const stateRaw = String(row.state ?? "open").trim().toLowerCase();
-    const state: MarketOutput["state"] =
-      stateRaw === "open" || stateRaw === "closed" || stateRaw === "resolved" || stateRaw === "cancelled"
-        ? stateRaw
-        : "open";
-
-    return {
-      id: outputId,
-      provider,
-      providerMarketId,
-      canonicalMarketId: outputId,
-      marketRefId,
-      snapshotId: null,
-      liveSeq: toFiniteNumber(live?.source_seq as any),
-      compareGroupId: null,
-      compareGroup: null,
-      isFastMarket,
-      catalogBucket,
-      titleRu: String(row.title ?? "Untitled market"),
-      titleEn: String(row.title ?? "Untitled market"),
-      description: typeof row.description === "string" ? row.description : null,
-      source: typeof row.source_url === "string" ? row.source_url : null,
-      imageUrl: typeof row.image_url === "string" ? row.image_url : "",
-      state,
-      createdAt,
-      closesAt,
-      expiresAt,
-      marketType: outcomes.length > 2 ? ("multi_choice" as const) : ("binary" as const),
-      resolvedOutcomeId: null,
-      outcomes,
-      outcome: null,
-      createdBy: null,
-      categoryId: category?.id ?? null,
-      categoryLabelRu: category?.labelRu ?? null,
-      categoryLabelEn: category?.labelEn ?? null,
-      settlementAsset: "USD",
-      feeBps: null,
-      liquidityB: null,
-      priceYes,
-      priceNo,
-      volume: totalVolumeUsd,
-      totalVolumeUsd,
-      chance: roundPercentValue(priceYes),
-      creatorName: null,
-      creatorAvatarUrl: null,
-      bestBid: toFiniteNumber(live?.best_bid as any),
-      bestAsk: toFiniteNumber(live?.best_ask as any),
-      mid: toFiniteNumber(live?.mid as any),
-      lastTradePrice: toFiniteNumber(live?.last_trade_price as any),
-      lastTradeSize: toFiniteNumber(live?.last_trade_size as any),
-      rolling24hVolume: toFiniteNumber(live?.rolling_24h_volume as any),
-      openInterest: toFiniteNumber(live?.open_interest as any),
-      liveUpdatedAt: typeof live?.source_ts === "string" ? live.source_ts : null,
-      capabilities,
-      freshness: buildMarketFreshness(
-        provider,
-        typeof live?.source_ts === "string" ? live.source_ts : fallbackIso
-      ),
-      orderbookFreshness: null,
-      tradeMeta:
-        provider === "limitless"
-          ? {
-              limitless: buildLimitlessTradeMetaFromPayload(
-                payload,
-                outcomes.map((outcome) => ({ tokenId: outcome.tokenId ?? null }))
-              ),
-            }
-          : null,
-    } satisfies MarketOutput;
-  });
-};
-
 const listLocalCandles = async (
   supabaseService: SupabaseServiceClient,
   marketId: string,
@@ -2036,28 +1818,6 @@ const parseProviderSelection = (input?: {
   return filtered.length > 0 ? filtered : Array.from(enabled);
 };
 
-const resolveMarketCatalogRefId = async (
-  supabaseService: unknown,
-  provider: VenueProvider,
-  providerMarketId: string
-): Promise<string | null> => {
-  if (!supabaseService || !providerMarketId) return null;
-  try {
-    const { data, error } = await (supabaseService as any)
-      .from("market_catalog")
-      .select("id")
-      .eq("provider", provider)
-      .eq("provider_market_id", providerMarketId)
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return null;
-    const id = String((data as Record<string, unknown>).id ?? "").trim();
-    return id || null;
-  } catch {
-    return null;
-  }
-};
-
 const attachMarketCatalogRefIds = async (
   supabaseService: unknown,
   rows: MarketOutput[]
@@ -2298,19 +2058,26 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
       try {
-        return await listCanonicalMarkets({
-          supabaseService: ctx.supabaseService,
-          onlyOpen: input?.onlyOpen ?? false,
-          page: input?.page ?? 1,
-          pageSize: Math.max(
-            1,
-            Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
-          ),
-          sortBy: input?.sortBy ?? "newest",
-          catalogBucket: input?.catalogBucket ?? "main",
-          providers: input?.providers,
-          providerFilter: input?.providerFilter,
-        });
+        try {
+          return await listCanonicalMarkets({
+            supabaseService: ctx.supabaseService,
+            onlyOpen: input?.onlyOpen ?? false,
+            page: input?.page ?? 1,
+            pageSize: Math.max(
+              1,
+              Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
+            ),
+            sortBy: input?.sortBy ?? "newest",
+            catalogBucket: input?.catalogBucket ?? "main",
+            providers: input?.providers,
+            providerFilter: input?.providerFilter,
+          });
+        } catch (error) {
+          if (isCatalogReadError(error)) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.code, cause: error });
+          }
+          throw error;
+        }
       } finally {
         recordRealtimeMetricTiming("trpc.market.listMarkets.ms", Date.now() - startedAt);
       }
@@ -2323,11 +2090,19 @@ export const marketRouter = router({
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.getMarket.calls");
       try {
-        const row = await getCanonicalMarket({
-          supabaseService: ctx.supabaseService,
-          marketId: input.marketId,
-          provider: input.provider ?? null,
-        });
+        let row: MarketOutput | null = null;
+        try {
+          row = await getCanonicalMarket({
+            supabaseService: ctx.supabaseService,
+            marketId: input.marketId,
+            provider: input.provider ?? null,
+          });
+        } catch (error) {
+          if (isCatalogReadError(error)) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.code, cause: error });
+          }
+          throw error;
+        }
         if (!row) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
         }

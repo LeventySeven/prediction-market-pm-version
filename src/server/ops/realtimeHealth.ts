@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { getSupabaseServiceClient } from "../supabase/client";
-import { upstashCacheEnabled, upstashStreamEnabled } from "../cache/upstash";
+import { readUpstashSnapshotCursor, upstashCacheEnabled, upstashStreamEnabled } from "../cache/upstash";
 
 const POLYMARKET_STALE_AFTER_MS = Math.max(
   60_000,
@@ -255,7 +255,11 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
     ? await readProviderSyncState(supabaseService)
     : { rows: [], error: supabaseError ?? "SUPABASE_UNAVAILABLE" };
   const coverage = supabaseService
-    ? {
+      ? {
+        marketCatalogRows: await readCoverageCount(supabaseService, "market_catalog"),
+        marketCatalogOpen: await readCoverageCount(supabaseService, "market_catalog", [
+          { column: "state", value: "open" },
+        ]),
         polymarketOpen: await readCoverageCount(supabaseService, "polymarket_market_cache", [
           { column: "state", value: "open" },
         ]),
@@ -266,7 +270,9 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
         ]),
         limitlessLiveRows: await readCoverageCount(supabaseService, "market_live"),
       }
-    : {
+      : {
+        marketCatalogRows: null,
+        marketCatalogOpen: null,
         polymarketOpen: null,
         polymarketLiveRows: null,
         limitlessOpen: null,
@@ -291,8 +297,10 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
   const degradedReasons: string[] = [];
   if (!supabaseService) degradedReasons.push("SUPABASE_UNAVAILABLE");
   if (!hasFreshSignal) degradedReasons.push("NO_FRESH_INGESTION_SIGNAL");
+  if (coverage.marketCatalogRows === 0) degradedReasons.push("CATALOG_EMPTY");
   if (!upstash.configured) degradedReasons.push("UPSTASH_NOT_CONFIGURED");
   if (upstash.configured && upstash.ping.ok === false) degradedReasons.push("UPSTASH_UNREACHABLE");
+  const snapshotId = await readUpstashSnapshotCursor("global");
 
   return {
     checkedAt,
@@ -303,6 +311,11 @@ export const collectRealtimeHealthSnapshot = async (supabaseServiceInput?: unkno
       candleHeads,
       providerSyncState,
       coverage: {
+        catalog: {
+          rows: coverage.marketCatalogRows,
+          openRows: coverage.marketCatalogOpen,
+          snapshotId,
+        },
         polymarket: {
           openMarkets: coverage.polymarketOpen,
           liveRows: coverage.polymarketLiveRows,

@@ -73,6 +73,7 @@ import type {
   MarketApiRow,
   ProviderFilter,
 } from "@/src/lib/homePageInitialData";
+import { parseMarketsRealtimeServerMessage } from "@/src/lib/marketsRealtimeProtocol";
 
 const MarketPage = dynamic(() => import("@/components/MarketPage"));
 const ProfilePage = dynamic(() => import("@/components/ProfilePage"));
@@ -83,8 +84,11 @@ const MarketPulseBoard = dynamic(() => import("@/components/MarketPulseBoard"));
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
 const CATALOG_PAGE_SIZE = 100;
+const MARKETS_WS_URL = (process.env.NEXT_PUBLIC_MARKETS_WS_URL ?? "").trim();
+const ENABLE_MARKETS_WS = MARKETS_WS_URL.length > 0;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
-const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v4";
+const MARKETS_WS_PING_INTERVAL_MS = 15_000;
+const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v5";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
@@ -374,13 +378,73 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
   };
 };
 
-const parseLiveStreamPayload = (
+const parseRealtimeTransportPayload = (
   payloadRaw: string
-): {
-  snapshotId: number | null;
-  seq: number | null;
-  patches: Array<{ marketId: string; patch: MarketLivePatch }>;
-} => {
+):
+  | {
+      type: "patch";
+      snapshotId: number | null;
+      seq: number | null;
+      patches: Array<{ marketId: string; patch: MarketLivePatch }>;
+    }
+  | {
+      type: "resync_required";
+      reason: string;
+      snapshotId: number | null;
+      seq: number | null;
+    }
+  | {
+      type: "ready" | "heartbeat";
+    }
+  | {
+      type: "error";
+      code: string;
+      message: string;
+    } => {
+  const parsedWs = parseMarketsRealtimeServerMessage(payloadRaw);
+  if (parsedWs?.type === "patch") {
+    return {
+      type: "patch",
+      snapshotId: parsedWs.snapshotId,
+      seq: parsedWs.seq,
+      patches: parsedWs.patches.map((patchRow) => ({
+        marketId: patchRow.marketId,
+        patch: {
+          bestBid: asNumber(patchRow.bestBid),
+          bestAsk: asNumber(patchRow.bestAsk),
+          mid: asNumber(patchRow.mid),
+          lastTradePrice: asNumber(patchRow.lastTradePrice),
+          lastTradeSize: asNumber(patchRow.lastTradeSize),
+          rolling24hVolume: asNumber(patchRow.rolling24hVolume),
+          openInterest: asNumber(patchRow.openInterest),
+          liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
+          snapshotId: asNumber(patchRow.snapshotId) ?? parsedWs.snapshotId,
+          liveSeq: asNumber(patchRow.sourceSeq),
+        },
+      })),
+    };
+  }
+  if (parsedWs?.type === "resync_required") {
+    return {
+      type: "resync_required",
+      reason: parsedWs.reason,
+      snapshotId: parsedWs.snapshotId,
+      seq: parsedWs.seq,
+    };
+  }
+  if (parsedWs?.type === "ready" || parsedWs?.type === "heartbeat") {
+    return {
+      type: parsedWs.type,
+    };
+  }
+  if (parsedWs?.type === "error") {
+    return {
+      type: "error",
+      code: parsedWs.code,
+      message: parsedWs.message,
+    };
+  }
+
   const payload = JSON.parse(payloadRaw) as {
     snapshotId?: number | null;
     seq?: number | null;
@@ -422,10 +486,20 @@ const parseLiveStreamPayload = (
     });
   }
   return {
+    type: "patch",
     snapshotId: eventSnapshotId,
     seq: eventSeq,
     patches: out,
   };
+};
+
+const resolveMarketsWsUrl = (): string | null => {
+  if (!MARKETS_WS_URL) return null;
+  if (typeof window === "undefined") return MARKETS_WS_URL;
+  if (/^wss?:\/\//i.test(MARKETS_WS_URL)) return MARKETS_WS_URL;
+  const url = new URL(MARKETS_WS_URL, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 };
 
 type ClientMetricStore = {
@@ -552,13 +626,7 @@ const getCatalogPathForProvider = (provider: "all" | "polymarket" | "limitless")
 };
 
 const getCatalogBucketFromLocation = (): CatalogPageScope => {
-  if (typeof window === "undefined") return "main";
-  try {
-    const url = new URL(window.location.href);
-    return (url.searchParams.get("bucket") ?? "").trim().toLowerCase() === "fast" ? "fast" : "main";
-  } catch {
-    return "main";
-  }
+  return "main";
 };
 
 const getViewFromLocation = (): ViewType => {
@@ -711,6 +779,7 @@ export default function HomePage({
   initialProviderFilter,
   initialSelectedMarketId = null,
   initialCatalogBootstrap = null,
+  initialCatalogError = null,
   initialSelectedMarket = null,
   initialMarketCandles = [],
   initialMarketPublicTrades = [],
@@ -1008,7 +1077,6 @@ export default function HomePage({
     const sort = (url.searchParams.get("sort") ?? "").trim().toUpperCase();
     const status = (url.searchParams.get("status") ?? "").trim().toUpperCase();
     const time = (url.searchParams.get("time") ?? "").trim().toUpperCase();
-    const bucket = (url.searchParams.get("bucket") ?? "").trim().toLowerCase();
     const page = Number(url.searchParams.get("page") ?? "1");
 
     setSearchQuery(q);
@@ -1029,7 +1097,7 @@ export default function HomePage({
 
     const isTime = time === "ANY" || time === "HOUR" || time === "DAY" || time === "WEEK";
     setCatalogTimeFilter(isTime ? time : "ANY");
-    setCatalogBucket(bucket === "fast" ? "fast" : "main");
+    setCatalogBucket("main");
     setCatalogPage(Number.isFinite(page) && page > 0 ? Math.floor(page) : 1);
   }, []);
 
@@ -1079,7 +1147,6 @@ export default function HomePage({
     if (catalogSort !== "CREATED_DESC") params.set("sort", catalogSort);
     if (catalogStatus !== "ALL") params.set("status", catalogStatus);
     if (catalogTimeFilter !== "ANY") params.set("time", catalogTimeFilter);
-    if (catalogBucket !== "main") params.set("bucket", catalogBucket);
     if (catalogPage > 1) params.set("page", String(catalogPage));
     const nextUrl = params.toString().length > 0 ? `${nextPath}?${params.toString()}` : nextPath;
     commitHistoryNavigation("replace", nextUrl, { view: "CATALOG" });
@@ -1107,7 +1174,13 @@ export default function HomePage({
   type MarketBookmark = { marketId: string; createdAt: string };
   const [myBookmarks, setMyBookmarks] = useState<MarketBookmark[]>([]);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<string | null>(null);
-  const [marketsError, setMarketsError] = useState<string | null>(null);
+  const [marketsError, setMarketsError] = useState<string | null>(
+    initialCatalogError === "CATALOG_READ_FAILED"
+      ? lang === "RU"
+        ? "Каталог временно недоступен. Повторите попытку."
+        : "Catalog is temporarily unavailable. Please retry."
+      : null
+  );
   const [topMarketPreviewRows, setTopMarketPreviewRows] = useState<Market[]>([]);
   const [topMarketPreviewLoading, setTopMarketPreviewLoading] = useState(false);
   const [betConfirm, setBetConfirm] = useState<{
@@ -1972,6 +2045,8 @@ export default function HomePage({
     hasMore: boolean;
     snapshotId?: number | null;
     pageScope?: string;
+    source?: "redis" | "supabase";
+    stale?: boolean;
   };
   type CatalogPageCacheEntry = CatalogFetchResult & { updatedAt: number };
 
@@ -2037,6 +2112,8 @@ export default function HomePage({
           hasMore: entry.hasMore,
           snapshotId: entry.snapshotId ?? null,
           pageScope: entry.pageScope,
+          source: entry.source ?? "supabase",
+          stale: entry.stale ?? false,
           updatedAt: entry.updatedAt,
         },
       ])
@@ -2069,6 +2146,8 @@ export default function HomePage({
           hasMore: cached.hasMore,
           snapshotId: cached.snapshotId ?? null,
           pageScope: cached.pageScope,
+          source: cached.source ?? "supabase",
+          stale: cached.stale ?? false,
           updatedAt: cached.updatedAt,
         });
       }
@@ -2146,6 +2225,8 @@ export default function HomePage({
         hasMore,
         snapshotId: response?.snapshotId ?? null,
         pageScope: response?.pageScope,
+        source: response?.source ?? "supabase",
+        stale: response?.stale ?? false,
         updatedAt: Date.now(),
       });
       markCatalogKeyLoaded(cacheKey);
@@ -2157,6 +2238,8 @@ export default function HomePage({
         hasMore,
         snapshotId: response?.snapshotId ?? null,
         pageScope: response?.pageScope,
+        source: response?.source ?? "supabase",
+        stale: response?.stale ?? false,
       };
     })();
 
@@ -2226,8 +2309,15 @@ export default function HomePage({
     } catch (err) {
       console.error("Failed to load markets", err);
       if (requestSeq !== loadMarketsRequestSeqRef.current) return;
+      const message = getErrorMessage(err)?.toUpperCase() ?? "";
       setMarketsError(
-        lang === "RU" ? "Не удалось загрузить рынки, попробуйте позже." : "Failed to load markets."
+        message.includes("CATALOG_READ_FAILED")
+          ? lang === "RU"
+            ? "Каталог временно недоступен. Повторите попытку."
+            : "Catalog is temporarily unavailable. Please retry."
+          : lang === "RU"
+            ? "Не удалось загрузить рынки, попробуйте позже."
+            : "Failed to load markets."
       );
     } finally {
       if (requestSeq !== loadMarketsRequestSeqRef.current) return;
@@ -2636,7 +2726,7 @@ export default function HomePage({
       };
     };
 
-    if (ENABLE_UPSTASH_STREAM) {
+    if (ENABLE_MARKETS_WS || ENABLE_UPSTASH_STREAM) {
       const pendingPatches = new Map<string, MarketLivePatch>();
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
       let fallbackTriggered = false;
@@ -2683,8 +2773,6 @@ export default function HomePage({
         }
       };
 
-      const streamUrl = `/api/stream/markets?ids=${encodeURIComponent(targetIds.join(","))}`;
-      const stream = new EventSource(streamUrl);
       const currentCatalogSnapshotId =
         asNumber(catalogPageCacheRef.current.get(activeCatalogFetchKey)?.snapshotId) ??
         asNumber(marketsRef.current[0]?.snapshotId) ??
@@ -2702,39 +2790,132 @@ export default function HomePage({
         if (reconciliationTriggered) return;
         reconciliationTriggered = true;
         incrementClientCounter("catalog.realtime.reconcile");
-        stream.close();
         activateSupabaseFallback();
         void loadMarkets();
       };
 
-      stream.addEventListener("live", (evt) => {
-        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+      const handleTransportPayload = (payloadRaw: string, closeTransport: () => void) => {
         if (!payloadRaw) return;
         try {
-          const envelope = parseLiveStreamPayload(payloadRaw);
-          if (envelope.snapshotId !== null) {
-            if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+          const envelope = parseRealtimeTransportPayload(payloadRaw);
+          switch (envelope.type) {
+            case "ready":
+            case "heartbeat":
+              return;
+            case "error":
+              if (!fallbackTriggered) {
+                fallbackTriggered = true;
+                incrementClientCounter("catalog.realtime.channelRecovery");
+                activateSupabaseFallback();
+              }
+              closeTransport();
+              return;
+            case "resync_required":
+              closeTransport();
               reconcileCatalogStream();
               return;
-            }
-            streamSnapshotId = envelope.snapshotId;
-          }
-          if (envelope.seq !== null) {
-            if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
+            case "patch":
+              if (envelope.snapshotId !== null) {
+                if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+                  closeTransport();
+                  reconcileCatalogStream();
+                  return;
+                }
+                streamSnapshotId = envelope.snapshotId;
+              }
+              if (envelope.seq !== null) {
+                if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
+                  return;
+                }
+                if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
+                  closeTransport();
+                  reconcileCatalogStream();
+                  return;
+                }
+                lastStreamSeq = envelope.seq;
+              }
+              for (const patch of envelope.patches) {
+                queuePatch(patch.marketId, patch.patch);
+              }
               return;
-            }
-            if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
-              reconcileCatalogStream();
-              return;
-            }
-            lastStreamSeq = envelope.seq;
-          }
-          for (const patch of envelope.patches) {
-            queuePatch(patch.marketId, patch.patch);
           }
         } catch {
           // Ignore malformed stream payloads and keep listening.
         }
+      };
+
+      const cleanupTransport = (closeTransport: () => void) => {
+        if (flushTimer) clearTimeout(flushTimer);
+        pendingPatches.clear();
+        closeTransport();
+        if (stopSupabaseFallback) {
+          stopSupabaseFallback();
+          stopSupabaseFallback = null;
+        }
+      };
+
+      const wsUrl = ENABLE_MARKETS_WS ? resolveMarketsWsUrl() : null;
+      if (wsUrl) {
+        const socket = new window.WebSocket(wsUrl);
+        let pingTimer: ReturnType<typeof setInterval> | null = null;
+        const closeSocket = () => {
+          if (pingTimer) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+          }
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+          }
+        };
+
+        socket.addEventListener("open", () => {
+          socket.send(
+            JSON.stringify({
+              type: "subscribe",
+              pageScope: catalogPageCacheRef.current.get(activeCatalogFetchKey)?.pageScope ?? activeCatalogFetchKey,
+              marketIds: targetIds,
+              lastSnapshotId: currentCatalogSnapshotId,
+              lastSeq: lastStreamSeq,
+            })
+          );
+          pingTimer = setInterval(() => {
+            if (socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+          }, MARKETS_WS_PING_INTERVAL_MS);
+        });
+
+        socket.addEventListener("message", (evt) => {
+          handleTransportPayload(typeof evt.data === "string" ? evt.data : "", closeSocket);
+        });
+
+        socket.addEventListener("error", () => {
+          if (!fallbackTriggered) {
+            fallbackTriggered = true;
+            incrementClientCounter("catalog.realtime.channelRecovery");
+            activateSupabaseFallback();
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          if (!fallbackTriggered && !reconciliationTriggered) {
+            fallbackTriggered = true;
+            incrementClientCounter("catalog.realtime.channelRecovery");
+            activateSupabaseFallback();
+          }
+        });
+
+        return () => cleanupTransport(closeSocket);
+      }
+
+      const streamUrl = `/api/stream/markets?ids=${encodeURIComponent(targetIds.join(","))}`;
+      const stream = new EventSource(streamUrl);
+      const closeStream = () => {
+        stream.close();
+      };
+
+      stream.addEventListener("live", (evt) => {
+        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+        handleTransportPayload(payloadRaw, closeStream);
       });
 
       stream.onerror = () => {
@@ -2745,15 +2926,7 @@ export default function HomePage({
         }
       };
 
-      return () => {
-        if (flushTimer) clearTimeout(flushTimer);
-        pendingPatches.clear();
-        stream.close();
-        if (stopSupabaseFallback) {
-          stopSupabaseFallback();
-          stopSupabaseFallback = null;
-        }
-      };
+      return () => cleanupTransport(closeStream);
     }
     return startSupabaseVisibleSubscription();
   }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, markets, selectedMarketId, visibleCatalogMarketIds]);
@@ -3353,10 +3526,9 @@ export default function HomePage({
       };
     };
 
-    if (ENABLE_UPSTASH_STREAM) {
+    if (ENABLE_MARKETS_WS || ENABLE_UPSTASH_STREAM) {
       let fallbackActive = false;
       let stopSupabaseFallback: (() => void) | null = null;
-      const stream = new EventSource(`/api/stream/markets?ids=${encodeURIComponent(streamMarketId)}`);
       let streamSnapshotId = asNumber(selectedMarket?.snapshotId) ?? null;
       let lastStreamSeq: number | null = null;
 
@@ -3367,48 +3539,119 @@ export default function HomePage({
         stopSupabaseFallback = startSelectedMarketFallbackPoll();
       };
 
-      stream.addEventListener("live", (evt) => {
-        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+      const cleanupTransport = (closeTransport: () => void) => {
+        if (flushTimer) clearTimeout(flushTimer);
+        pendingPatches.clear();
+        closeTransport();
+        if (stopSupabaseFallback) stopSupabaseFallback();
+      };
+
+      const handleTransportPayload = (payloadRaw: string, closeTransport: () => void) => {
         if (!payloadRaw) return;
         try {
-          const envelope = parseLiveStreamPayload(payloadRaw);
-          if (envelope.snapshotId !== null) {
-            if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+          const envelope = parseRealtimeTransportPayload(payloadRaw);
+          switch (envelope.type) {
+            case "ready":
+            case "heartbeat":
+              return;
+            case "error":
               activateSelectedMarketFallback();
-              stream.close();
+              closeTransport();
               return;
-            }
-            streamSnapshotId = envelope.snapshotId;
-          }
-          if (envelope.seq !== null) {
-            if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
-              return;
-            }
-            if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
+            case "resync_required":
               activateSelectedMarketFallback();
-              stream.close();
+              closeTransport();
               return;
-            }
-            lastStreamSeq = envelope.seq;
-          }
-          for (const patch of envelope.patches) {
-            queuePatch(patch.marketId, patch.patch);
+            case "patch":
+              if (envelope.snapshotId !== null) {
+                if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+                  activateSelectedMarketFallback();
+                  closeTransport();
+                  return;
+                }
+                streamSnapshotId = envelope.snapshotId;
+              }
+              if (envelope.seq !== null) {
+                if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
+                  return;
+                }
+                if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
+                  activateSelectedMarketFallback();
+                  closeTransport();
+                  return;
+                }
+                lastStreamSeq = envelope.seq;
+              }
+              for (const patch of envelope.patches) {
+                queuePatch(patch.marketId, patch.patch);
+              }
+              return;
           }
         } catch {
           // Ignore malformed stream payloads and keep listening.
         }
+      };
+
+      const wsUrl = ENABLE_MARKETS_WS ? resolveMarketsWsUrl() : null;
+      if (wsUrl) {
+        const socket = new window.WebSocket(wsUrl);
+        let pingTimer: ReturnType<typeof setInterval> | null = null;
+        const closeSocket = () => {
+          if (pingTimer) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+          }
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+          }
+        };
+
+        socket.addEventListener("open", () => {
+          socket.send(
+            JSON.stringify({
+              type: "subscribe",
+              pageScope: null,
+              marketIds: [streamMarketId],
+              lastSnapshotId: streamSnapshotId,
+              lastSeq: lastStreamSeq,
+            })
+          );
+          pingTimer = setInterval(() => {
+            if (socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+          }, MARKETS_WS_PING_INTERVAL_MS);
+        });
+
+        socket.addEventListener("message", (evt) => {
+          handleTransportPayload(typeof evt.data === "string" ? evt.data : "", closeSocket);
+        });
+
+        socket.addEventListener("error", () => {
+          activateSelectedMarketFallback();
+        });
+
+        socket.addEventListener("close", () => {
+          activateSelectedMarketFallback();
+        });
+
+        return () => cleanupTransport(closeSocket);
+      }
+
+      const stream = new EventSource(`/api/stream/markets?ids=${encodeURIComponent(streamMarketId)}`);
+      const closeStream = () => {
+        stream.close();
+      };
+
+      stream.addEventListener("live", (evt) => {
+        const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
+        handleTransportPayload(payloadRaw, closeStream);
       });
 
       stream.onerror = () => {
         activateSelectedMarketFallback();
       };
 
-      return () => {
-        if (flushTimer) clearTimeout(flushTimer);
-        pendingPatches.clear();
-        stream.close();
-        if (stopSupabaseFallback) stopSupabaseFallback();
-      };
+      return () => cleanupTransport(closeStream);
     }
 
     const stopSupabaseFallback = startSelectedMarketFallbackPoll();
@@ -4553,33 +4796,7 @@ export default function HomePage({
                       </div>
                     </div>
 
-                    {/* Providers */}
                     <div className="px-4 pt-3 border-b border-zinc-900">
-                      <div className="mb-3 flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
-                        {([
-                          { id: "main" as const, labelRu: "Основные", labelEn: "Main" },
-                          { id: "fast" as const, labelRu: "Быстрые", labelEn: "Fast" },
-                        ]).map((bucketOption) => {
-                          const selected = catalogBucket === bucketOption.id;
-                          return (
-                            <button
-                              key={bucketOption.id}
-                              type="button"
-                              onClick={() => {
-                                setCatalogPage(1);
-                                setCatalogBucket(bucketOption.id);
-                              }}
-                              className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
-                                selected
-                                  ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
-                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
-                              }`}
-                            >
-                              {lang === "RU" ? bucketOption.labelRu : bucketOption.labelEn}
-                            </button>
-                          );
-                        })}
-                      </div>
                       <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
                         {providerOptions.map((provider) => {
                           const selected = activeProviderFilter === provider.id;

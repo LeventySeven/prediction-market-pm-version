@@ -15,6 +15,7 @@ import {
   type UpstashOrderbookLevel,
   buildMarketCandlesCacheKey,
   buildMarketDetailCacheKey,
+  buildLatestMarketListCacheKey,
   buildMarketListCacheKey,
   readUpstashCache,
   readUpstashMarketOrderbook,
@@ -120,6 +121,37 @@ type CompareGroupAggregate = {
   category: string | null;
   normalizedClosesAt: string | null;
 };
+
+type CatalogReadErrorContext = {
+  stage:
+    | "market_catalog"
+    | "market_outcomes"
+    | "market_live"
+    | "market_compare_groups"
+    | "market_compare_members";
+  providers: VenueProvider[];
+  onlyOpen: boolean;
+  sortBy: "newest" | "volume";
+  catalogBucket: "all" | "main" | "fast";
+  providerMarketId?: string;
+};
+
+export class CatalogReadError extends Error {
+  readonly code = "CATALOG_READ_FAILED";
+  readonly context: CatalogReadErrorContext;
+
+  constructor(context: CatalogReadErrorContext, message?: string, cause?: unknown) {
+    super(message ?? "CATALOG_READ_FAILED");
+    this.name = "CatalogReadError";
+    this.context = context;
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+export const isCatalogReadError = (value: unknown): value is CatalogReadError =>
+  value instanceof CatalogReadError || (value instanceof Error && value.name === "CatalogReadError");
 
 const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
@@ -420,7 +452,8 @@ const buildCatalogPageScope = (params: {
 
 const fetchCompareGroupAggregates = async (
   supabaseService: SupabaseServiceClient,
-  compareGroupIds: string[]
+  compareGroupIds: string[],
+  context: Omit<CatalogReadErrorContext, "stage">
 ): Promise<Map<string, CompareGroupAggregate>> => {
   const out = new Map<string, CompareGroupAggregate>();
   const ids = Array.from(new Set(compareGroupIds.map((id) => id.trim()).filter(Boolean)));
@@ -436,6 +469,21 @@ const fetchCompareGroupAggregates = async (
       .select("id, provider, compare_group_id, total_volume_usd")
       .in("compare_group_id", ids),
   ]);
+
+  if (groupsRes.error) {
+    throw new CatalogReadError(
+      { ...context, stage: "market_compare_groups" },
+      String(groupsRes.error.message ?? "CATALOG_READ_FAILED"),
+      groupsRes.error
+    );
+  }
+  if (marketsRes.error) {
+    throw new CatalogReadError(
+      { ...context, stage: "market_compare_members" },
+      String(marketsRes.error.message ?? "CATALOG_READ_FAILED"),
+      marketsRes.error
+    );
+  }
 
   for (const row of groupsRes.data ?? []) {
     const id = String((row as Record<string, unknown>).id ?? "").trim();
@@ -665,7 +713,7 @@ const fetchLimitlessOrderbookFromProvider = async (
   return null;
 };
 
-const resolveMarketCatalogRefId = async (
+export const resolveMarketCatalogRefId = async (
   supabaseService: SupabaseServiceClient,
   provider: VenueProvider,
   providerMarketId: string
@@ -778,8 +826,8 @@ const mapCanonicalRows = (
       liveSeq: toFiniteNumber(live?.source_seq),
       compareGroupId,
       compareGroup,
-      isFastMarket: Boolean(row.is_fast_market),
-      catalogBucket: row.catalog_bucket === "fast" ? "fast" : "main",
+      isFastMarket: true,
+      catalogBucket: "main",
       titleRu: row.title,
       titleEn: row.title,
       description: row.description,
@@ -843,6 +891,13 @@ const fetchCanonicalMarketRows = async (
     providerMarketId?: string;
   }
 ): Promise<MarketOutput[]> => {
+  const errorContextBase = {
+    providers: params.providers,
+    onlyOpen: params.onlyOpen,
+    sortBy: params.sortBy,
+    catalogBucket: params.catalogBucket,
+    providerMarketId: params.providerMarketId,
+  } satisfies Omit<CatalogReadErrorContext, "stage">;
   let query = (supabaseService as any)
     .from("market_catalog")
     .select(
@@ -854,10 +909,6 @@ const fetchCanonicalMarketRows = async (
   if (params.onlyOpen) {
     query = query.eq("state", "open");
   }
-  if (params.catalogBucket !== "all") {
-    query = query.eq("catalog_bucket", params.catalogBucket);
-  }
-
   if (params.providerMarketId) {
     query = query.eq("provider_market_id", params.providerMarketId);
   }
@@ -868,7 +919,14 @@ const fetchCanonicalMarketRows = async (
       : query.order("market_created_at", { ascending: false }).order("total_volume_usd", { ascending: false });
 
   const { data: marketRows, error: marketError } = await query;
-  if (marketError || !Array.isArray(marketRows) || marketRows.length === 0) return [];
+  if (marketError) {
+    throw new CatalogReadError(
+      { ...errorContextBase, stage: "market_catalog" },
+      String(marketError.message ?? "CATALOG_READ_FAILED"),
+      marketError
+    );
+  }
+  if (!Array.isArray(marketRows) || marketRows.length === 0) return [];
 
   const marketIds = marketRows
     .map((row) => String((row as Record<string, unknown>).id ?? "").trim())
@@ -884,6 +942,20 @@ const fetchCanonicalMarketRows = async (
       .select("market_id, best_bid, best_ask, mid, last_trade_price, last_trade_size, rolling_24h_volume, open_interest, source_seq, source_ts")
       .in("market_id", marketIds),
   ]);
+  if (outcomesRes.error) {
+    throw new CatalogReadError(
+      { ...errorContextBase, stage: "market_outcomes" },
+      String(outcomesRes.error.message ?? "CATALOG_READ_FAILED"),
+      outcomesRes.error
+    );
+  }
+  if (liveRes.error) {
+    throw new CatalogReadError(
+      { ...errorContextBase, stage: "market_live" },
+      String(liveRes.error.message ?? "CATALOG_READ_FAILED"),
+      liveRes.error
+    );
+  }
 
   const outcomesByMarketId = new Map<string, CanonicalOutcomeRow[]>();
   for (const row of (outcomesRes.data ?? []) as CanonicalOutcomeRow[]) {
@@ -908,7 +980,8 @@ const fetchCanonicalMarketRows = async (
     supabaseService,
     marketRows
       .map((row) => String((row as Record<string, unknown>).compare_group_id ?? "").trim())
-      .filter(Boolean)
+      .filter(Boolean),
+    errorContextBase
   );
 
   return mapCanonicalRows(
@@ -919,6 +992,25 @@ const fetchCanonicalMarketRows = async (
     params.snapshotId
   );
 };
+
+export const listCanonicalProviderMarkets = async (
+  supabaseService: SupabaseServiceClient,
+  params: {
+    provider: VenueProvider;
+    onlyOpen: boolean;
+    limit: number;
+    providerMarketId?: string;
+  }
+): Promise<MarketOutput[]> =>
+  fetchCanonicalMarketRows(supabaseService, {
+    providers: [params.provider],
+    onlyOpen: params.onlyOpen,
+    candidateLimit: Math.max(1, params.limit),
+    sortBy: "newest",
+    catalogBucket: "all",
+    snapshotId: await readUpstashSnapshotCursor("global"),
+    providerMarketId: params.providerMarketId,
+  });
 
 const candleTs = (row: PriceCandleOutput): number => Date.parse(String(row.bucket));
 
@@ -1074,7 +1166,7 @@ export const listCanonicalMarkets = async (
   const page = Math.max(1, Number(params.page ?? 1));
   const pageSize = Math.max(1, Math.min(101, Number(params.pageSize ?? 100)));
   const sortBy: "newest" | "volume" = params.sortBy ?? "newest";
-  const catalogBucket = params.catalogBucket ?? "main";
+  const catalogBucket: "main" = "main";
   const offset = (page - 1) * pageSize;
   const candidateLimit = Math.max(pageSize * 2, offset + pageSize * 2);
   const selectedProviders = parseProviderSelection({
@@ -1089,6 +1181,14 @@ export const listCanonicalMarkets = async (
     onlyOpen,
     catalogBucket,
   });
+  const latestListCacheKey = buildLatestMarketListCacheKey({
+    onlyOpen,
+    page,
+    pageSize,
+    sortBy,
+    catalogBucket,
+    providers: selectedProviders,
+  });
   const listCacheKey = buildMarketListCacheKey({
     onlyOpen,
     page,
@@ -1098,25 +1198,60 @@ export const listCanonicalMarkets = async (
     catalogBucket,
     providers: selectedProviders,
   });
+  const latestCached = await readUpstashCache(latestListCacheKey, marketPageOutput);
+  if (
+    latestCached &&
+    (snapshotId === null || latestCached.snapshotId === snapshotId)
+  ) {
+    return {
+      ...latestCached,
+      pageScope: latestCached.pageScope || pageScope,
+      source: "redis",
+      stale: false,
+    };
+  }
   const cached = await readUpstashCache(listCacheKey, marketPageOutput);
-  if (cached) return cached;
+  if (cached) {
+    return {
+      ...cached,
+      pageScope: cached.pageScope || pageScope,
+      source: "redis",
+      stale: false,
+    };
+  }
 
-  const rows = await fetchCanonicalMarketRows(supabaseService, {
-    providers: selectedProviders,
-    onlyOpen,
-    candidateLimit,
-    sortBy,
-    catalogBucket,
-    snapshotId,
-  });
+  let rows: MarketOutput[];
+  try {
+    rows = await fetchCanonicalMarketRows(supabaseService, {
+      providers: selectedProviders,
+      onlyOpen,
+      candidateLimit,
+      sortBy,
+      catalogBucket: "all",
+      snapshotId,
+    });
+  } catch (error) {
+    if (latestCached) {
+      return {
+        ...latestCached,
+        pageScope: latestCached.pageScope || pageScope,
+        source: "redis",
+        stale: true,
+      };
+    }
+    throw error;
+  }
   const sorted = sortMarketRows(rows, sortBy);
   const out: MarketPageOutput = {
     items: sorted.slice(offset, offset + pageSize),
     snapshotId,
     pageScope,
     hasMore: sorted.length > offset + pageSize,
+    source: "supabase",
+    stale: false,
   };
   void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
+  void writeUpstashCache(latestListCacheKey, out, upstashMarketListTtlSec);
   void writeUpstashSnapshotShards(pageScope, out.items, snapshotId);
   return out;
 };
@@ -1134,17 +1269,23 @@ export const getCanonicalMarket = async (params: {
     providerMarketId: ref.providerMarketId,
   });
   const cached = await readUpstashCache(detailCacheKey, marketOutput);
-  if (cached) return cached;
+  if (cached && (snapshotId === null || cached.snapshotId === snapshotId)) return cached;
 
-  const rows = await fetchCanonicalMarketRows(supabaseService, {
-    providers: [ref.provider],
-    onlyOpen: false,
-    candidateLimit: 1,
-    sortBy: "newest",
-    catalogBucket: "all",
-    snapshotId,
-    providerMarketId: ref.providerMarketId,
-  });
+  let rows: MarketOutput[];
+  try {
+    rows = await fetchCanonicalMarketRows(supabaseService, {
+      providers: [ref.provider],
+      onlyOpen: false,
+      candidateLimit: 1,
+      sortBy: "newest",
+      catalogBucket: "all",
+      snapshotId,
+      providerMarketId: ref.providerMarketId,
+    });
+  } catch (error) {
+    if (cached) return cached;
+    throw error;
+  }
   const row = rows[0]
     ? {
         ...rows[0],

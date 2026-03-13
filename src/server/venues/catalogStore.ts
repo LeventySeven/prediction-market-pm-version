@@ -117,22 +117,9 @@ const outcomeRowsEqual = (existing: ExistingOutcomeRow, next: OutcomeRowPayload)
   Boolean(existing.is_active) === Boolean(next.is_active) &&
   stableJson(existing.provider_payload) === stableJson(next.provider_payload);
 
-const FAST_MARKET_WINDOW_MS = 15 * 60 * 1000;
-const FAST_MARKET_SERIES_RE = /\b(5|10|15)\s*(m|min|mins|minute|minutes)\b/i;
-const FAST_MARKET_SPAM_RE = /\b(up|down)\b/i;
-const FAST_MARKET_ASSET_RE = /\b(sol|solana|btc|bitcoin|eth|ethereum)\b/i;
 const YES_RE = /^(yes|up|true)\b/i;
 const NO_RE = /^(no|down|false)\b/i;
 const COMPARE_CLOSE_BUCKET_MS = 15 * 60 * 1000;
-
-const isFastMarket = (market: VenueMarket): boolean => {
-  const closesAtMs = Date.parse(String(market.closesAt ?? ""));
-  const title = String(market.title ?? "");
-  if (Number.isFinite(closesAtMs) && closesAtMs - Date.now() <= FAST_MARKET_WINDOW_MS) {
-    return true;
-  }
-  return FAST_MARKET_SERIES_RE.test(title) || (FAST_MARKET_SPAM_RE.test(title) && FAST_MARKET_ASSET_RE.test(title));
-};
 
 const normalizeCompareText = (value: string): string =>
   value
@@ -334,7 +321,6 @@ export const upsertVenueMarketsToCatalog = async (
       market.providerPayload && typeof market.providerPayload === "object" && !Array.isArray(market.providerPayload)
         ? market.providerPayload
         : {};
-    const fastMarket = isFastMarket(market);
 
     return {
       provider: market.provider,
@@ -353,8 +339,8 @@ export const upsertVenueMarketsToCatalog = async (
       market_type: market.outcomes.length > 2 ? "multi_choice" : "binary",
       resolved_outcome_title: market.resolvedOutcomeTitle,
       total_volume_usd: Math.max(0, Number.isFinite(market.volume) ? market.volume : 0),
-      is_fast_market: fastMarket,
-      catalog_bucket: fastMarket ? "fast" : "main",
+      is_fast_market: true,
+      catalog_bucket: "main",
       provider_payload: {
         ...providerPayload,
         capabilities: market.capabilities,

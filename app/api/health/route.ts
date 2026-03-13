@@ -19,6 +19,7 @@ export async function GET() {
         candleHeads: realtime.supabase.candleHeads,
       },
       coverage: realtime.supabase.coverage,
+      catalog: realtime.supabase.coverage.catalog,
       upstash: realtime.upstash,
       checkedAt: realtime.checkedAt,
     });

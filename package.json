@@ -14,6 +14,7 @@
     "lint": "next lint",
     "collector:polymarket": "bun --env-file .env scripts/collector/polymarket-collector.ts",
     "collector:limitless": "bun --env-file .env scripts/collector/limitless-collector.ts",
+    "gateway:markets-ws": "bun --env-file .env scripts/gateway/markets-ws.ts",
     "ops:reset-market-data": "bun --env-file .env scripts/supabase/reset-market-data.ts",
     "ops:reset-app-data": "bun --env-file .env scripts/supabase/reset-app-data.ts",
     "test:unit": "bun test test/unit",
@@ -67,6 +68,7 @@
     "superjson": "^2.2.1",
     "tailwind-merge": "^2.5.3",
     "viem": "^2.46.3",
+    "ws": "^8.19.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
