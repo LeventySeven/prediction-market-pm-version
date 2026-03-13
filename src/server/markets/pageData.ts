@@ -23,6 +23,7 @@ import {
 
 const CATALOG_BOOTSTRAP_PAGE_SIZE = 100;
 const INTERNAL_REQUEST_URL = "http://localhost/internal";
+const DEFAULT_CATALOG_BOOTSTRAP_SORT: "newest" | "volume" = "volume";
 let hasLoggedRouteBootstrapFallback = false;
 let hasLoggedMarketBootstrapFallback = false;
 
@@ -50,7 +51,11 @@ const resolveProviderFilter = (
   return enabledProviders.includes(providerFilter) ? providerFilter : "all";
 };
 
-const buildCatalogCacheKey = (providerFilter: ProviderFilter, page = 1, sortBy: "newest" | "volume" = "newest") =>
+const buildCatalogCacheKey = (
+  providerFilter: ProviderFilter,
+  page = 1,
+  sortBy: "newest" | "volume" = DEFAULT_CATALOG_BOOTSTRAP_SORT
+) =>
   `provider:${providerFilter}:page:${page}:sort:${sortBy}:bucket:main`;
 
 const buildCatalogBootstrapEntry = async (
@@ -63,7 +68,7 @@ const buildCatalogBootstrapEntry = async (
     onlyOpen: false,
     page: 1,
     pageSize: CATALOG_BOOTSTRAP_PAGE_SIZE + 1,
-    sortBy: "newest",
+    sortBy: DEFAULT_CATALOG_BOOTSTRAP_SORT,
     catalogBucket: "main",
     providerFilter,
     providers: selectedProviders,
@@ -71,10 +76,10 @@ const buildCatalogBootstrapEntry = async (
   const rows = result.items as MarketApiRow[];
 
   return {
-    cacheKey: buildCatalogCacheKey(providerFilter, 1, "newest"),
+    cacheKey: buildCatalogCacheKey(providerFilter, 1, DEFAULT_CATALOG_BOOTSTRAP_SORT),
     providerFilter,
     page: 1,
-    sortBy: "newest",
+    sortBy: DEFAULT_CATALOG_BOOTSTRAP_SORT,
     catalogBucket: "main",
     rows: rows.slice(0, CATALOG_BOOTSTRAP_PAGE_SIZE),
     hasMore: result.hasMore,

@@ -983,7 +983,11 @@ export const limitlessAdapter: VenueAdapter = {
     supportsPublicTrades: true,
     chainId: Number(process.env.LIMITLESS_CHAIN_ID || 8453),
   },
-  isEnabled: () => (process.env.ENABLE_LIMITLESS || "").trim().toLowerCase() === "true",
+  isEnabled: () => {
+    const raw = (process.env.ENABLE_LIMITLESS || "").trim().toLowerCase();
+    if (!raw) return true;
+    return !["0", "false", "no", "off"].includes(raw);
+  },
   listMarketsSnapshot: async (params) => {
     const onlyOpen = params?.onlyOpen ?? false;
     const limit = Math.max(1, Math.min(params?.limit ?? 300, 1000));
@@ -1044,9 +1048,18 @@ export const limitlessAdapter: VenueAdapter = {
       }
     }
 
-    const rows = await fetchMarketRows({ limit: 600, onlyOpen: false, sortBy: "newest" });
-    const mapped = rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
-    return mapped.find((m) => m.providerMarketId === clean || m.slug === clean) ?? null;
+    const snapshotPlans: Array<{ onlyOpen: boolean; sortBy: LimitlessSnapshotSort; limit: number }> = [
+      { onlyOpen: true, sortBy: "volume", limit: 1000 },
+      { onlyOpen: false, sortBy: "volume", limit: 1500 },
+      { onlyOpen: false, sortBy: "newest", limit: 1500 },
+    ];
+    for (const plan of snapshotPlans) {
+      const rows = await fetchMarketRows(plan);
+      const mapped = rows.map(mapLimitlessMarket).filter((item): item is VenueMarket => Boolean(item));
+      const direct = mapped.find((m) => m.providerMarketId === clean || m.slug === clean) ?? null;
+      if (direct) return direct;
+    }
+    return null;
   },
   getPriceHistory: async (
     market,

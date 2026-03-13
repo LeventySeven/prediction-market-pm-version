@@ -2057,21 +2057,57 @@ export const marketRouter = router({
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
+      const onlyOpen = input?.onlyOpen ?? false;
+      const page = input?.page ?? 1;
+      const pageSize = Math.max(
+        1,
+        Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
+      );
+      const sortBy = input?.sortBy ?? "newest";
+      const selectedProviders = parseProviderSelection({
+        providers: input?.providers,
+        providerFilter: input?.providerFilter,
+      });
       try {
         try {
-          return await listCanonicalMarkets({
+          const result = await listCanonicalMarkets({
             supabaseService: ctx.supabaseService,
-            onlyOpen: input?.onlyOpen ?? false,
-            page: input?.page ?? 1,
-            pageSize: Math.max(
-              1,
-              Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
-            ),
-            sortBy: input?.sortBy ?? "newest",
+            onlyOpen,
+            page,
+            pageSize,
+            sortBy,
             catalogBucket: input?.catalogBucket ?? "main",
             providers: input?.providers,
             providerFilter: input?.providerFilter,
           });
+          const isLimitlessOnly =
+            selectedProviders.length === 1 && selectedProviders[0] === "limitless";
+          if (isLimitlessOnly && result.items.length === 0) {
+            const adapter = getVenueAdapter("limitless");
+            if (adapter.isEnabled()) {
+              const fallbackLimit = Math.max(page * pageSize, 200);
+              const rows = await adapter.listMarketsSnapshot({
+                onlyOpen,
+                limit: fallbackLimit,
+                sortBy,
+              });
+              if (rows.length > 0) {
+                if (ENABLE_CATALOG_SYNC_ON_READ) {
+                  void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
+                    // best-effort sync
+                  });
+                }
+                const mapped = sortMarketRows(rows.map(mapVenueMarketToMarketOutput), sortBy);
+                const offset = (page - 1) * pageSize;
+                return {
+                  ...result,
+                  items: mapped.slice(offset, offset + pageSize),
+                  hasMore: mapped.length > offset + pageSize,
+                };
+              }
+            }
+          }
+          return result;
         } catch (error) {
           if (isCatalogReadError(error)) {
             throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.code, cause: error });

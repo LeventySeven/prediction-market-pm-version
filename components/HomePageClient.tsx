@@ -88,7 +88,9 @@ const MARKETS_WS_URL = (process.env.NEXT_PUBLIC_MARKETS_WS_URL ?? "").trim();
 const ENABLE_MARKETS_WS = MARKETS_WS_URL.length > 0;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
 const MARKETS_WS_PING_INTERVAL_MS = 15_000;
-const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v5";
+const CATALOG_WARM_CACHE_KEY = "catalog_bootstrap_v6";
+const DEFAULT_CATALOG_SORT = "VOLUME_DESC";
+const DEFAULT_CATALOG_BACKEND_SORT = "volume";
 const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
@@ -810,7 +812,7 @@ export default function HomePage({
     | "VOLUME_ASC"
     | "CATEGORY_ASC"
     | "CATEGORY_DESC";
-  const [catalogSort, setCatalogSort] = useState<CatalogSort>("CREATED_DESC");
+  const [catalogSort, setCatalogSort] = useState<CatalogSort>(DEFAULT_CATALOG_SORT);
   type CatalogStatus = "ALL" | "ONGOING" | "ENDED";
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
@@ -830,7 +832,7 @@ export default function HomePage({
       bootstrappedCatalog?.entries.find(
         (entry) =>
           entry.page === 1 &&
-          entry.sortBy === "newest" &&
+          entry.sortBy === DEFAULT_CATALOG_BACKEND_SORT &&
           entry.providerFilter === desiredProvider &&
           entry.catalogBucket === desiredBucket
       )?.hasMore
@@ -897,7 +899,7 @@ export default function HomePage({
         const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
         return (
           entry.page === 1 &&
-          entry.sortBy === "newest" &&
+          entry.sortBy === DEFAULT_CATALOG_BACKEND_SORT &&
           entry.providerFilter === desiredProvider &&
           entry.catalogBucket === desiredBucket
         );
@@ -926,7 +928,7 @@ export default function HomePage({
     const desiredProvider =
       initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation());
     const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
-    const key = `provider:${desiredProvider}:page:1:sort:newest:bucket:${desiredBucket}`;
+    const key = `provider:${desiredProvider}:page:1:sort:${DEFAULT_CATALOG_BACKEND_SORT}:bucket:${desiredBucket}`;
     const entry = bootstrap.entries.find((row) => row.cacheKey === key);
     const rows = entry ? entry.rows.map((row) => mapMarketApiToMarket(row, "EN")) : [];
     if (initialSelectedMarket) {
@@ -1090,7 +1092,7 @@ export default function HomePage({
       sort === "VOLUME_ASC" ||
       sort === "CATEGORY_ASC" ||
       sort === "CATEGORY_DESC";
-    setCatalogSort(isSort ? sort : "CREATED_DESC");
+    setCatalogSort(isSort ? sort : DEFAULT_CATALOG_SORT);
 
     const isStatus = status === "ALL" || status === "ONGOING" || status === "ENDED";
     setCatalogStatus(isStatus ? status : "ALL");
@@ -1144,7 +1146,7 @@ export default function HomePage({
     const params = new URLSearchParams();
     if (deferredSearchQuery.trim()) params.set("q", deferredSearchQuery.trim());
     if (activeCategoryId !== "all") params.set("category", activeCategoryId);
-    if (catalogSort !== "CREATED_DESC") params.set("sort", catalogSort);
+    if (catalogSort !== DEFAULT_CATALOG_SORT) params.set("sort", catalogSort);
     if (catalogStatus !== "ALL") params.set("status", catalogStatus);
     if (catalogTimeFilter !== "ANY") params.set("time", catalogTimeFilter);
     if (catalogPage > 1) params.set("page", String(catalogPage));
@@ -2090,7 +2092,7 @@ export default function HomePage({
     bootstrapRef.current?.entries.find(
       (entry) =>
         entry.page === 1 &&
-        entry.sortBy === "newest" &&
+        entry.sortBy === DEFAULT_CATALOG_BACKEND_SORT &&
         entry.providerFilter === activeProviderFilter &&
         entry.catalogBucket === catalogBucket
     )?.cacheKey ?? null;
@@ -2131,7 +2133,7 @@ export default function HomePage({
         const cacheKey = buildCatalogFetchKey({
           providerFilter,
           page: 1,
-          sortBy: "newest",
+          sortBy: DEFAULT_CATALOG_BACKEND_SORT,
           catalogBucket: bucket,
         });
         const cached = catalogPageCacheRef.current.get(cacheKey);
@@ -2140,7 +2142,7 @@ export default function HomePage({
           cacheKey,
           providerFilter,
           page: 1,
-          sortBy: "newest",
+          sortBy: DEFAULT_CATALOG_BACKEND_SORT,
           catalogBucket: bucket,
           rows: cached.rows,
           hasMore: cached.hasMore,
@@ -2160,7 +2162,10 @@ export default function HomePage({
     });
   }, [buildCatalogFetchKey, enabledProviders]);
   const activeCatalogFetchKey = useMemo(() => {
-    const backendSortBy = catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC" ? "volume" : "newest";
+    const backendSortBy =
+      catalogSort === "VOLUME_ASC" || catalogSort === "VOLUME_DESC"
+        ? "volume"
+        : "newest";
     return buildCatalogFetchKey({
       page: catalogPage,
       providerFilter: activeProviderFilter,
@@ -2230,7 +2235,7 @@ export default function HomePage({
         updatedAt: Date.now(),
       });
       markCatalogKeyLoaded(cacheKey);
-      if (params.page === 1 && params.sortBy === "newest") {
+      if (params.page === 1 && params.sortBy === DEFAULT_CATALOG_BACKEND_SORT) {
         writeWarmCatalogCache();
       }
       return {
@@ -2285,10 +2290,22 @@ export default function HomePage({
     }
 
     try {
+      const previousRowCount = cachedAggregate.rows.length;
       await fetchCatalogPage(fetchParams);
       if (requestSeq !== loadMarketsRequestSeqRef.current) return;
       const nextAggregate = getAggregatedCatalogResult(fetchParams);
-      setHasNextCatalogPage(nextAggregate.hasMore);
+      let nextHasMore = nextAggregate.hasMore;
+      if (fetchParams.page > 1 && nextAggregate.rows.length <= previousRowCount) {
+        nextHasMore = false;
+        const currentPageEntry = catalogPageCacheRef.current.get(cacheKey);
+        if (currentPageEntry) {
+          catalogPageCacheRef.current.set(cacheKey, {
+            ...currentPageEntry,
+            hasMore: false,
+          });
+        }
+      }
+      setHasNextCatalogPage(nextHasMore);
       const mapped: Market[] = nextAggregate.rows.map((m) => mapMarketApiToMarket(m, lang));
       setMarkets(mapped);
       displayedCatalogCacheKeyRef.current = cacheKey;
@@ -5217,7 +5234,7 @@ export default function HomePage({
               onClick={() => {
                 setCatalogStatus("ALL");
                 setCatalogTimeFilter("ANY");
-                setCatalogSort("CREATED_DESC");
+                setCatalogSort(DEFAULT_CATALOG_SORT);
                 setCatalogPage(1);
               }}
               className="mt-3 w-full h-10 rounded-full border border-zinc-800 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-200 text-sm font-semibold transition-colors"

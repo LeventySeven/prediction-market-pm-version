@@ -37,11 +37,14 @@ import {
   type MarketChartRange,
 } from "../../lib/chartRanges";
 import {
+  getVenueAdapter,
   listEnabledProviders as listEnabledVenueProviders,
 } from "../venues/registry";
+import { upsertVenueMarketsToCatalog } from "../venues/catalogStore";
 import {
   parseVenueMarketRef,
   venueToCanonicalId,
+  type VenueMarket,
   type VenueProvider,
 } from "../venues/types";
 
@@ -155,6 +158,9 @@ export const isCatalogReadError = (value: unknown): value is CatalogReadError =>
 
 const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
+const ENABLE_CATALOG_SYNC_ON_READ = !["0", "false", "no", "off"].includes(
+  (process.env.ENABLE_CATALOG_SYNC_ON_READ || "true").trim().toLowerCase()
+);
 const CANONICAL_MARKET_SELECT_V2 =
   "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, compare_group_id, provider_payload, source_updated_at, last_synced_at";
 const CANONICAL_MARKET_SELECT_LEGACY =
@@ -472,6 +478,345 @@ const buildCatalogPageScope = (params: {
     `open:${params.onlyOpen ? 1 : 0}`,
     `bucket:${params.catalogBucket}`,
   ].join(":");
+
+const normalizeCategoryId = (value: string | null | undefined): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 96);
+  if (!normalized) return null;
+  return normalized === "all" ? "all_markets" : normalized;
+};
+
+const mapLiveVenueMarketToOutput = (
+  market: VenueMarket,
+  snapshotId: number | null
+): MarketOutput => {
+  const marketType = market.outcomes.length > 2 ? "multi_choice" : "binary";
+  const sortedOutcomes = [...market.outcomes].sort((a, b) => a.sortOrder - b.sortOrder);
+  const { yes, no } = pickBinaryOutcomes(sortedOutcomes);
+  const fallbackYesPrice =
+    typeof yes?.price === "number" && Number.isFinite(yes.price)
+      ? yes.price
+      : typeof sortedOutcomes[0]?.price === "number" && Number.isFinite(sortedOutcomes[0]?.price)
+        ? sortedOutcomes[0]!.price
+        : 0.5;
+  const priceYes = resolveReliableBinaryPrice({
+    fallbackPrice: fallbackYesPrice,
+  });
+  const priceNo =
+    typeof no?.price === "number" && Number.isFinite(no.price)
+      ? clamp01(no.price)
+      : clamp01(1 - priceYes);
+  const resolvedMatch = market.resolvedOutcomeTitle
+    ? sortedOutcomes.find(
+        (outcome) => outcome.title.trim().toLowerCase() === market.resolvedOutcomeTitle?.trim().toLowerCase()
+      ) ?? null
+    : null;
+
+  return {
+    id: venueToCanonicalId(market.provider, market.providerMarketId),
+    provider: market.provider,
+    providerMarketId: market.providerMarketId,
+    canonicalMarketId: venueToCanonicalId(market.provider, market.providerMarketId),
+    marketRefId: null,
+    snapshotId,
+    liveSeq: null,
+    compareGroupId: null,
+    compareGroup: null,
+    isFastMarket: true,
+    catalogBucket: "main",
+    titleRu: market.title,
+    titleEn: market.title,
+    description: market.description,
+    source: market.sourceUrl,
+    imageUrl: market.imageUrl ?? "",
+    state: market.state,
+    createdAt: market.createdAt,
+    closesAt: market.closesAt,
+    expiresAt: market.expiresAt,
+    marketType,
+    resolvedOutcomeId: resolvedMatch?.id ?? null,
+    outcomes: sortedOutcomes.map((outcome, idx) => ({
+      id: outcome.id,
+      marketId: venueToCanonicalId(market.provider, market.providerMarketId),
+      providerOutcomeId: outcome.providerOutcomeId ?? outcome.id,
+      providerTokenId: outcome.providerTokenId,
+      tokenId: outcome.providerTokenId,
+      slug: outcome.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
+      title: outcome.title,
+      iconUrl: null,
+      chartColor: null,
+      sortOrder: Number.isFinite(outcome.sortOrder) ? outcome.sortOrder : idx,
+      isActive: outcome.isActive,
+      probability: clamp01(outcome.probability),
+      price: clamp01(outcome.price),
+    })),
+    outcome:
+      market.state === "resolved"
+        ? yes && resolvedMatch?.id === yes.id
+          ? "YES"
+          : no && resolvedMatch?.id === no.id
+            ? "NO"
+            : null
+        : null,
+    createdBy: null,
+    categoryId: normalizeCategoryId(market.category),
+    categoryLabelRu: market.category,
+    categoryLabelEn: market.category,
+    settlementAsset: "USD",
+    feeBps: null,
+    liquidityB: null,
+    priceYes,
+    priceNo,
+    volume: Math.max(0, market.volume),
+    totalVolumeUsd: Math.max(0, market.volume),
+    chance: roundPercentValue(priceYes),
+    creatorName: null,
+    creatorAvatarUrl: null,
+    bestBid: null,
+    bestAsk: null,
+    mid: null,
+    lastTradePrice: null,
+    lastTradeSize: null,
+    rolling24hVolume: null,
+    openInterest: null,
+    liveUpdatedAt: null,
+    capabilities: market.capabilities,
+    freshness: {
+      sourceTs: null,
+      stale: false,
+    },
+    orderbookFreshness: null,
+    tradeMeta: market.tradeMeta ?? null,
+  };
+};
+
+const hasProviderCoverage = (
+  items: MarketOutput[],
+  providers: VenueProvider[]
+): boolean => {
+  if (providers.length === 0) return true;
+  const present = new Set(items.map((item) => item.provider).filter(Boolean) as VenueProvider[]);
+  return providers.every((provider) => present.has(provider));
+};
+
+const isSuspiciousZeroVolumePage = (page: MarketPageOutput | null | undefined): boolean => {
+  if (!page || page.items.length < 10) return false;
+  return page.items.every(
+    (item) =>
+      Math.max(
+        toFiniteNumber(item.totalVolumeUsd) ?? 0,
+        toFiniteNumber(item.volume) ?? 0,
+        toFiniteNumber(item.rolling24hVolume ?? null) ?? 0
+      ) <= 0
+  );
+};
+
+const mergeHotProviderFallbacks = async (params: {
+  supabaseService: SupabaseServiceClient;
+  basePage: MarketPageOutput;
+  selectedProviders: VenueProvider[];
+  onlyOpen: boolean;
+  page: number;
+  pageSize: number;
+  sortBy: "newest" | "volume";
+  snapshotId: number | null;
+}): Promise<MarketPageOutput> => {
+  const missingProviders = params.selectedProviders.filter(
+    (provider) => !params.basePage.items.some((item) => item.provider === provider)
+  );
+  if (missingProviders.length === 0) return params.basePage;
+  console.warn("[markets.readService] merge fallback start", {
+    selectedProviders: params.selectedProviders,
+    missingProviders,
+    baseCount: params.basePage.items.length,
+  });
+
+  const offset = (params.page - 1) * params.pageSize;
+  const mergedById = new Map<string, MarketOutput>(
+    params.basePage.items.map((item) => [item.id, item])
+  );
+
+  for (const provider of missingProviders) {
+    const adapter = getVenueAdapter(provider);
+    if (!adapter.isEnabled()) continue;
+
+    try {
+      const fallbackRows = await adapter.listMarketsSnapshot({
+        onlyOpen: params.onlyOpen,
+        limit: Math.max(params.page * params.pageSize, 200),
+        sortBy: params.sortBy,
+      });
+      console.warn("[markets.readService] merge fallback rows", provider, fallbackRows.length);
+      if (fallbackRows.length === 0) continue;
+      if (ENABLE_CATALOG_SYNC_ON_READ) {
+        void upsertVenueMarketsToCatalog(params.supabaseService, fallbackRows).catch(() => {
+          // Best-effort repair of canonical coverage.
+        });
+      }
+      for (const row of fallbackRows) {
+        const output = mapLiveVenueMarketToOutput(row, params.snapshotId);
+        if (!mergedById.has(output.id)) {
+          mergedById.set(output.id, output);
+        }
+      }
+    } catch (error) {
+      console.warn("[markets.readService] provider page fallback failed", provider, error);
+    }
+  }
+
+  const merged = sortMarketRows(Array.from(mergedById.values()), params.sortBy);
+  console.warn("[markets.readService] merge fallback merged", merged.length);
+  const arranged =
+    params.selectedProviders.length > 1
+      ? (() => {
+          const buckets = new Map<VenueProvider, MarketOutput[]>();
+          for (const provider of params.selectedProviders) {
+            buckets.set(
+              provider,
+              merged.filter((item) => item.provider === provider)
+            );
+          }
+          const seen = new Set<string>();
+          const interleaved: MarketOutput[] = [];
+          let added = true;
+          while (added) {
+            added = false;
+            for (const provider of params.selectedProviders) {
+              const bucket = buckets.get(provider);
+              if (!bucket || bucket.length === 0) continue;
+              const next = bucket.shift();
+              if (!next || seen.has(next.id)) continue;
+              seen.add(next.id);
+              interleaved.push(next);
+              added = true;
+            }
+          }
+          for (const item of merged) {
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+            interleaved.push(item);
+          }
+          return interleaved;
+        })()
+      : merged;
+  return {
+    ...params.basePage,
+    items: arranged.slice(offset, offset + params.pageSize),
+    hasMore: arranged.length > offset + params.pageSize,
+  };
+};
+
+const buildCandlesFromPriceHistory = (
+  points: Array<{ ts: number; price: number }>,
+  interval: CandleInterval
+): PriceCandleOutput[] => {
+  const resolutionMs = CANDLE_RESOLUTION_MS[interval];
+  const byBucket = new Map<number, PriceCandleOutput>();
+  const sorted = [...points]
+    .filter(
+      (point) =>
+        Number.isFinite(point.ts) &&
+        Number.isFinite(point.price)
+    )
+    .sort((a, b) => a.ts - b.ts);
+
+  for (const point of sorted) {
+    const bucketStart = Math.floor(point.ts / resolutionMs) * resolutionMs;
+    const price = clamp01(point.price);
+    const existing = byBucket.get(bucketStart);
+    if (!existing) {
+      byBucket.set(bucketStart, {
+        bucket: new Date(bucketStart).toISOString(),
+        outcomeId: null,
+        outcomeTitle: null,
+        outcomeColor: null,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: 0,
+        tradesCount: 0,
+      });
+      continue;
+    }
+
+    byBucket.set(bucketStart, {
+      ...existing,
+      high: Math.max(existing.high, price),
+      low: Math.min(existing.low, price),
+      close: price,
+    });
+  }
+
+  return Array.from(byBucket.values()).sort((a, b) => candleTs(a) - candleTs(b));
+};
+
+const buildFlatBaselineCandles = (
+  price: number,
+  limit: number,
+  interval: CandleInterval
+): PriceCandleOutput[] => {
+  const resolutionMs = CANDLE_RESOLUTION_MS[interval];
+  const pointCount = Math.max(interval === "1m" ? 60 : 24, Math.min(limit, interval === "1m" ? 240 : 120));
+  const safePrice = clamp01(price);
+  const alignedNow = Math.floor(Date.now() / resolutionMs) * resolutionMs;
+  const firstTs = alignedNow - (pointCount - 1) * resolutionMs;
+
+  return Array.from({ length: pointCount }, (_, index) => {
+    const bucketStart = firstTs + index * resolutionMs;
+    return {
+      bucket: new Date(bucketStart).toISOString(),
+      outcomeId: null,
+      outcomeTitle: null,
+      outcomeColor: null,
+      open: safePrice,
+      high: safePrice,
+      low: safePrice,
+      close: safePrice,
+      volume: 0,
+      tradesCount: 0,
+    } satisfies PriceCandleOutput;
+  });
+};
+
+const deriveBaselinePriceFromCanonicalMarket = (market: MarketOutput | null): number => {
+  if (!market) return 0.5;
+  if (typeof market.priceYes === "number" && Number.isFinite(market.priceYes)) {
+    return clamp01(market.priceYes);
+  }
+  const outcomes = Array.isArray(market.outcomes) ? market.outcomes : [];
+  const { yes } = pickBinaryOutcomes(outcomes);
+  if (typeof yes?.price === "number" && Number.isFinite(yes.price)) {
+    return clamp01(yes.price);
+  }
+  if (typeof market.lastTradePrice === "number" && Number.isFinite(market.lastTradePrice)) {
+    return clamp01(market.lastTradePrice);
+  }
+  if (typeof market.mid === "number" && Number.isFinite(market.mid)) {
+    return clamp01(market.mid);
+  }
+  return 0.5;
+};
+
+const deriveBaselinePriceFromVenueMarket = (market: VenueMarket | null): number => {
+  if (!market) return 0.5;
+  const { yes } = pickBinaryOutcomes(market.outcomes);
+  if (typeof yes?.price === "number" && Number.isFinite(yes.price)) {
+    return clamp01(yes.price);
+  }
+  const firstOutcome = market.outcomes.find((outcome) => Number.isFinite(outcome.price));
+  if (firstOutcome) {
+    return clamp01(firstOutcome.price);
+  }
+  return 0.5;
+};
 
 const fetchCompareGroupAggregates = async (
   supabaseService: SupabaseServiceClient,
@@ -798,10 +1143,10 @@ const mapCanonicalRows = (
 
     const { yes, no } = pickBinaryOutcomes(outcomes);
     const live = liveByMarketId.get(marketRefId);
-    const totalVolumeUsd =
-      toFiniteNumber(row.total_volume_usd) ??
-      extractTotalVolumeFromPayload(payload) ??
-      0;
+    const totalVolumeUsd = Math.max(
+      toFiniteNumber(row.total_volume_usd) ?? 0,
+      extractTotalVolumeFromPayload(payload) ?? 0
+    );
     const fallbackYesPrice = yes ? yes.price : 0.5;
     const priceYes = resolveReliableBinaryPrice({
       mid: toFiniteNumber(live?.mid),
@@ -1226,23 +1571,47 @@ export const listCanonicalMarkets = async (
   const latestCached = await readUpstashCache(latestListCacheKey, marketPageOutput);
   if (
     latestCached &&
-    (snapshotId === null || latestCached.snapshotId === snapshotId)
+    (snapshotId === null || latestCached.snapshotId === snapshotId) &&
+    !isSuspiciousZeroVolumePage(latestCached) &&
+    hasProviderCoverage(latestCached.items, selectedProviders)
   ) {
-    return {
-      ...latestCached,
-      pageScope: latestCached.pageScope || pageScope,
-      source: "redis",
-      stale: false,
-    };
+    return await mergeHotProviderFallbacks({
+      supabaseService,
+      basePage: {
+        ...latestCached,
+        pageScope: latestCached.pageScope || pageScope,
+        source: "redis",
+        stale: false,
+      },
+      selectedProviders,
+      onlyOpen,
+      page,
+      pageSize,
+      sortBy,
+      snapshotId,
+    });
   }
   const cached = await readUpstashCache(listCacheKey, marketPageOutput);
-  if (cached) {
-    return {
-      ...cached,
-      pageScope: cached.pageScope || pageScope,
-      source: "redis",
-      stale: false,
-    };
+  if (
+    cached &&
+    !isSuspiciousZeroVolumePage(cached) &&
+    hasProviderCoverage(cached.items, selectedProviders)
+  ) {
+    return await mergeHotProviderFallbacks({
+      supabaseService,
+      basePage: {
+        ...cached,
+        pageScope: cached.pageScope || pageScope,
+        source: "redis",
+        stale: false,
+      },
+      selectedProviders,
+      onlyOpen,
+      page,
+      pageSize,
+      sortBy,
+      snapshotId,
+    });
   }
 
   let rows: MarketOutput[];
@@ -1256,25 +1625,106 @@ export const listCanonicalMarkets = async (
       snapshotId,
     });
   } catch (error) {
-    if (latestCached) {
-      return {
-        ...latestCached,
-        pageScope: latestCached.pageScope || pageScope,
-        source: "redis",
-        stale: true,
-      };
+    if (latestCached && !isSuspiciousZeroVolumePage(latestCached)) {
+      return await mergeHotProviderFallbacks({
+        supabaseService,
+        basePage: {
+          ...latestCached,
+          pageScope: latestCached.pageScope || pageScope,
+          source: "redis",
+          stale: true,
+        },
+        selectedProviders,
+        onlyOpen,
+        page,
+        pageSize,
+        sortBy,
+        snapshotId,
+      });
     }
     throw error;
   }
   const sorted = sortMarketRows(rows, sortBy);
-  const out: MarketPageOutput = {
-    items: sorted.slice(offset, offset + pageSize),
+  let arrangedRows = sorted;
+  if (selectedProviders.length > 1) {
+    const mergedById = new Map<string, MarketOutput>(
+      sorted.map((item) => [item.id, item])
+    );
+    for (const provider of selectedProviders) {
+      if (sorted.some((item) => item.provider === provider)) continue;
+      const adapter = getVenueAdapter(provider);
+      if (!adapter.isEnabled()) continue;
+      try {
+        const fallbackRows = await adapter.listMarketsSnapshot({
+          onlyOpen,
+          limit: Math.max(page * pageSize, 200),
+          sortBy,
+        });
+        if (fallbackRows.length === 0) continue;
+        if (ENABLE_CATALOG_SYNC_ON_READ) {
+          void upsertVenueMarketsToCatalog(supabaseService, fallbackRows).catch(() => {
+            // Best-effort repair of canonical coverage.
+          });
+        }
+        for (const row of fallbackRows) {
+          const output = mapLiveVenueMarketToOutput(row, snapshotId);
+          if (!mergedById.has(output.id)) {
+            mergedById.set(output.id, output);
+          }
+        }
+      } catch (error) {
+        console.warn("[markets.readService] provider catalog merge failed", provider, error);
+      }
+    }
+
+    const merged = sortMarketRows(Array.from(mergedById.values()), sortBy);
+    const buckets = new Map<VenueProvider, MarketOutput[]>();
+    for (const provider of selectedProviders) {
+      buckets.set(
+        provider,
+        merged.filter((item) => item.provider === provider)
+      );
+    }
+    const seen = new Set<string>();
+    const interleaved: MarketOutput[] = [];
+    let added = true;
+    while (added) {
+      added = false;
+      for (const provider of selectedProviders) {
+        const bucket = buckets.get(provider);
+        if (!bucket || bucket.length === 0) continue;
+        const next = bucket.shift();
+        if (!next || seen.has(next.id)) continue;
+        seen.add(next.id);
+        interleaved.push(next);
+        added = true;
+      }
+    }
+    for (const item of merged) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      interleaved.push(item);
+    }
+    arrangedRows = interleaved;
+  }
+  let out: MarketPageOutput = {
+    items: arrangedRows.slice(offset, offset + pageSize),
     snapshotId,
     pageScope,
-    hasMore: sorted.length > offset + pageSize,
+    hasMore: arrangedRows.length > offset + pageSize,
     source: "supabase",
     stale: false,
   };
+  out = await mergeHotProviderFallbacks({
+    supabaseService,
+    basePage: out,
+    selectedProviders,
+    onlyOpen,
+    page,
+    pageSize,
+    sortBy,
+    snapshotId,
+  });
   void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
   void writeUpstashCache(latestListCacheKey, out, upstashMarketListTtlSec);
   void writeUpstashSnapshotShards(pageScope, out.items, snapshotId);
@@ -1323,10 +1773,25 @@ export const getCanonicalMarket = async (params: {
     return row;
   }
 
-  if (ENABLE_MARKET_HOT_READ_FALLBACK) {
+  try {
+    const adapter = getVenueAdapter(ref.provider);
+    if (!adapter.isEnabled()) return null;
+    const liveMarket = await adapter.getMarketById(ref.providerMarketId);
+    if (!liveMarket) return null;
+    if (ENABLE_CATALOG_SYNC_ON_READ) {
+      void upsertVenueMarketsToCatalog(supabaseService, [liveMarket]).catch(() => {
+        // Best-effort repair of canonical coverage.
+      });
+    }
+    const mapped = mapLiveVenueMarketToOutput(liveMarket, snapshotId);
+    void writeUpstashCache(detailCacheKey, mapped, upstashMarketDetailTtlSec);
+    return mapped;
+  } catch {
+    if (ENABLE_MARKET_HOT_READ_FALLBACK) {
+      return null;
+    }
     return null;
   }
-  return null;
 };
 
 export const getCanonicalOrderbook = async (params: {
@@ -1402,7 +1867,6 @@ export const getCanonicalPriceCandles = async (params: {
     marketId: params.marketId,
     provider: params.provider ?? null,
   });
-  if (!market?.marketRefId) return [];
   const candlesCacheKey = buildMarketCandlesCacheKey({
     provider: ref.provider,
     providerMarketId: ref.providerMarketId,
@@ -1424,19 +1888,51 @@ export const getCanonicalPriceCandles = async (params: {
       );
 
   let rows: PriceCandleOutput[] = [];
-  if (market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 2) {
-    rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, null);
-    if (!rows.some((row) => Boolean(row.outcomeId))) {
+  if (market?.marketRefId) {
+    if (market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 2) {
+      rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, null);
+      if (!rows.some((row) => Boolean(row.outcomeId))) {
+        rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, "__market__");
+      }
+    } else {
       rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, "__market__");
     }
-  } else {
-    rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, "__market__");
   }
 
   if (rows.length > 0) {
     const normalized = normalizeCandlesForChart(rows, { limit, interval, range });
     void writeUpstashCache(candlesCacheKey, normalized, upstashMarketCandlesTtlSec);
     return normalized;
+  }
+
+  let liveVenueMarket: VenueMarket | null = null;
+  try {
+    const adapter = getVenueAdapter(ref.provider);
+    if (adapter.isEnabled()) {
+      liveVenueMarket = await adapter.getMarketById(ref.providerMarketId);
+      if (liveVenueMarket) {
+        const history = await adapter.getPriceHistory(liveVenueMarket, rawLimit, { interval });
+        const providerRows = buildCandlesFromPriceHistory(history, interval);
+        if (providerRows.length > 0) {
+          const normalized = normalizeCandlesForChart(providerRows, { limit, interval, range });
+          void writeUpstashCache(candlesCacheKey, normalized, upstashMarketCandlesTtlSec);
+          return normalized;
+        }
+      }
+    }
+  } catch {
+    // fall through to baseline candles below
+  }
+
+  const baseline = buildFlatBaselineCandles(
+    liveVenueMarket
+      ? deriveBaselinePriceFromVenueMarket(liveVenueMarket)
+      : deriveBaselinePriceFromCanonicalMarket(market),
+    limit,
+    interval
+  );
+  if (baseline.length > 0) {
+    return baseline;
   }
 
   if (ENABLE_MARKET_HOT_READ_FALLBACK && ref.provider) {
