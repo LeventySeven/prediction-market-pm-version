@@ -1,22 +1,29 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ClobClient } from "@polymarket/clob-client";
 import type { z } from "zod";
 import { getSupabaseServiceClient } from "../supabase/client";
 import type { Database } from "../../types/database";
 import {
+  marketOrderbookOutput,
   marketOutput,
-  marketOutputArray,
+  marketPageOutput,
   priceCandleOutputArray,
   type CandleInterval,
 } from "../../lib/validations/market";
 import {
+  type UpstashOrderbookLevel,
   buildMarketCandlesCacheKey,
   buildMarketDetailCacheKey,
   buildMarketListCacheKey,
   readUpstashCache,
+  readUpstashMarketOrderbook,
+  readUpstashSnapshotCursor,
   upstashMarketCandlesTtlSec,
   upstashMarketDetailTtlSec,
   upstashMarketListTtlSec,
+  writeUpstashMarketOrderbooks,
+  writeUpstashSnapshotShards,
   writeUpstashCache,
 } from "../cache/upstash";
 import { extractTotalVolumeFromPayload } from "../../lib/marketVolumePayload";
@@ -39,6 +46,8 @@ import {
 
 type SupabaseServiceClient = SupabaseClient<Database, "public">;
 type MarketOutput = z.infer<typeof marketOutput>;
+type MarketPageOutput = z.infer<typeof marketPageOutput>;
+type MarketOrderbookOutput = z.infer<typeof marketOrderbookOutput>;
 type PriceCandleOutput = z.infer<typeof priceCandleOutputArray>[number];
 
 type CanonicalCatalogRow = {
@@ -59,6 +68,9 @@ type CanonicalCatalogRow = {
   market_type: "binary" | "multi_choice";
   resolved_outcome_title: string | null;
   total_volume_usd: number;
+  is_fast_market: boolean;
+  catalog_bucket: "main" | "fast";
+  compare_group_id: string | null;
   provider_payload: Record<string, unknown> | null;
   source_updated_at: string;
   last_synced_at: string;
@@ -85,6 +97,7 @@ type CanonicalLiveRow = {
   last_trade_size: number | null;
   rolling_24h_volume: number | null;
   open_interest: number | null;
+  source_seq: number | null;
   source_ts: string | null;
 };
 
@@ -99,8 +112,19 @@ type CanonicalCandleRow = {
   trades_count: number;
 };
 
+type CompareGroupAggregate = {
+  id: string;
+  marketCount: number;
+  providerCount: number;
+  totalVolumeUsd: number;
+  category: string | null;
+  normalizedClosesAt: string | null;
+};
+
 const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
+const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
+const POLYMARKET_CLOB_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137);
 
 const CANDLE_RESOLUTION_MS: Record<CandleInterval, number> = {
   "1m": 60_000,
@@ -348,6 +372,182 @@ const sortMarketRows = (
   return sorted;
 };
 
+const buildCatalogPageScope = (params: {
+  providers: VenueProvider[];
+  page: number;
+  sortBy: "newest" | "volume";
+  onlyOpen: boolean;
+  catalogBucket: "all" | "main" | "fast";
+}): string =>
+  [
+    "catalog",
+    `providers:${[...params.providers].sort().join(",") || "none"}`,
+    `page:${params.page}`,
+    `sort:${params.sortBy}`,
+    `open:${params.onlyOpen ? 1 : 0}`,
+    `bucket:${params.catalogBucket}`,
+  ].join(":");
+
+const fetchCompareGroupAggregates = async (
+  supabaseService: SupabaseServiceClient,
+  compareGroupIds: string[]
+): Promise<Map<string, CompareGroupAggregate>> => {
+  const out = new Map<string, CompareGroupAggregate>();
+  const ids = Array.from(new Set(compareGroupIds.map((id) => id.trim()).filter(Boolean)));
+  if (ids.length === 0) return out;
+
+  const [groupsRes, marketsRes] = await Promise.all([
+    (supabaseService as any)
+      .from("market_compare_groups")
+      .select("id, category, normalized_closes_at")
+      .in("id", ids),
+    (supabaseService as any)
+      .from("market_catalog")
+      .select("id, provider, compare_group_id, total_volume_usd")
+      .in("compare_group_id", ids),
+  ]);
+
+  for (const row of groupsRes.data ?? []) {
+    const id = String((row as Record<string, unknown>).id ?? "").trim();
+    if (!id) continue;
+    out.set(id, {
+      id,
+      marketCount: 0,
+      providerCount: 0,
+      totalVolumeUsd: 0,
+      category: typeof (row as Record<string, unknown>).category === "string" ? String((row as Record<string, unknown>).category) : null,
+      normalizedClosesAt:
+        typeof (row as Record<string, unknown>).normalized_closes_at === "string"
+          ? String((row as Record<string, unknown>).normalized_closes_at)
+          : null,
+    });
+  }
+
+  const providerSetByGroupId = new Map<string, Set<string>>();
+  for (const row of marketsRes.data ?? []) {
+    const rec = row as Record<string, unknown>;
+    const compareGroupId = String(rec.compare_group_id ?? "").trim();
+    const provider = String(rec.provider ?? "").trim();
+    if (!compareGroupId || !provider) continue;
+    const aggregate = out.get(compareGroupId);
+    if (!aggregate) continue;
+    aggregate.marketCount += 1;
+    aggregate.totalVolumeUsd += toFiniteNumber(rec.total_volume_usd as number | string | null | undefined) ?? 0;
+    const set = providerSetByGroupId.get(compareGroupId) ?? new Set<string>();
+    set.add(provider);
+    providerSetByGroupId.set(compareGroupId, set);
+  }
+
+  for (const [groupId, providers] of providerSetByGroupId.entries()) {
+    const aggregate = out.get(groupId);
+    if (!aggregate) continue;
+    aggregate.providerCount = providers.size;
+  }
+
+  return out;
+};
+
+const buildOrderbookFreshness = async (
+  marketId: string
+): Promise<MarketOutput["orderbookFreshness"]> => {
+  const orderbook = await readUpstashMarketOrderbook(marketId, 12);
+  if (!orderbook) return null;
+  const updatedAt = typeof orderbook.updatedAt === "string" ? orderbook.updatedAt : null;
+  const parsed = updatedAt ? Date.parse(updatedAt) : NaN;
+  return {
+    updatedAt,
+    depthAvailable: Math.max(0, Math.floor(orderbook.depth ?? 0)),
+    stale: !Number.isFinite(parsed) || Date.now() - parsed > 60_000,
+  };
+};
+
+const fetchPolymarketOrderbookFromProvider = async (
+  market: MarketOutput,
+  depth: number
+): Promise<MarketOrderbookOutput | null> => {
+  const outcomes = Array.isArray(market.outcomes) ? market.outcomes : [];
+  const tokenizedOutcomes = outcomes
+    .map((outcome) => ({
+      outcomeId: typeof outcome.id === "string" ? outcome.id : null,
+      outcomeTitle: typeof outcome.title === "string" ? outcome.title : null,
+      tokenId: typeof outcome.tokenId === "string" && outcome.tokenId.trim().length > 0 ? outcome.tokenId.trim() : null,
+    }))
+    .filter((outcome): outcome is { outcomeId: string | null; outcomeTitle: string | null; tokenId: string } => Boolean(outcome.tokenId))
+    .slice(0, 2);
+  if (tokenizedOutcomes.length === 0) return null;
+
+  const chainId = (Number.isFinite(POLYMARKET_CLOB_CHAIN_ID) ? POLYMARKET_CLOB_CHAIN_ID : 137) as ConstructorParameters<typeof ClobClient>[1];
+  const client = new ClobClient(POLYMARKET_CLOB_BASE_URL, chainId);
+  const books = await Promise.allSettled(
+    tokenizedOutcomes.map(async (outcome) => ({
+      outcome,
+      book: await client.getOrderBook(outcome.tokenId),
+    }))
+  );
+
+  const levels: UpstashOrderbookLevel[] = [];
+  let updatedAt: string | null = null;
+  for (const result of books) {
+    if (result.status !== "fulfilled") continue;
+    const { outcome, book } = result.value;
+    const timestamp = typeof book?.timestamp === "string" && book.timestamp.trim().length > 0 ? book.timestamp : null;
+    if (timestamp) {
+      updatedAt =
+        !updatedAt || Date.parse(timestamp) > Date.parse(updatedAt)
+          ? timestamp
+          : updatedAt;
+    }
+
+    for (const bid of Array.isArray(book?.bids) ? book.bids.slice(0, depth) : []) {
+      const price = toFiniteNumber((bid as { price?: string | number }).price);
+      const size = toFiniteNumber((bid as { size?: string | number }).size);
+      if (price === null || size === null) continue;
+      levels.push({
+        side: "bid",
+        price,
+        size,
+        outcomeId: outcome.outcomeId,
+        outcomeTitle: outcome.outcomeTitle,
+      });
+    }
+    for (const ask of Array.isArray(book?.asks) ? book.asks.slice(0, depth) : []) {
+      const price = toFiniteNumber((ask as { price?: string | number }).price);
+      const size = toFiniteNumber((ask as { size?: string | number }).size);
+      if (price === null || size === null) continue;
+      levels.push({
+        side: "ask",
+        price,
+        size,
+        outcomeId: outcome.outcomeId,
+        outcomeTitle: outcome.outcomeTitle,
+      });
+    }
+  }
+
+  if (levels.length === 0) return null;
+  const snapshotId = await readUpstashSnapshotCursor("global");
+  const orderbook: MarketOrderbookOutput = {
+    marketId: market.id,
+    provider: "polymarket",
+    depth,
+    snapshotId,
+    source: "provider",
+    updatedAt,
+    levels,
+  };
+  void writeUpstashMarketOrderbooks([
+    {
+      marketId: market.id,
+      provider: "polymarket",
+      depth,
+      snapshotId,
+      updatedAt: updatedAt ?? new Date().toISOString(),
+      levels,
+    },
+  ]);
+  return orderbook;
+};
+
 const resolveMarketCatalogRefId = async (
   supabaseService: SupabaseServiceClient,
   provider: VenueProvider,
@@ -368,7 +568,9 @@ const resolveMarketCatalogRefId = async (
 const mapCanonicalRows = (
   marketRows: CanonicalCatalogRow[],
   outcomesByMarketId: Map<string, CanonicalOutcomeRow[]>,
-  liveByMarketId: Map<string, CanonicalLiveRow>
+  liveByMarketId: Map<string, CanonicalLiveRow>,
+  compareGroupsById: Map<string, CompareGroupAggregate>,
+  snapshotId: number | null
 ): MarketOutput[] => {
   return marketRows.map((row) => {
     const payload = asObject(row.provider_payload);
@@ -442,8 +644,12 @@ const mapCanonicalRows = (
       resolvedTitle.includes("yes")
         ? ("YES" as const)
         : resolvedTitle.includes("no")
-          ? ("NO" as const)
+        ? ("NO" as const)
           : null;
+    const compareGroupId = typeof row.compare_group_id === "string" && row.compare_group_id.trim().length > 0
+      ? row.compare_group_id.trim()
+      : null;
+    const compareGroup = compareGroupId ? compareGroupsById.get(compareGroupId) ?? null : null;
 
     return {
       id: outputId,
@@ -451,6 +657,12 @@ const mapCanonicalRows = (
       providerMarketId: row.provider_market_id,
       canonicalMarketId: outputId,
       marketRefId,
+      snapshotId,
+      liveSeq: toFiniteNumber(live?.source_seq),
+      compareGroupId,
+      compareGroup,
+      isFastMarket: Boolean(row.is_fast_market),
+      catalogBucket: row.catalog_bucket === "fast" ? "fast" : "main",
       titleRu: row.title,
       titleEn: row.title,
       description: row.description,
@@ -488,6 +700,7 @@ const mapCanonicalRows = (
       liveUpdatedAt: typeof live?.source_ts === "string" ? live.source_ts : null,
       capabilities,
       freshness: buildMarketFreshness(provider, typeof live?.source_ts === "string" ? live.source_ts : fallbackIso),
+      orderbookFreshness: null,
       tradeMeta:
         provider === "limitless"
           ? {
@@ -508,19 +721,24 @@ const fetchCanonicalMarketRows = async (
     onlyOpen: boolean;
     candidateLimit: number;
     sortBy: "newest" | "volume";
+    catalogBucket: "all" | "main" | "fast";
+    snapshotId: number | null;
     providerMarketId?: string;
   }
 ): Promise<MarketOutput[]> => {
   let query = (supabaseService as any)
     .from("market_catalog")
     .select(
-      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload, source_updated_at, last_synced_at"
+      "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, compare_group_id, provider_payload, source_updated_at, last_synced_at"
     )
     .in("provider", params.providers)
     .limit(params.candidateLimit);
 
   if (params.onlyOpen) {
     query = query.eq("state", "open");
+  }
+  if (params.catalogBucket !== "all") {
+    query = query.eq("catalog_bucket", params.catalogBucket);
   }
 
   if (params.providerMarketId) {
@@ -546,7 +764,7 @@ const fetchCanonicalMarketRows = async (
       .in("market_id", marketIds),
     (supabaseService as any)
       .from("market_live")
-      .select("market_id, best_bid, best_ask, mid, last_trade_price, last_trade_size, rolling_24h_volume, open_interest, source_ts")
+      .select("market_id, best_bid, best_ask, mid, last_trade_price, last_trade_size, rolling_24h_volume, open_interest, source_seq, source_ts")
       .in("market_id", marketIds),
   ]);
 
@@ -569,7 +787,20 @@ const fetchCanonicalMarketRows = async (
     liveByMarketId.set(marketId, row);
   }
 
-  return mapCanonicalRows(marketRows as CanonicalCatalogRow[], outcomesByMarketId, liveByMarketId);
+  const compareGroupsById = await fetchCompareGroupAggregates(
+    supabaseService,
+    marketRows
+      .map((row) => String((row as Record<string, unknown>).compare_group_id ?? "").trim())
+      .filter(Boolean)
+  );
+
+  return mapCanonicalRows(
+    marketRows as CanonicalCatalogRow[],
+    outcomesByMarketId,
+    liveByMarketId,
+    compareGroupsById,
+    params.snapshotId
+  );
 };
 
 const candleTs = (row: PriceCandleOutput): number => Date.parse(String(row.bucket));
@@ -716,29 +947,41 @@ export const listCanonicalMarkets = async (
     page?: number;
     pageSize?: number;
     sortBy?: "newest" | "volume";
+    catalogBucket?: "all" | "main" | "fast";
     providers?: Array<VenueProvider>;
     providerFilter?: "all" | VenueProvider;
   } = {}
-): Promise<MarketOutput[]> => {
+): Promise<MarketPageOutput> => {
   const supabaseService = params.supabaseService ?? getSupabaseServiceClient();
   const onlyOpen = params.onlyOpen ?? false;
   const page = Math.max(1, Number(params.page ?? 1));
   const pageSize = Math.max(1, Math.min(101, Number(params.pageSize ?? 100)));
   const sortBy: "newest" | "volume" = params.sortBy ?? "newest";
+  const catalogBucket = params.catalogBucket ?? "main";
   const offset = (page - 1) * pageSize;
   const candidateLimit = Math.max(pageSize * 2, offset + pageSize * 2);
   const selectedProviders = parseProviderSelection({
     providers: params.providers,
     providerFilter: params.providerFilter,
   });
+  const snapshotId = await readUpstashSnapshotCursor("global");
+  const pageScope = buildCatalogPageScope({
+    providers: selectedProviders,
+    page,
+    sortBy,
+    onlyOpen,
+    catalogBucket,
+  });
   const listCacheKey = buildMarketListCacheKey({
     onlyOpen,
     page,
     pageSize,
     sortBy,
+    snapshotId,
+    catalogBucket,
     providers: selectedProviders,
   });
-  const cached = await readUpstashCache(listCacheKey, marketOutputArray);
+  const cached = await readUpstashCache(listCacheKey, marketPageOutput);
   if (cached) return cached;
 
   const rows = await fetchCanonicalMarketRows(supabaseService, {
@@ -746,9 +989,18 @@ export const listCanonicalMarkets = async (
     onlyOpen,
     candidateLimit,
     sortBy,
+    catalogBucket,
+    snapshotId,
   });
-  const out = sortMarketRows(rows, sortBy).slice(offset, offset + pageSize);
+  const sorted = sortMarketRows(rows, sortBy);
+  const out: MarketPageOutput = {
+    items: sorted.slice(offset, offset + pageSize),
+    snapshotId,
+    pageScope,
+    hasMore: sorted.length > offset + pageSize,
+  };
   void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
+  void writeUpstashSnapshotShards(pageScope, out.items, snapshotId);
   return out;
 };
 
@@ -759,6 +1011,7 @@ export const getCanonicalMarket = async (params: {
 }): Promise<MarketOutput | null> => {
   const supabaseService = params.supabaseService ?? getSupabaseServiceClient();
   const ref = parseVenueMarketRef(params.marketId, params.provider ?? null);
+  const snapshotId = await readUpstashSnapshotCursor("global");
   const detailCacheKey = buildMarketDetailCacheKey({
     provider: ref.provider,
     providerMarketId: ref.providerMarketId,
@@ -771,9 +1024,17 @@ export const getCanonicalMarket = async (params: {
     onlyOpen: false,
     candidateLimit: 1,
     sortBy: "newest",
+    catalogBucket: "all",
+    snapshotId,
     providerMarketId: ref.providerMarketId,
   });
-  const row = rows[0] ?? null;
+  const row = rows[0]
+    ? {
+        ...rows[0],
+        snapshotId,
+        orderbookFreshness: await buildOrderbookFreshness(rows[0].id),
+      }
+    : null;
   if (row) {
     void writeUpstashCache(detailCacheKey, row, upstashMarketDetailTtlSec);
     return row;
@@ -783,6 +1044,51 @@ export const getCanonicalMarket = async (params: {
     return null;
   }
   return null;
+};
+
+export const getCanonicalOrderbook = async (params: {
+  supabaseService?: SupabaseServiceClient;
+  marketId: string;
+  provider?: VenueProvider | null;
+  depth?: number;
+}): Promise<MarketOrderbookOutput> => {
+  const ref = parseVenueMarketRef(params.marketId, params.provider ?? null);
+  const marketId = venueToCanonicalId(ref.provider, ref.providerMarketId);
+  const depth = Math.max(1, Math.min(Number(params.depth ?? 12), 40));
+  const cached = await readUpstashMarketOrderbook(marketId, depth);
+  if (cached) {
+    return {
+      marketId,
+      provider: ref.provider,
+      depth,
+      snapshotId: cached.snapshotId ?? null,
+      source: "upstash",
+      updatedAt: cached.updatedAt ?? null,
+      levels: cached.levels.slice(0, depth * 2),
+    };
+  }
+
+  if (ref.provider === "polymarket") {
+    const market = await getCanonicalMarket({
+      supabaseService: params.supabaseService,
+      marketId: params.marketId,
+      provider: params.provider ?? null,
+    });
+    if (market) {
+      const fallback = await fetchPolymarketOrderbookFromProvider(market, depth).catch(() => null);
+      if (fallback) return fallback;
+    }
+  }
+
+  return {
+    marketId,
+    provider: ref.provider,
+    depth,
+    snapshotId: await readUpstashSnapshotCursor("global"),
+    source: "none",
+    updatedAt: null,
+    levels: [],
+  };
 };
 
 export const getCanonicalPriceCandles = async (params: {

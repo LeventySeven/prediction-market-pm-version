@@ -773,7 +773,7 @@ const snapshotCache = new Map<string, { expiresAt: number; rows: VenueMarket[] }
 
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
   const limitlessAuth = input.limitlessAuth;
-  if (!limitlessAuth?.apiKey || !Number.isInteger(limitlessAuth.ownerId) || limitlessAuth.ownerId <= 0) {
+  if (!limitlessAuth?.bearerToken || !limitlessAuth.bearerToken.trim()) {
     return { success: false, status: 400, error: "LIMITLESS_AUTH_REQUIRED" };
   }
 
@@ -796,7 +796,6 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
 
   const body = JSON.stringify({
     order: input.signedOrder,
-    ownerId: limitlessAuth.ownerId,
     orderType: input.orderType,
     marketSlug,
   });
@@ -822,7 +821,7 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          "X-API-Key": limitlessAuth.apiKey,
+          Authorization: `Bearer ${limitlessAuth.bearerToken.trim()}`,
           "x-account": makerAddress,
           ...(input.requestIp
             ? {

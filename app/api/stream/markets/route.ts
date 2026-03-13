@@ -30,6 +30,8 @@ const parseMarketIds = (request: NextRequest): string[] => {
 const buildFingerprint = (row: {
   sourceTs: string | null;
   sourceSeq: number | null;
+  snapshotId?: number | null;
+  seq?: number | null;
   bestBid: number | null;
   bestAsk: number | null;
   mid: number | null;
@@ -41,6 +43,8 @@ const buildFingerprint = (row: {
   [
     row.sourceTs ?? "",
     row.sourceSeq ?? "",
+    row.snapshotId ?? "",
+    row.seq ?? "",
     row.bestBid ?? "",
     row.bestAsk ?? "",
     row.mid ?? "",
@@ -99,7 +103,13 @@ export async function GET(request: NextRequest) {
 
           if (rows.length === 0) {
             if (initial) {
-              send("live", { marketIds, patches: [] as unknown[], source: "upstash" });
+              send("live", {
+                marketIds,
+                snapshotId: null,
+                seq: null,
+                patches: [] as unknown[],
+                source: "upstash",
+              });
             }
             return;
           }
@@ -113,9 +123,30 @@ export async function GET(request: NextRequest) {
           });
 
           if (initial || changed.length > 0) {
+            const batch = initial ? rows : changed;
+            const snapshotId = batch.reduce<number | null>(
+              (max, row) =>
+                typeof row.snapshotId === "number" && Number.isFinite(row.snapshotId)
+                  ? max === null || row.snapshotId > max
+                    ? row.snapshotId
+                    : max
+                  : max,
+              null
+            );
+            const seq = batch.reduce<number | null>(
+              (max, row) =>
+                typeof row.seq === "number" && Number.isFinite(row.seq)
+                  ? max === null || row.seq > max
+                    ? row.seq
+                    : max
+                  : max,
+              null
+            );
             send("live", {
               marketIds,
-              patches: initial ? rows : changed,
+              snapshotId,
+              seq,
+              patches: batch,
               source: "upstash",
             });
           }

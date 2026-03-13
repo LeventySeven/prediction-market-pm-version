@@ -64,6 +64,19 @@ export interface Market {
   providerMarketId?: string;
   canonicalMarketId?: string;
   marketRefId?: string | null;
+  snapshotId?: number | null;
+  liveSeq?: number | null;
+  compareGroupId?: string | null;
+  compareGroup?: {
+    id: string;
+    marketCount: number;
+    providerCount: number;
+    totalVolumeUsd: number;
+    category?: string | null;
+    normalizedClosesAt?: string | null;
+  } | null;
+  isFastMarket?: boolean;
+  catalogBucket?: "main" | "fast";
   title: string;
   titleRu: string | null;
   titleEn: string;
@@ -109,6 +122,11 @@ export interface Market {
   liveUpdatedAt?: string | null;
   freshness?: {
     sourceTs: string | null;
+    stale: boolean;
+  } | null;
+  orderbookFreshness?: {
+    updatedAt: string | null;
+    depthAvailable: number;
     stale: boolean;
   } | null;
   capabilities?: {

@@ -6,9 +6,11 @@ import { upsertMirroredPolymarketMarkets } from "../../src/server/polymarket/mir
 import {
   writeUpstashActivityTicks,
   writeUpstashMarketLivePatches,
+  writeUpstashMarketOrderbooks,
 } from "../../src/server/cache/upstash";
 import { upsertProviderSyncState } from "../../src/server/venues/catalogStore";
 import { buildPolymarketCatalogFingerprint } from "../../src/server/venues/catalogFingerprint";
+import { venueToCanonicalId } from "../../src/server/venues/types";
 import { resolveReliableBinaryPrice } from "../../src/lib/marketPresentation";
 import type { Database, Json } from "../../src/types/database";
 
@@ -962,7 +964,7 @@ const flushPending = async () => {
     if (liveRows.length > 0) {
       await writeUpstashMarketLivePatches(
         liveRows.map((row) => ({
-          marketId: row.market_id,
+          marketId: venueToCanonicalId("polymarket", row.market_id),
           bestBid: row.best_bid,
           bestAsk: row.best_ask,
           mid: row.mid,
@@ -974,13 +976,43 @@ const flushPending = async () => {
           sourceSeq: row.source_seq,
         }))
       );
+
+      await writeUpstashMarketOrderbooks(
+        liveRows.map((row) => ({
+          marketId: venueToCanonicalId("polymarket", row.market_id),
+          provider: "polymarket" as const,
+          depth: 1,
+          snapshotId: null,
+          updatedAt: row.source_ts,
+          levels: [
+            ...(row.best_bid > 0
+              ? [{
+                  side: "bid" as const,
+                  price: row.best_bid,
+                  size: Math.max(0, row.last_trade_size || 0),
+                  outcomeId: null,
+                  outcomeTitle: "YES",
+                }]
+              : []),
+            ...(row.best_ask > 0
+              ? [{
+                  side: "ask" as const,
+                  price: row.best_ask,
+                  size: Math.max(0, row.last_trade_size || 0),
+                  outcomeId: null,
+                  outcomeTitle: "YES",
+                }]
+              : []),
+          ],
+        }))
+      );
     }
 
     if (tickRows.length > 0) {
       await writeUpstashActivityTicks(
         tickRows.map((row) => ({
           id: row.dedupe_key,
-          marketId: row.market_id,
+          marketId: venueToCanonicalId("polymarket", row.market_id),
           tradeId: row.trade_id ?? null,
           side: row.side,
           outcome: row.outcome ?? null,
@@ -1011,7 +1043,7 @@ const syncSnapshot = async (mode: "full" | "head") => {
     runningHeadSnapshot = true;
   }
 
-  const syncScope = "open";
+  const syncScope = "catalog";
   const startedAt = new Date().toISOString();
   try {
     await upsertProviderSyncState(supabase, {

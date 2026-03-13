@@ -80,13 +80,13 @@ export type VenueApiCreds = {
 };
 
 export type VenueLimitlessAuth = {
-  apiKey: string;
-  ownerId: number;
+  bearerToken: string;
 };
 
 export type VenueRelayOrderInput = {
   signedOrder: Record<string, unknown>;
   orderType: "FOK" | "GTC";
+  authMode?: "api_key" | "bearer" | null;
   apiCreds?: VenueApiCreds | null;
   limitlessAuth?: VenueLimitlessAuth | null;
   marketSlug?: string | null;

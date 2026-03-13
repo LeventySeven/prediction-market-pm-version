@@ -44,7 +44,20 @@ export type MarketApiRow = {
   priceYes: number;
   priceNo: number;
   volume: number;
-  totalVolumeUsd?: number | null;
+  totalVolumeUsd: number;
+  isFastMarket: boolean;
+  catalogBucket: "main" | "fast";
+  snapshotId?: number | null;
+  liveSeq?: number | null;
+  compareGroupId?: string | null;
+  compareGroup?: {
+    id: string;
+    marketCount: number;
+    providerCount: number;
+    totalVolumeUsd: number;
+    category?: string | null;
+    normalizedClosesAt?: string | null;
+  } | null;
   chance?: number | null;
   creatorName?: string | null;
   creatorAvatarUrl?: string | null;
@@ -58,6 +71,11 @@ export type MarketApiRow = {
   liveUpdatedAt?: string | null;
   freshness?: {
     sourceTs: string | null;
+    stale: boolean;
+  } | null;
+  orderbookFreshness?: {
+    updatedAt: string | null;
+    depthAvailable: number;
     stale: boolean;
   } | null;
   capabilities?: {
@@ -79,13 +97,18 @@ export type MarketApiRow = {
   } | null;
 };
 
+export type CatalogPageScope = "main" | "fast";
+
 export type CatalogBootstrapEntry = {
   cacheKey: string;
   providerFilter: ProviderFilter;
   page: number;
   sortBy: "newest" | "volume";
+  catalogBucket: CatalogPageScope;
   rows: MarketApiRow[];
   hasMore: boolean;
+  snapshotId?: number | null;
+  pageScope?: string;
   updatedAt: number;
 };
 

@@ -32,6 +32,7 @@ import {
   getLiveActivityInput,
   getMarketCommentsInput,
   getMarketInput,
+  getOrderbookInput,
   getPriceCandlesInput,
   getPublicTradesInput,
   getSimilarMarketsInput,
@@ -45,8 +46,10 @@ import {
   marketCommentOutputArray,
   marketContextOutput,
   marketListV1Output,
+  marketOrderbookOutput,
   marketOutput,
   marketOutputArray,
+  marketPageOutput,
   myCommentOutputArray,
   myCommentsInput,
   postMarketCommentInput,
@@ -87,7 +90,7 @@ import {
   type VenueProvider,
   venueToCanonicalId,
 } from "../../venues/types";
-import { upsertVenueMarketsToCatalog } from "../../venues/catalogStore";
+import { upsertProviderSyncState, upsertVenueMarketsToCatalog } from "../../venues/catalogStore";
 import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { consumeDurableRateLimit } from "../../security/rateLimit";
 import {
@@ -106,6 +109,7 @@ import {
   writeUpstashCache,
 } from "../../cache/upstash";
 import {
+  getCanonicalOrderbook,
   getCanonicalMarket,
   getCanonicalPriceCandles,
   getPublicEnabledProviders,
@@ -163,6 +167,24 @@ const categoryMetaFromRaw = (
   };
 };
 
+const FAST_MARKET_WINDOW_MS = 15 * 60 * 1000;
+const FAST_MARKET_SERIES_RE = /\b(5|10|15)\s*(m|min|mins|minute|minutes)\b/i;
+const FAST_MARKET_SPAM_RE = /\b(up|down)\b/i;
+const FAST_MARKET_ASSET_RE = /\b(sol|solana|btc|bitcoin|eth|ethereum)\b/i;
+
+const inferFastMarketFlags = (params: { title: string; closesAt: string }): { isFastMarket: boolean; catalogBucket: "main" | "fast" } => {
+  const closesAtMs = Date.parse(params.closesAt);
+  const title = params.title;
+  const isFastMarket =
+    (Number.isFinite(closesAtMs) && closesAtMs - Date.now() <= FAST_MARKET_WINDOW_MS) ||
+    FAST_MARKET_SERIES_RE.test(title) ||
+    (FAST_MARKET_SPAM_RE.test(title) && FAST_MARKET_ASSET_RE.test(title));
+  return {
+    isFastMarket,
+    catalogBucket: isFastMarket ? "fast" : "main",
+  };
+};
+
 const addCategoryValue = (
   categories: Map<string, string>,
   value: unknown
@@ -216,6 +238,10 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     fallbackPrice: yes ? yes.price : 0.5,
   });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
+  const { isFastMarket, catalogBucket } = inferFastMarketFlags({
+    title: market.title,
+    closesAt: market.closesAt,
+  });
 
   return {
     id: market.id,
@@ -223,6 +249,12 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     providerMarketId: market.id,
     canonicalMarketId: venueToCanonicalId("polymarket", market.id),
     marketRefId: null,
+    snapshotId: null,
+    liveSeq: null,
+    compareGroupId: null,
+    compareGroup: null,
+    isFastMarket,
+    catalogBucket,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -268,6 +300,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
       sourceTs: null,
       stale: false,
     },
+    orderbookFreshness: null,
     tradeMeta: null,
   };
 };
@@ -313,6 +346,10 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     fallbackPrice: yes ? yes.price : 0.5,
   });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
+  const { isFastMarket, catalogBucket } = inferFastMarketFlags({
+    title: market.title,
+    closesAt: market.closesAt,
+  });
 
   return {
     id: outputId,
@@ -320,6 +357,12 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     providerMarketId: market.providerMarketId,
     canonicalMarketId: venueToCanonicalId(market.provider, market.providerMarketId),
     marketRefId: null,
+    snapshotId: null,
+    liveSeq: null,
+    compareGroupId: null,
+    compareGroup: null,
+    isFastMarket,
+    catalogBucket,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -374,6 +417,7 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
       sourceTs: null,
       stale: false,
     },
+    orderbookFreshness: null,
     tradeMeta: market.tradeMeta ?? null,
   };
 };
@@ -777,7 +821,9 @@ const isPolymarketWorkerFresh = async (
       .from("provider_sync_state")
       .select("last_success_at")
       .eq("provider", "polymarket")
-      .eq("scope", "open")
+      .in("scope", ["catalog", "live", "snapshot", "open"])
+      .order("last_success_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     const syncIso = String(providerState.data?.last_success_at ?? "").trim() || null;
@@ -842,7 +888,9 @@ const isLimitlessWorkerFresh = async (
       .from("provider_sync_state")
       .select("last_success_at")
       .eq("provider", "limitless")
-      .eq("scope", "open")
+      .in("scope", ["catalog", "live", "snapshot", "open"])
+      .order("last_success_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     const syncIso = String(providerState.data?.last_success_at ?? "").trim() || null;
@@ -1199,6 +1247,10 @@ const listCanonicalProviderMarkets = async (
       fallbackPrice: fallbackYesPrice,
     });
     const priceNo = Math.max(0, Math.min(1, 1 - priceYes));
+    const { isFastMarket, catalogBucket } = inferFastMarketFlags({
+      title: String(row.title ?? "Untitled market"),
+      closesAt,
+    });
 
     const stateRaw = String(row.state ?? "open").trim().toLowerCase();
     const state: MarketOutput["state"] =
@@ -1212,6 +1264,12 @@ const listCanonicalProviderMarkets = async (
       providerMarketId,
       canonicalMarketId: outputId,
       marketRefId,
+      snapshotId: null,
+      liveSeq: toFiniteNumber(live?.source_seq as any),
+      compareGroupId: null,
+      compareGroup: null,
+      isFastMarket,
+      catalogBucket,
       titleRu: String(row.title ?? "Untitled market"),
       titleEn: String(row.title ?? "Untitled market"),
       description: typeof row.description === "string" ? row.description : null,
@@ -1252,6 +1310,7 @@ const listCanonicalProviderMarkets = async (
         provider,
         typeof live?.source_ts === "string" ? live.source_ts : fallbackIso
       ),
+      orderbookFreshness: null,
       tradeMeta:
         provider === "limitless"
           ? {
@@ -2143,6 +2202,73 @@ const finalizeRelayAudit = async (
     .eq("id", auditId);
 };
 
+const inferSignedOrderPrice = (signedOrder: Record<string, unknown>): number | null => {
+  const makerAmount = toFiniteNumber(
+    (signedOrder.makerAmount as number | string | null | undefined) ??
+      (signedOrder.maker_amount as number | string | null | undefined)
+  );
+  const takerAmount = toFiniteNumber(
+    (signedOrder.takerAmount as number | string | null | undefined) ??
+      (signedOrder.taker_amount as number | string | null | undefined)
+  );
+  if (makerAmount !== null && takerAmount !== null && makerAmount > 0 && takerAmount > 0) {
+    const direct = makerAmount / takerAmount;
+    if (direct > 0 && direct < 1) return direct;
+    const inverse = takerAmount / makerAmount;
+    if (inverse > 0 && inverse < 1) return inverse;
+  }
+  return toFiniteNumber(
+    (signedOrder.price as number | string | null | undefined) ??
+      (signedOrder.limitPrice as number | string | null | undefined) ??
+      (signedOrder.limit_price as number | string | null | undefined)
+  );
+};
+
+const validateRelayOrderReadiness = async (params: {
+  supabaseService: SupabaseServiceClient;
+  provider: VenueProvider;
+  marketId: string | null;
+  signedOrder: Record<string, unknown>;
+}) => {
+  if (!params.marketId) return;
+  const market = await getCanonicalMarket({
+    supabaseService: params.supabaseService,
+    marketId: params.marketId,
+    provider: params.provider,
+  });
+  if (!market) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "MARKET_NOT_FOUND" });
+  }
+  if (market.capabilities?.supportsTrading === false) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_TRADING_DISABLED" });
+  }
+  if (market.state !== "open") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_NOT_OPEN" });
+  }
+  const closesAtMs = Date.parse(String(market.closesAt ?? market.expiresAt ?? ""));
+  if (Number.isFinite(closesAtMs) && closesAtMs <= Date.now()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "MARKET_TRADING_CLOSED" });
+  }
+
+  const signedOrderChainId = toFiniteNumber(
+    (params.signedOrder.chainId as number | string | null | undefined) ??
+      (params.signedOrder.chain_id as number | string | null | undefined)
+  );
+  if (
+    signedOrderChainId !== null &&
+    typeof market.capabilities?.chainId === "number" &&
+    Number.isFinite(market.capabilities.chainId) &&
+    signedOrderChainId !== market.capabilities.chainId
+  ) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "SIGNED_ORDER_CHAIN_MISMATCH" });
+  }
+
+  const price = inferSignedOrderPrice(params.signedOrder);
+  if (price !== null && (!Number.isFinite(price) || price <= 0 || price >= 1)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "SIGNED_ORDER_PRICE_OUT_OF_BOUNDS" });
+  }
+};
+
 export const marketRouter = router({
   listCategories: publicProcedure
     .input(listMarketCategoriesInput)
@@ -2167,7 +2293,7 @@ export const marketRouter = router({
 
   listMarkets: publicProcedure
     .input(listMarketsInput)
-    .output(marketOutputArray)
+    .output(marketPageOutput)
     .query(async ({ ctx, input }) => {
       const startedAt = Date.now();
       incrementRealtimeMetricCounter("trpc.market.listMarkets.calls");
@@ -2181,6 +2307,7 @@ export const marketRouter = router({
             Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
           ),
           sortBy: input?.sortBy ?? "newest",
+          catalogBucket: input?.catalogBucket ?? "main",
           providers: input?.providers,
           providerFilter: input?.providerFilter,
         });
@@ -2208,6 +2335,18 @@ export const marketRouter = router({
       } finally {
         recordRealtimeMetricTiming("trpc.market.getMarket.ms", Date.now() - startedAt);
       }
+    }),
+
+  getOrderbook: publicProcedure
+    .input(getOrderbookInput)
+    .output(marketOrderbookOutput)
+    .query(async ({ ctx, input }) => {
+      return await getCanonicalOrderbook({
+        supabaseService: ctx.supabaseService,
+        marketId: input.marketId,
+        provider: input.provider ?? null,
+        depth: input.depth,
+      });
     }),
 
   searchSemantic: publicProcedure
@@ -2476,6 +2615,7 @@ export const marketRouter = router({
         order: input.signedOrder,
         orderType: input.orderType,
         provider,
+        authMode: input.authMode ?? (provider === "limitless" ? "bearer" : "api_key"),
         marketId: input.marketId ?? null,
         marketSlug: input.marketSlug ?? null,
       });
@@ -2497,6 +2637,25 @@ export const marketRouter = router({
         marketRef.provider,
         marketRef.providerMarketId
       );
+      const tradeSyncStartedAt = new Date().toISOString();
+
+      await upsertProviderSyncState(ctx.supabaseService, {
+        provider,
+        scope: "trade",
+        startedAt: tradeSyncStartedAt,
+        errorMessage: null,
+        stats: {
+          marketId: input.marketId ?? marketRef.canonicalMarketId,
+          authMode: input.authMode ?? (provider === "limitless" ? "bearer" : "api_key"),
+        },
+      });
+
+      await validateRelayOrderReadiness({
+        supabaseService: ctx.supabaseService,
+        provider: marketRef.provider,
+        marketId: input.marketId ?? marketRef.canonicalMarketId,
+        signedOrder: input.signedOrder as Record<string, unknown>,
+      });
 
       const orderHash = buildOrderHash(orderBody);
       const pendingAudit = await createRelayAuditPending(ctx.supabaseService, {
@@ -2528,11 +2687,11 @@ export const marketRouter = router({
       const relay = await adapter.relaySignedOrder({
         signedOrder: input.signedOrder as Record<string, unknown>,
         orderType: input.orderType,
+        authMode: input.authMode ?? (provider === "limitless" ? "bearer" : "api_key"),
         apiCreds,
         limitlessAuth: input.limitlessAuth
           ? {
-              apiKey: input.limitlessAuth.apiKey,
-              ownerId: input.limitlessAuth.ownerId,
+              bearerToken: input.limitlessAuth.bearerToken,
             }
           : null,
         marketSlug: input.marketSlug ?? null,
@@ -2547,12 +2706,33 @@ export const marketRouter = router({
           status: "success",
           httpStatus: relay.status,
         });
+        await upsertProviderSyncState(ctx.supabaseService, {
+          provider,
+          scope: "trade",
+          startedAt: tradeSyncStartedAt,
+          successAt: new Date().toISOString(),
+          errorMessage: null,
+          stats: {
+            marketId: input.marketId ?? marketRef.canonicalMarketId,
+            status: relay.status,
+          },
+        });
       } else {
         await finalizeRelayAudit(ctx.supabaseService, pendingAudit.id, {
           status: relay.status >= 400 ? "rejected" : "failed",
           httpStatus: relay.status,
           errorCode: relay.error ?? null,
           errorMessage: relay.error ?? null,
+        });
+        await upsertProviderSyncState(ctx.supabaseService, {
+          provider,
+          scope: "trade",
+          startedAt: tradeSyncStartedAt,
+          errorMessage: relay.error ?? `ORDER_RELAY_HTTP_${relay.status}`,
+          stats: {
+            marketId: input.marketId ?? marketRef.canonicalMarketId,
+            status: relay.status,
+          },
         });
       }
 

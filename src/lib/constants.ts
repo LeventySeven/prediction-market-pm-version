@@ -10,6 +10,10 @@ export const MARKET_TRADE_ACTIONS = ["buy", "sell"] as const;
 export const MARKET_ACTIVITY_SIDES = ["BUY", "SELL", "UNKNOWN"] as const;
 export const MARKET_CANDLE_INTERVALS = ["1m", "1h"] as const;
 export const MARKET_ORDER_TYPES = ["FOK", "GTC"] as const;
+export const MARKET_CATALOG_BUCKETS = ["all", "main", "fast"] as const;
+export const MARKET_STORAGE_BUCKETS = ["main", "fast"] as const;
+export const MARKET_RELAY_AUTH_MODES = ["api_key", "bearer"] as const;
+export const MARKET_ORDERBOOK_SIDES = ["bid", "ask"] as const;
 
 export const USER_EVENT_TYPES = [
   "view",
@@ -77,6 +81,9 @@ export const MAX_API_KEY_LENGTH = 512;
 export const MAX_API_SECRET_LENGTH = 1024;
 export const MAX_API_PASSPHRASE_LENGTH = 1024;
 export const MAX_LIMITLESS_OWNER_ID = 2_147_483_647;
+export const MAX_BEARER_TOKEN_LENGTH = 4096;
+export const DEFAULT_MARKET_ORDERBOOK_DEPTH = 12;
+export const MAX_MARKET_ORDERBOOK_DEPTH = 40;
 
 export const EVENT_RATE_LIMIT_PER_MINUTE = 90;
 export const EVENT_RATE_LIMIT_WINDOW_SECONDS = 60;

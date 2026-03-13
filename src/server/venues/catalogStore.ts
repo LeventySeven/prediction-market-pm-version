@@ -66,6 +66,8 @@ type CatalogRowPayload = {
   market_type: "binary" | "multi_choice";
   resolved_outcome_title: string | null;
   total_volume_usd: number;
+  is_fast_market: boolean;
+  catalog_bucket: "main" | "fast";
   provider_payload: unknown;
 };
 
@@ -86,6 +88,8 @@ const catalogRowsEqual = (existing: ExistingCatalogRow, next: CatalogRowPayload)
   normText((existing as Record<string, unknown>).market_type) === normText(next.market_type) &&
   normText((existing as Record<string, unknown>).resolved_outcome_title) === normText(next.resolved_outcome_title) &&
   approxEqual((existing as Record<string, unknown>).total_volume_usd, next.total_volume_usd, 1e-8) &&
+  Boolean((existing as Record<string, unknown>).is_fast_market) === next.is_fast_market &&
+  normText((existing as Record<string, unknown>).catalog_bucket) === normText(next.catalog_bucket) &&
   stableJson(existing.provider_payload) === stableJson(next.provider_payload);
 
 type OutcomeRowPayload = {
@@ -113,6 +117,208 @@ const outcomeRowsEqual = (existing: ExistingOutcomeRow, next: OutcomeRowPayload)
   Boolean(existing.is_active) === Boolean(next.is_active) &&
   stableJson(existing.provider_payload) === stableJson(next.provider_payload);
 
+const FAST_MARKET_WINDOW_MS = 15 * 60 * 1000;
+const FAST_MARKET_SERIES_RE = /\b(5|10|15)\s*(m|min|mins|minute|minutes)\b/i;
+const FAST_MARKET_SPAM_RE = /\b(up|down)\b/i;
+const FAST_MARKET_ASSET_RE = /\b(sol|solana|btc|bitcoin|eth|ethereum)\b/i;
+const YES_RE = /^(yes|up|true)\b/i;
+const NO_RE = /^(no|down|false)\b/i;
+const COMPARE_CLOSE_BUCKET_MS = 15 * 60 * 1000;
+
+const isFastMarket = (market: VenueMarket): boolean => {
+  const closesAtMs = Date.parse(String(market.closesAt ?? ""));
+  const title = String(market.title ?? "");
+  if (Number.isFinite(closesAtMs) && closesAtMs - Date.now() <= FAST_MARKET_WINDOW_MS) {
+    return true;
+  }
+  return FAST_MARKET_SERIES_RE.test(title) || (FAST_MARKET_SPAM_RE.test(title) && FAST_MARKET_ASSET_RE.test(title));
+};
+
+const normalizeCompareText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/['"`’]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(will|the|a|an|be|to|of|on|in|for)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeCompareCategory = (value: string | null): string => (normText(value) ?? "").toLowerCase();
+
+const roundCompareCloseIso = (iso: string): string | null => {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const rounded = Math.round(ms / COMPARE_CLOSE_BUCKET_MS) * COMPARE_CLOSE_BUCKET_MS;
+  return new Date(rounded).toISOString();
+};
+
+const buildOutcomeMap = (market: VenueMarket): Record<string, string> | null => {
+  if (market.outcomes.length !== 2) return null;
+  const out: Record<string, string> = {};
+  for (const outcome of market.outcomes) {
+    const title = String(outcome.title ?? "").trim();
+    const mappedKey = YES_RE.test(title) ? "YES" : NO_RE.test(title) ? "NO" : null;
+    const outcomeId =
+      normText(outcome.providerOutcomeId) ??
+      normText(outcome.providerTokenId) ??
+      normText(outcome.id);
+    if (!mappedKey || !outcomeId || out[mappedKey]) return null;
+    out[mappedKey] = outcomeId;
+  }
+  return out.YES && out.NO ? out : null;
+};
+
+type CompareCandidate = {
+  marketId: string;
+  provider: VenueProvider;
+  normalizedQuestion: string;
+  normalizedClosesAt: string;
+  category: string;
+  outcomeMap: Record<string, string>;
+};
+
+const buildCompareCandidate = (market: VenueMarket, marketId: string): CompareCandidate | null => {
+  const outcomeMap = buildOutcomeMap(market);
+  if (!outcomeMap) return null;
+  const normalizedQuestion = normalizeCompareText(market.title);
+  const normalizedClosesAt = roundCompareCloseIso(market.closesAt);
+  if (!normalizedQuestion || normalizedQuestion.length < 12 || !normalizedClosesAt) return null;
+  return {
+    marketId,
+    provider: market.provider,
+    normalizedQuestion,
+    normalizedClosesAt,
+    category: normalizeCompareCategory(market.category),
+    outcomeMap,
+  };
+};
+
+const compareGroupKey = (candidate: {
+  normalizedQuestion: string;
+  normalizedClosesAt: string;
+  category: string;
+}) => [candidate.normalizedQuestion, candidate.normalizedClosesAt, candidate.category].join("|");
+
+const syncCompareGroupsForCatalog = async (
+  supabaseService: unknown,
+  markets: VenueMarket[],
+  idsByKey: Map<string, string>
+) => {
+  if (!supabaseService) return;
+
+  const touchedMarketIds = Array.from(new Set(Array.from(idsByKey.values()).filter(Boolean)));
+  if (touchedMarketIds.length === 0) return;
+
+  const candidates = markets
+    .map((market) => {
+      const marketId = idsByKey.get(`${market.provider}:${market.providerMarketId}`);
+      return marketId ? buildCompareCandidate(market, marketId) : null;
+    })
+    .filter((row): row is CompareCandidate => Boolean(row));
+
+  const grouped = new Map<string, CompareCandidate[]>();
+  for (const candidate of candidates) {
+    const key = compareGroupKey(candidate);
+    const rows = grouped.get(key) ?? [];
+    rows.push(candidate);
+    grouped.set(key, rows);
+  }
+
+  const matchedGroups = Array.from(grouped.values()).filter((rows) => new Set(rows.map((row) => row.provider)).size >= 2);
+  const matchedKeys = new Set(matchedGroups.map((rows) => compareGroupKey(rows[0]!)));
+
+  await (supabaseService as any).from("market_compare_members").delete().in("market_id", touchedMarketIds);
+  await (supabaseService as any).from("market_catalog").update({ compare_group_id: null }).in("id", touchedMarketIds);
+
+  if (matchedGroups.length === 0) {
+    return;
+  }
+
+  const groupRows = matchedGroups.map((rows) => ({
+    normalized_question: rows[0]!.normalizedQuestion,
+    normalized_closes_at: rows[0]!.normalizedClosesAt,
+    category: rows[0]!.category,
+    status: "active",
+  }));
+
+  const { error: groupUpsertError } = await (supabaseService as any)
+    .from("market_compare_groups")
+    .upsert(groupRows, { onConflict: "normalized_question,normalized_closes_at,category" });
+  if (groupUpsertError) {
+    throw new Error(groupUpsertError.message ?? "MARKET_COMPARE_GROUPS_UPSERT_FAILED");
+  }
+
+  const normalizedQuestions = Array.from(new Set(groupRows.map((row) => row.normalized_question)));
+  const { data: existingGroups, error: groupResolveError } = await (supabaseService as any)
+    .from("market_compare_groups")
+    .select("id, normalized_question, normalized_closes_at, category")
+    .in("normalized_question", normalizedQuestions);
+  if (groupResolveError) {
+    throw new Error(groupResolveError.message ?? "MARKET_COMPARE_GROUPS_RESOLVE_FAILED");
+  }
+
+  const groupIdByKey = new Map<string, string>();
+  for (const row of existingGroups ?? []) {
+    const id = normText((row as Record<string, unknown>).id);
+    const normalizedQuestion = normText((row as Record<string, unknown>).normalized_question);
+    const normalizedClosesAt = normText((row as Record<string, unknown>).normalized_closes_at);
+    const category = normalizeCompareCategory(normText((row as Record<string, unknown>).category));
+    if (!id || !normalizedQuestion || !normalizedClosesAt) continue;
+    const key = compareGroupKey({
+      normalizedQuestion,
+      normalizedClosesAt: new Date(normalizedClosesAt).toISOString(),
+      category,
+    });
+    if (matchedKeys.has(key)) {
+      groupIdByKey.set(key, id);
+    }
+  }
+
+  const memberRows: Array<{
+    compare_group_id: string;
+    market_id: string;
+    provider: VenueProvider;
+    outcome_map: Record<string, string>;
+    match_confidence: number;
+    match_source: string;
+  }> = [];
+  const marketIdsByGroupId = new Map<string, string[]>();
+  for (const rows of matchedGroups) {
+    const key = compareGroupKey(rows[0]!);
+    const groupId = groupIdByKey.get(key);
+    if (!groupId) continue;
+    for (const row of rows) {
+      memberRows.push({
+        compare_group_id: groupId,
+        market_id: row.marketId,
+        provider: row.provider,
+        outcome_map: row.outcomeMap,
+        match_confidence: 1,
+        match_source: "normalized_exact",
+      });
+      const marketIds = marketIdsByGroupId.get(groupId) ?? [];
+      marketIds.push(row.marketId);
+      marketIdsByGroupId.set(groupId, marketIds);
+    }
+  }
+
+  if (memberRows.length > 0) {
+    const { error: memberUpsertError } = await (supabaseService as any)
+      .from("market_compare_members")
+      .upsert(memberRows, { onConflict: "market_id" });
+    if (memberUpsertError) {
+      throw new Error(memberUpsertError.message ?? "MARKET_COMPARE_MEMBERS_UPSERT_FAILED");
+    }
+
+    for (const [groupId, marketIds] of marketIdsByGroupId.entries()) {
+      await (supabaseService as any)
+        .from("market_catalog")
+        .update({ compare_group_id: groupId })
+        .in("id", Array.from(new Set(marketIds)));
+    }
+  }
+};
+
 export const upsertVenueMarketsToCatalog = async (
   supabaseService: unknown,
   markets: VenueMarket[]
@@ -128,6 +334,7 @@ export const upsertVenueMarketsToCatalog = async (
       market.providerPayload && typeof market.providerPayload === "object" && !Array.isArray(market.providerPayload)
         ? market.providerPayload
         : {};
+    const fastMarket = isFastMarket(market);
 
     return {
       provider: market.provider,
@@ -146,6 +353,8 @@ export const upsertVenueMarketsToCatalog = async (
       market_type: market.outcomes.length > 2 ? "multi_choice" : "binary",
       resolved_outcome_title: market.resolvedOutcomeTitle,
       total_volume_usd: Math.max(0, Number.isFinite(market.volume) ? market.volume : 0),
+      is_fast_market: fastMarket,
+      catalog_bucket: fastMarket ? "fast" : "main",
       provider_payload: {
         ...providerPayload,
         capabilities: market.capabilities,
@@ -172,7 +381,7 @@ export const upsertVenueMarketsToCatalog = async (
     const { data, error } = await (supabaseService as any)
       .from("market_catalog")
       .select(
-        "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload"
+        "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, provider_payload"
       )
       .in("provider", providers)
       .in("provider_market_id", providerMarketIds);
@@ -234,6 +443,8 @@ export const upsertVenueMarketsToCatalog = async (
       idsByKey.set(`${provider}:${providerMarketId}`, id);
     }
   }
+
+  await syncCompareGroupsForCatalog(supabaseService, dedupedMarkets, idsByKey);
 
   const outcomeRows: OutcomeRowPayload[] = [];
 

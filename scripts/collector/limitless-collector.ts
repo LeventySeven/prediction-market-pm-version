@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
-import { writeUpstashMarketLivePatches } from "../../src/server/cache/upstash";
+import { writeUpstashMarketLivePatches, writeUpstashMarketOrderbooks } from "../../src/server/cache/upstash";
 import { limitlessAdapter } from "../../src/server/venues/limitlessAdapter";
 import {
   encodeSocketIoEventPacket,
@@ -769,6 +769,7 @@ const snapshotSync = async (mode: "head" | "full") => {
 
   const limit = mode === "head" ? HEAD_SNAPSHOT_LIMIT : SNAPSHOT_LIMIT;
   const writeSyncState = true;
+  const syncScope = "catalog";
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
 
@@ -777,7 +778,7 @@ const snapshotSync = async (mode: "head" | "full") => {
     if (writeSyncState) {
       await upsertProviderSyncState(supabase, {
         provider: "limitless",
-        scope: "open",
+        scope: syncScope,
         startedAt,
         errorMessage: null,
         stats: {
@@ -860,7 +861,7 @@ const snapshotSync = async (mode: "head" | "full") => {
       const finishedAt = new Date().toISOString();
       await upsertProviderSyncState(supabase, {
         provider: "limitless",
-        scope: "open",
+        scope: syncScope,
         startedAt,
         successAt: finishedAt,
         errorMessage: null,
@@ -881,7 +882,7 @@ const snapshotSync = async (mode: "head" | "full") => {
     if (writeSyncState) {
       await upsertProviderSyncState(supabase, {
         provider: "limitless",
-        scope: "open",
+        scope: syncScope,
         startedAt,
         errorMessage: message,
         stats: {
@@ -955,6 +956,48 @@ const readBookEdgePrice = (levels: unknown, side: "bid" | "ask"): number | null 
     }
   }
   return edge;
+};
+
+const normalizeOrderbookLevels = (
+  levels: unknown,
+  side: "bid" | "ask",
+  outcomeTitle: string | null
+): Array<{
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  outcomeId: null;
+  outcomeTitle: string | null;
+}> => {
+  if (!Array.isArray(levels)) return [];
+  const out: Array<{
+    side: "bid" | "ask";
+    price: number;
+    size: number;
+    outcomeId: null;
+    outcomeTitle: string | null;
+  }> = [];
+  for (const level of levels) {
+    const rec = asRecord(level);
+    const rawPrice = Array.isArray(level)
+      ? parseNumber(level[0])
+      : parseNumber(rec?.price) ?? parseNumber(rec?.p);
+    const rawSize = Array.isArray(level)
+      ? parseNumber(level[1])
+      : parseNumber(rec?.size) ?? parseNumber(rec?.s) ?? parseNumber(rec?.quantity);
+    const price = toPriceProb(rawPrice);
+    const size = rawSize === null ? 0 : Math.max(0, rawSize);
+    if (price === null) continue;
+    out.push({
+      side,
+      price,
+      size,
+      outcomeId: null,
+      outcomeTitle,
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
 };
 
 const sendWsSubscription = () => {
@@ -1041,13 +1084,32 @@ const handleSocketIoEvent = (eventName: string, payload: unknown) => {
   if (!rec) return;
 
   if (eventName === "orderbookUpdate") {
+    const providerMarketId = resolveProviderMarketIdFromWs(rec);
     const book = asRecord(rec.orderbook);
+    const bids = book?.bids ?? rec.bids;
+    const asks = book?.asks ?? rec.asks;
     const bestBid = readBookEdgePrice(book?.bids ?? rec.bids, "bid");
     const bestAsk = readBookEdgePrice(book?.asks ?? rec.asks, "ask");
     const inferredMid =
       bestBid !== null && bestAsk !== null
         ? clamp01((bestBid + bestAsk) / 2)
         : toPriceProb(rec.mid) ?? toPriceProb(rec.price) ?? toPriceProb(rec.lastPrice) ?? 0.5;
+    if (providerMarketId) {
+      const updatedAtMs = parseTsMs(rec.source_ts ?? rec.timestamp ?? rec.ts) ?? Date.now();
+      void writeUpstashMarketOrderbooks([
+        {
+          marketId: venueToCanonicalId("limitless", providerMarketId),
+          provider: "limitless",
+          depth: 12,
+          snapshotId: null,
+          updatedAt: new Date(updatedAtMs).toISOString(),
+          levels: [
+            ...normalizeOrderbookLevels(bids, "bid", "YES"),
+            ...normalizeOrderbookLevels(asks, "ask", "YES"),
+          ],
+        },
+      ]);
+    }
     handleWsPayload({
       ...rec,
       best_bid: bestBid ?? rec.best_bid,

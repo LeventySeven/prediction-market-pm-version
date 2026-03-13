@@ -66,6 +66,7 @@ import {
 } from "@/src/lib/marketPresentation";
 import { getChartRangeRequest, type MarketChartRange } from "@/src/lib/chartRanges";
 import type {
+  CatalogPageScope,
   CatalogBootstrapEntry,
   HomePageInitialData,
   InitialCatalogBootstrap,
@@ -88,7 +89,7 @@ const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
-const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v1";
+const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v2";
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -97,8 +98,7 @@ type MarketHighlightKind = keyof typeof MARKET_HIGHLIGHT_MS;
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 type LimitlessStoredAuth = {
-  apiKey: string;
-  ownerId: number;
+  bearerToken: string;
 };
 
 type CanonicalMarketLiveRow = {
@@ -110,6 +110,7 @@ type CanonicalMarketLiveRow = {
   last_trade_size: number | null;
   rolling_24h_volume: number | null;
   open_interest: number | null;
+  source_seq?: number | null;
   source_ts: string | null;
 };
 type MarketLivePatch = {
@@ -121,6 +122,8 @@ type MarketLivePatch = {
   rolling24hVolume: number | null;
   openInterest: number | null;
   liveUpdatedAt: string | null;
+  snapshotId?: number | null;
+  liveSeq?: number | null;
 };
 type MergedMarketCacheEntry = {
   base: Market;
@@ -141,16 +144,10 @@ const isCsrfTokenInvalidErrorMessage = (msg?: string) =>
 
 const normalizeLimitlessStoredAuth = (value: unknown): LimitlessStoredAuth | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const rec = value as { apiKey?: unknown; ownerId?: unknown };
-  const apiKey = typeof rec.apiKey === "string" ? rec.apiKey.trim() : "";
-  const ownerId =
-    typeof rec.ownerId === "number" && Number.isInteger(rec.ownerId)
-      ? rec.ownerId
-      : typeof rec.ownerId === "string"
-        ? Number(rec.ownerId)
-        : NaN;
-  if (!apiKey || !Number.isInteger(ownerId) || ownerId <= 0) return null;
-  return { apiKey, ownerId };
+  const rec = value as { bearerToken?: unknown };
+  const bearerToken = typeof rec.bearerToken === "string" ? rec.bearerToken.trim() : "";
+  if (!bearerToken) return null;
+  return { bearerToken };
 };
 
 const readStoredLimitlessAuth = (): LimitlessStoredAuth | null => {
@@ -223,6 +220,12 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     canonicalMarketId:
       m.canonicalMarketId ?? `${m.provider ?? "polymarket"}:${m.providerMarketId ?? String(m.id)}`,
     marketRefId: typeof m.marketRefId === "string" ? m.marketRefId : null,
+    snapshotId: typeof m.snapshotId === "number" && Number.isFinite(m.snapshotId) ? m.snapshotId : null,
+    liveSeq: typeof m.liveSeq === "number" && Number.isFinite(m.liveSeq) ? m.liveSeq : null,
+    compareGroupId: m.compareGroupId ?? null,
+    compareGroup: m.compareGroup ?? null,
+    isFastMarket: Boolean(m.isFastMarket),
+    catalogBucket: m.catalogBucket ?? "main",
     title,
     titleRu: m.titleRu,
     titleEn: m.titleEn,
@@ -265,6 +268,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     openInterest: m.openInterest ?? null,
     liveUpdatedAt: m.liveUpdatedAt ?? null,
     freshness: m.freshness ?? null,
+    orderbookFreshness: m.orderbookFreshness ?? null,
     capabilities: m.capabilities ?? null,
     tradeMeta: m.tradeMeta ?? null,
   };
@@ -314,6 +318,8 @@ const mergeMarketLivePatch = (
   rolling24hVolume: incoming.rolling24hVolume ?? prev?.rolling24hVolume ?? null,
   openInterest: incoming.openInterest ?? prev?.openInterest ?? null,
   liveUpdatedAt: incoming.liveUpdatedAt ?? prev?.liveUpdatedAt ?? null,
+  snapshotId: incoming.snapshotId ?? prev?.snapshotId ?? null,
+  liveSeq: incoming.liveSeq ?? prev?.liveSeq ?? null,
 });
 
 const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market => {
@@ -349,6 +355,8 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
     volume24h: nextRolling24h === null ? market.volume24h ?? null : formatCompactUsd(nextRolling24h),
     openInterest: patch.openInterest,
     liveUpdatedAt: patch.liveUpdatedAt,
+    snapshotId: patch.snapshotId ?? market.snapshotId ?? null,
+    liveSeq: patch.liveSeq ?? market.liveSeq ?? null,
     freshness:
       market.freshness || patch.liveUpdatedAt
         ? {
@@ -356,6 +364,60 @@ const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market
             stale: market.freshness?.stale ?? false,
           }
         : null,
+  };
+};
+
+const parseLiveStreamPayload = (
+  payloadRaw: string
+): {
+  snapshotId: number | null;
+  seq: number | null;
+  patches: Array<{ marketId: string; patch: MarketLivePatch }>;
+} => {
+  const payload = JSON.parse(payloadRaw) as {
+    snapshotId?: number | null;
+    seq?: number | null;
+    patches?: Array<{
+      marketId?: string;
+      bestBid?: number | null;
+      bestAsk?: number | null;
+      mid?: number | null;
+      lastTradePrice?: number | null;
+      lastTradeSize?: number | null;
+      rolling24hVolume?: number | null;
+      openInterest?: number | null;
+      sourceTs?: string | null;
+      sourceSeq?: number | null;
+      snapshotId?: number | null;
+    }>;
+  };
+  const eventSnapshotId = asNumber(payload.snapshotId);
+  const eventSeq = asNumber(payload.seq);
+  const patches = Array.isArray(payload.patches) ? payload.patches : [];
+  const out: Array<{ marketId: string; patch: MarketLivePatch }> = [];
+  for (const patchRow of patches) {
+    const marketId = String(patchRow.marketId ?? "").trim();
+    if (!marketId) continue;
+    out.push({
+      marketId,
+      patch: {
+        bestBid: asNumber(patchRow.bestBid),
+        bestAsk: asNumber(patchRow.bestAsk),
+        mid: asNumber(patchRow.mid),
+        lastTradePrice: asNumber(patchRow.lastTradePrice),
+        lastTradeSize: asNumber(patchRow.lastTradeSize),
+        rolling24hVolume: asNumber(patchRow.rolling24hVolume),
+        openInterest: asNumber(patchRow.openInterest),
+        liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
+        snapshotId: asNumber(patchRow.snapshotId) ?? eventSnapshotId,
+        liveSeq: asNumber(patchRow.sourceSeq),
+      },
+    });
+  }
+  return {
+    snapshotId: eventSnapshotId,
+    seq: eventSeq,
+    patches: out,
   };
 };
 
@@ -482,6 +544,16 @@ const getCatalogPathForProvider = (provider: "all" | "polymarket" | "limitless")
   return "/catalog";
 };
 
+const getCatalogBucketFromLocation = (): CatalogPageScope => {
+  if (typeof window === "undefined") return "main";
+  try {
+    const url = new URL(window.location.href);
+    return (url.searchParams.get("bucket") ?? "").trim().toLowerCase() === "fast" ? "fast" : "main";
+  } catch {
+    return "main";
+  }
+};
+
 const getViewFromLocation = (): ViewType => {
   if (typeof window === "undefined") return "CATALOG";
   const path = window.location.pathname.toLowerCase();
@@ -554,6 +626,7 @@ const buildProviderOptions = (
 const buildCatalogStableContextKey = (params: {
   providerFilter: ProviderFilter;
   page: number;
+  bucket: CatalogPageScope;
   sort: string;
   status: string;
   time: string;
@@ -563,6 +636,7 @@ const buildCatalogStableContextKey = (params: {
   [
     `provider:${params.providerFilter}`,
     `page:${params.page}`,
+    `bucket:${params.bucket}`,
     `sort:${params.sort}`,
     `status:${params.status}`,
     `time:${params.time}`,
@@ -665,6 +739,9 @@ export default function HomePage({
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
+  const [catalogBucket, setCatalogBucket] = useState<CatalogPageScope>(() =>
+    typeof window === "undefined" ? "main" : getCatalogBucketFromLocation()
+  );
   const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>(() =>
     initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation())
   );
@@ -672,9 +749,14 @@ export default function HomePage({
   const [hasNextCatalogPage, setHasNextCatalogPage] = useState<boolean>(() => {
     const desiredProvider =
       initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation());
+    const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
     return Boolean(
       bootstrappedCatalog?.entries.find(
-        (entry) => entry.page === 1 && entry.sortBy === "newest" && entry.providerFilter === desiredProvider
+        (entry) =>
+          entry.page === 1 &&
+          entry.sortBy === "newest" &&
+          entry.providerFilter === desiredProvider &&
+          entry.catalogBucket === desiredBucket
       )?.hasMore
     );
   });
@@ -731,7 +813,21 @@ export default function HomePage({
   const seenCatalogIdsByContextRef = useRef<Map<string, Set<string>>>(new Map());
   const activeCatalogContextKeyRef = useRef<string>("");
   const activeCatalogMarketIdsRef = useRef<Set<string>>(new Set());
-  const skipInitialCatalogFetchRef = useRef(Boolean(initialCatalogBootstrap?.entries?.length));
+  const skipInitialCatalogFetchRef = useRef(
+    Boolean(
+      bootstrapRef.current?.entries?.some((entry) => {
+        const desiredProvider =
+          initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation());
+        const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
+        return (
+          entry.page === 1 &&
+          entry.sortBy === "newest" &&
+          entry.providerFilter === desiredProvider &&
+          entry.catalogBucket === desiredBucket
+        );
+      })
+    )
+  );
   const initialSelectedMarketDataRef = useRef<{
     marketId: string | null;
     candles: PriceCandle[];
@@ -753,7 +849,8 @@ export default function HomePage({
     }
     const desiredProvider =
       initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation());
-    const key = `provider:${desiredProvider}:page:1:sort:newest`;
+    const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
+    const key = `provider:${desiredProvider}:page:1:sort:newest:bucket:${desiredBucket}`;
     const entry = bootstrap.entries.find((row) => row.cacheKey === key);
     const rows = entry ? entry.rows.map((row) => mapMarketApiToMarket(row, "EN")) : [];
     if (initialSelectedMarket) {
@@ -904,6 +1001,7 @@ export default function HomePage({
     const sort = (url.searchParams.get("sort") ?? "").trim().toUpperCase();
     const status = (url.searchParams.get("status") ?? "").trim().toUpperCase();
     const time = (url.searchParams.get("time") ?? "").trim().toUpperCase();
+    const bucket = (url.searchParams.get("bucket") ?? "").trim().toLowerCase();
     const page = Number(url.searchParams.get("page") ?? "1");
 
     setSearchQuery(q);
@@ -924,6 +1022,7 @@ export default function HomePage({
 
     const isTime = time === "ANY" || time === "HOUR" || time === "DAY" || time === "WEEK";
     setCatalogTimeFilter(isTime ? time : "ANY");
+    setCatalogBucket(bucket === "fast" ? "fast" : "main");
     setCatalogPage(Number.isFinite(page) && page > 0 ? Math.floor(page) : 1);
   }, []);
 
@@ -973,6 +1072,7 @@ export default function HomePage({
     if (catalogSort !== "CREATED_DESC") params.set("sort", catalogSort);
     if (catalogStatus !== "ALL") params.set("status", catalogStatus);
     if (catalogTimeFilter !== "ANY") params.set("time", catalogTimeFilter);
+    if (catalogBucket !== "main") params.set("bucket", catalogBucket);
     if (catalogPage > 1) params.set("page", String(catalogPage));
     const nextUrl = params.toString().length > 0 ? `${nextPath}?${params.toString()}` : nextPath;
     commitHistoryNavigation("replace", nextUrl, { view: "CATALOG" });
@@ -980,6 +1080,7 @@ export default function HomePage({
     activeCategoryId,
     activeProviderFilter,
     catalogPage,
+    catalogBucket,
     catalogSort,
     catalogStatus,
     catalogTimeFilter,
@@ -1439,10 +1540,9 @@ export default function HomePage({
   }, []);
 
   const handleSaveLimitlessCredentials = useCallback(
-    async (payload: { apiKey: string; ownerId: number }) => {
+    async (payload: { bearerToken: string }) => {
       const nextValue: LimitlessStoredAuth = {
-        apiKey: payload.apiKey.trim(),
-        ownerId: payload.ownerId,
+        bearerToken: payload.bearerToken.trim(),
       };
       writeStoredLimitlessAuth(nextValue);
       setLimitlessStoredAuth(nextValue);
@@ -1857,19 +1957,24 @@ export default function HomePage({
     page: number;
     providerFilter: ProviderFilter;
     sortBy: "newest" | "volume";
+    catalogBucket: CatalogPageScope;
   };
   type CatalogFetchResult = {
     rows: MarketApiRow[];
     hasMore: boolean;
+    snapshotId?: number | null;
+    pageScope?: string;
   };
   type CatalogPageCacheEntry = CatalogFetchResult & { updatedAt: number };
 
   const buildCatalogFetchKey = useCallback((params: CatalogFetchParams): string => {
-    return `provider:${params.providerFilter}:page:${params.page}:sort:${params.sortBy}`;
+    return `provider:${params.providerFilter}:page:${params.page}:sort:${params.sortBy}:bucket:${params.catalogBucket}`;
   }, []);
   const getAggregatedCatalogResult = useCallback((params: CatalogFetchParams): CatalogFetchResult => {
     const deduped = new Map<string, MarketApiRow>();
     let hasMore = false;
+    let snapshotId: number | null = null;
+    let pageScope: string | undefined;
 
     for (let page = 1; page <= params.page; page += 1) {
       const entry = catalogPageCacheRef.current.get(
@@ -1885,12 +1990,16 @@ export default function HomePage({
         deduped.set(key, row);
       }
       hasMore = entry.hasMore;
+      snapshotId = typeof entry.snapshotId === "number" && Number.isFinite(entry.snapshotId) ? entry.snapshotId : snapshotId;
+      pageScope = entry.pageScope ?? pageScope;
       if (!entry.hasMore) break;
     }
 
     return {
       rows: Array.from(deduped.values()),
       hasMore,
+      snapshotId,
+      pageScope,
     };
   }, [buildCatalogFetchKey]);
 
@@ -1899,7 +2008,8 @@ export default function HomePage({
       (entry) =>
         entry.page === 1 &&
         entry.sortBy === "newest" &&
-        entry.providerFilter === activeProviderFilter
+        entry.providerFilter === activeProviderFilter &&
+        entry.catalogBucket === catalogBucket
     )?.cacheKey ?? null;
   const displayedCatalogCacheKeyRef = useRef<string | null>(initialBootstrapCacheKey);
   const loadMarketsRequestSeqRef = useRef(0);
@@ -1917,6 +2027,8 @@ export default function HomePage({
         {
           rows: entry.rows,
           hasMore: entry.hasMore,
+          snapshotId: entry.snapshotId ?? null,
+          pageScope: entry.pageScope,
           updatedAt: entry.updatedAt,
         },
       ])
@@ -1930,22 +2042,28 @@ export default function HomePage({
     const entries: CatalogBootstrapEntry[] = [];
     const providersToPersist = Array.from(new Set<ProviderFilter>(["all", ...enabledProviders]));
     for (const providerFilter of providersToPersist) {
-      const cacheKey = buildCatalogFetchKey({
-        providerFilter,
-        page: 1,
-        sortBy: "newest",
-      });
-      const cached = catalogPageCacheRef.current.get(cacheKey);
-      if (!cached) continue;
-      entries.push({
-        cacheKey,
-        providerFilter,
-        page: 1,
-        sortBy: "newest",
-        rows: cached.rows,
-        hasMore: cached.hasMore,
-        updatedAt: cached.updatedAt,
-      });
+      for (const bucket of ["main", "fast"] as const) {
+        const cacheKey = buildCatalogFetchKey({
+          providerFilter,
+          page: 1,
+          sortBy: "newest",
+          catalogBucket: bucket,
+        });
+        const cached = catalogPageCacheRef.current.get(cacheKey);
+        if (!cached) continue;
+        entries.push({
+          cacheKey,
+          providerFilter,
+          page: 1,
+          sortBy: "newest",
+          catalogBucket: bucket,
+          rows: cached.rows,
+          hasMore: cached.hasMore,
+          snapshotId: cached.snapshotId ?? null,
+          pageScope: cached.pageScope,
+          updatedAt: cached.updatedAt,
+        });
+      }
     }
     if (entries.length === 0) return;
     persistWarmCatalogBootstrap({
@@ -1960,14 +2078,16 @@ export default function HomePage({
       page: catalogPage,
       providerFilter: activeProviderFilter,
       sortBy: backendSortBy,
+      catalogBucket,
     });
-  }, [activeProviderFilter, buildCatalogFetchKey, catalogPage, catalogSort]);
+  }, [activeProviderFilter, buildCatalogFetchKey, catalogBucket, catalogPage, catalogSort]);
   const hasLoadedActiveCatalogKey = Boolean(loadedCatalogKeys[activeCatalogFetchKey]);
   const activeCatalogContextKey = useMemo(
     () =>
       buildCatalogStableContextKey({
         providerFilter: activeProviderFilter,
         page: catalogPage,
+        bucket: catalogBucket,
         sort: catalogSort,
         status: catalogStatus,
         time: catalogTimeFilter,
@@ -1977,6 +2097,7 @@ export default function HomePage({
     [
       activeCategoryId,
       activeProviderFilter,
+      catalogBucket,
       catalogPage,
       catalogSort,
       catalogStatus,
@@ -2008,19 +2129,27 @@ export default function HomePage({
         sortBy: params.sortBy,
         providerFilter: params.providerFilter,
         providers: selectedProviders,
+        catalogBucket: params.catalogBucket,
       });
-      const hasMore = (response?.length ?? 0) > CATALOG_PAGE_SIZE;
-      const rows = ((response ?? []).slice(0, CATALOG_PAGE_SIZE) as MarketApiRow[]);
+      const rows = ((response?.items ?? []).slice(0, CATALOG_PAGE_SIZE) as MarketApiRow[]);
+      const hasMore = Boolean(response?.hasMore);
       catalogPageCacheRef.current.set(cacheKey, {
         rows,
         hasMore,
+        snapshotId: response?.snapshotId ?? null,
+        pageScope: response?.pageScope,
         updatedAt: Date.now(),
       });
       markCatalogKeyLoaded(cacheKey);
       if (params.page === 1 && params.sortBy === "newest") {
         writeWarmCatalogCache();
       }
-      return { rows, hasMore };
+      return {
+        rows,
+        hasMore,
+        snapshotId: response?.snapshotId ?? null,
+        pageScope: response?.pageScope,
+      };
     })();
 
     catalogInFlightRef.current.set(cacheKey, fetchPromise);
@@ -2039,13 +2168,15 @@ export default function HomePage({
       page: catalogPage,
       providerFilter: activeProviderFilter,
       sortBy: backendSortBy,
+      catalogBucket,
     };
     const cacheKey = buildCatalogFetchKey(fetchParams);
     const requestSeq = loadMarketsRequestSeqRef.current + 1;
     loadMarketsRequestSeqRef.current = requestSeq;
     const cachedAggregate = getAggregatedCatalogResult(fetchParams);
     const hasCached = cachedAggregate.rows.length > 0;
-    const hasCurrentMarketsForActiveKey = marketsRef.current.length > 0;
+    const hasCurrentMarketsForActiveKey =
+      displayedCatalogCacheKeyRef.current === cacheKey && marketsRef.current.length > 0;
     const hasActiveKeyData = hasCached || hasCurrentMarketsForActiveKey || hasLoadedActiveCatalogKey;
 
     setMarketsError(null);
@@ -2099,6 +2230,7 @@ export default function HomePage({
   }, [
     activeProviderFilter,
     buildCatalogFetchKey,
+    catalogBucket,
     catalogPage,
     catalogSort,
     fetchCatalogPage,
@@ -2117,6 +2249,7 @@ export default function HomePage({
       page: 1,
       providerFilter: activeProviderFilter,
       sortBy: "volume",
+      catalogBucket,
     };
     const cacheKey = buildCatalogFetchKey(fetchParams);
     const cached = catalogPageCacheRef.current.get(cacheKey);
@@ -2146,6 +2279,7 @@ export default function HomePage({
   }, [
     activeProviderFilter,
     buildCatalogFetchKey,
+    catalogBucket,
     fetchCatalogPage,
     lang,
     showMarketPulseBoard,
@@ -2187,7 +2321,7 @@ export default function HomePage({
 
   useEffect(() => {
     catalogAutoAdvancePageRef.current = 0;
-  }, [activeProviderFilter, activeCategoryId, catalogSort, catalogStatus, catalogTimeFilter, searchQuery]);
+  }, [activeProviderFilter, activeCategoryId, catalogBucket, catalogSort, catalogStatus, catalogTimeFilter, searchQuery]);
 
   const loadMyComments = useCallback(async () => {
     if (!user) return;
@@ -2426,6 +2560,7 @@ export default function HomePage({
               lastTradeSize: asNumber(row.last_trade_size),
               rolling24hVolume: asNumber(row.rolling_24h_volume),
               openInterest: asNumber(row.open_interest),
+              liveSeq: asNumber(row.source_seq),
               liveUpdatedAt: typeof row.source_ts === "string" ? row.source_ts : null,
             };
             const prevPatch = prev[marketId];
@@ -2542,43 +2677,52 @@ export default function HomePage({
 
       const streamUrl = `/api/stream/markets?ids=${encodeURIComponent(targetIds.join(","))}`;
       const stream = new EventSource(streamUrl);
+      const currentCatalogSnapshotId =
+        asNumber(catalogPageCacheRef.current.get(activeCatalogFetchKey)?.snapshotId) ??
+        asNumber(marketsRef.current[0]?.snapshotId) ??
+        null;
+      let streamSnapshotId = currentCatalogSnapshotId;
+      let lastStreamSeq: number | null = null;
+      let reconciliationTriggered = false;
 
       const activateSupabaseFallback = () => {
         if (stopSupabaseFallback) return;
         stopSupabaseFallback = startSupabaseVisibleSubscription();
       };
 
+      const reconcileCatalogStream = () => {
+        if (reconciliationTriggered) return;
+        reconciliationTriggered = true;
+        incrementClientCounter("catalog.realtime.reconcile");
+        stream.close();
+        activateSupabaseFallback();
+        void loadMarkets();
+      };
+
       stream.addEventListener("live", (evt) => {
         const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
         if (!payloadRaw) return;
         try {
-          const payload = JSON.parse(payloadRaw) as {
-            patches?: Array<{
-              marketId?: string;
-              bestBid?: number | null;
-              bestAsk?: number | null;
-              mid?: number | null;
-              lastTradePrice?: number | null;
-              lastTradeSize?: number | null;
-              rolling24hVolume?: number | null;
-              openInterest?: number | null;
-              sourceTs?: string | null;
-            }>;
-          };
-          const patches = Array.isArray(payload.patches) ? payload.patches : [];
-          for (const patchRow of patches) {
-            const marketId = String(patchRow.marketId ?? "").trim();
-            if (!marketId) continue;
-            queuePatch(marketId, {
-              bestBid: asNumber(patchRow.bestBid),
-              bestAsk: asNumber(patchRow.bestAsk),
-              mid: asNumber(patchRow.mid),
-              lastTradePrice: asNumber(patchRow.lastTradePrice),
-              lastTradeSize: asNumber(patchRow.lastTradeSize),
-              rolling24hVolume: asNumber(patchRow.rolling24hVolume),
-              openInterest: asNumber(patchRow.openInterest),
-              liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
-            });
+          const envelope = parseLiveStreamPayload(payloadRaw);
+          if (envelope.snapshotId !== null) {
+            if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+              reconcileCatalogStream();
+              return;
+            }
+            streamSnapshotId = envelope.snapshotId;
+          }
+          if (envelope.seq !== null) {
+            if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
+              return;
+            }
+            if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
+              reconcileCatalogStream();
+              return;
+            }
+            lastStreamSeq = envelope.seq;
+          }
+          for (const patch of envelope.patches) {
+            queuePatch(patch.marketId, patch.patch);
           }
         } catch {
           // Ignore malformed stream payloads and keep listening.
@@ -2604,7 +2748,7 @@ export default function HomePage({
       };
     }
     return startSupabaseVisibleSubscription();
-  }, [currentView, selectedMarketId, documentVisible, markets, visibleCatalogMarketIds]);
+  }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, markets, selectedMarketId, visibleCatalogMarketIds]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -3178,6 +3322,8 @@ export default function HomePage({
             lastTradeSize: asNumber((row as { lastTradeSize?: number | null }).lastTradeSize),
             rolling24hVolume: asNumber((row as { rolling24hVolume?: number | null }).rolling24hVolume),
             openInterest: asNumber((row as { openInterest?: number | null }).openInterest),
+            snapshotId: asNumber((row as { snapshotId?: number | null }).snapshotId),
+            liveSeq: asNumber((row as { liveSeq?: number | null }).liveSeq),
             liveUpdatedAt:
               typeof (row as { liveUpdatedAt?: string | null }).liveUpdatedAt === "string"
                 ? (row as { liveUpdatedAt?: string | null }).liveUpdatedAt
@@ -3203,38 +3349,42 @@ export default function HomePage({
       let fallbackActive = false;
       let stopSupabaseFallback: (() => void) | null = null;
       const stream = new EventSource(`/api/stream/markets?ids=${encodeURIComponent(streamMarketId)}`);
+      let streamSnapshotId = asNumber(selectedMarket?.snapshotId) ?? null;
+      let lastStreamSeq: number | null = null;
+
+      const activateSelectedMarketFallback = () => {
+        if (fallbackActive) return;
+        fallbackActive = true;
+        incrementClientCounter("market.realtime.selected.channelRecovery");
+        stopSupabaseFallback = startSelectedMarketFallbackPoll();
+      };
 
       stream.addEventListener("live", (evt) => {
         const payloadRaw = "data" in evt ? String((evt as MessageEvent).data ?? "") : "";
         if (!payloadRaw) return;
         try {
-          const payload = JSON.parse(payloadRaw) as {
-            patches?: Array<{
-              marketId?: string;
-              bestBid?: number | null;
-              bestAsk?: number | null;
-              mid?: number | null;
-              lastTradePrice?: number | null;
-              lastTradeSize?: number | null;
-              rolling24hVolume?: number | null;
-              openInterest?: number | null;
-              sourceTs?: string | null;
-            }>;
-          };
-          const patches = Array.isArray(payload.patches) ? payload.patches : [];
-          for (const patchRow of patches) {
-            const marketId = String(patchRow.marketId ?? "").trim();
-            if (!marketId) continue;
-            queuePatch(marketId, {
-              bestBid: asNumber(patchRow.bestBid),
-              bestAsk: asNumber(patchRow.bestAsk),
-              mid: asNumber(patchRow.mid),
-              lastTradePrice: asNumber(patchRow.lastTradePrice),
-              lastTradeSize: asNumber(patchRow.lastTradeSize),
-              rolling24hVolume: asNumber(patchRow.rolling24hVolume),
-              openInterest: asNumber(patchRow.openInterest),
-              liveUpdatedAt: typeof patchRow.sourceTs === "string" ? patchRow.sourceTs : null,
-            });
+          const envelope = parseLiveStreamPayload(payloadRaw);
+          if (envelope.snapshotId !== null) {
+            if (streamSnapshotId !== null && envelope.snapshotId !== streamSnapshotId) {
+              activateSelectedMarketFallback();
+              stream.close();
+              return;
+            }
+            streamSnapshotId = envelope.snapshotId;
+          }
+          if (envelope.seq !== null) {
+            if (lastStreamSeq !== null && envelope.seq <= lastStreamSeq) {
+              return;
+            }
+            if (lastStreamSeq !== null && envelope.seq > lastStreamSeq + 1) {
+              activateSelectedMarketFallback();
+              stream.close();
+              return;
+            }
+            lastStreamSeq = envelope.seq;
+          }
+          for (const patch of envelope.patches) {
+            queuePatch(patch.marketId, patch.patch);
           }
         } catch {
           // Ignore malformed stream payloads and keep listening.
@@ -3242,10 +3392,7 @@ export default function HomePage({
       });
 
       stream.onerror = () => {
-        if (fallbackActive) return;
-        fallbackActive = true;
-        incrementClientCounter("market.realtime.selected.channelRecovery");
-        stopSupabaseFallback = startSelectedMarketFallbackPoll();
+        activateSelectedMarketFallback();
       };
 
       return () => {
@@ -3262,7 +3409,7 @@ export default function HomePage({
       pendingPatches.clear();
       stopSupabaseFallback();
     };
-  }, [selectedMarketId, selectedMarket?.id, selectedMarket?.marketRefId, selectedMarket?.providerMarketId, selectedProvider]);
+  }, [selectedMarket?.id, selectedMarket?.marketRefId, selectedMarket?.providerMarketId, selectedMarket?.snapshotId, selectedMarketId, selectedProvider]);
 
   const goToView = useCallback(
     (view: ViewType) => {
@@ -3741,6 +3888,7 @@ export default function HomePage({
                 marketSlug: tradeMeta.marketSlug,
                 signedOrder: built.signedOrder,
                 orderType: built.orderType,
+                authMode: "bearer",
                 idempotencyKey,
                 clientOrderId,
                 limitlessAuth: auth,
@@ -3750,8 +3898,8 @@ export default function HomePage({
               if (
                 relayError.includes("LIMITLESS_AUTH_REQUIRED") ||
                 relayError.includes("UNAUTHORIZED") ||
-                relayError.includes("API KEY") ||
-                relayError.includes("OWNER")
+                relayError.includes("TOKEN") ||
+                relayError.includes("BEARER")
               ) {
                 clearStoredLimitlessAuth();
                 setLimitlessStoredAuth(null);
@@ -3823,10 +3971,10 @@ export default function HomePage({
             ? "Для этого рынка не хватает торговых параметров Limitless."
             : "This market is missing Limitless trading metadata.";
         }
-        if (upper.includes("LIMITLESS_AUTH_REQUIRED") || upper.includes("API KEY") || upper.includes("OWNER ID")) {
+        if (upper.includes("LIMITLESS_AUTH_REQUIRED") || upper.includes("TOKEN") || upper.includes("BEARER")) {
           return lang === "RU"
-            ? "Проверьте ваш Limitless API key и owner ID."
-            : "Check your Limitless API key and owner ID.";
+            ? "Проверьте ваш Limitless Bearer token."
+            : "Check your Limitless Bearer token.";
         }
         if (upper.includes("INSUFFICIENT")) {
           return lang === "RU"
@@ -4399,6 +4547,31 @@ export default function HomePage({
 
                     {/* Providers */}
                     <div className="px-4 pt-3 border-b border-zinc-900">
+                      <div className="mb-3 flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
+                        {([
+                          { id: "main" as const, labelRu: "Основные", labelEn: "Main" },
+                          { id: "fast" as const, labelRu: "Быстрые", labelEn: "Fast" },
+                        ]).map((bucketOption) => {
+                          const selected = catalogBucket === bucketOption.id;
+                          return (
+                            <button
+                              key={bucketOption.id}
+                              type="button"
+                              onClick={() => {
+                                setCatalogPage(1);
+                                setCatalogBucket(bucketOption.id);
+                              }}
+                              className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
+                                selected
+                                  ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
+                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
+                              }`}
+                            >
+                              {lang === "RU" ? bucketOption.labelRu : bucketOption.labelEn}
+                            </button>
+                          );
+                        })}
+                      </div>
                       <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
                         {providerOptions.map((provider) => {
                           const selected = activeProviderFilter === provider.id;
@@ -4916,8 +5089,7 @@ export default function HomePage({
       <LimitlessCredentialsModal
         isOpen={limitlessCredentialsOpen}
         lang={lang}
-        initialApiKey={limitlessStoredAuth?.apiKey ?? ""}
-        initialOwnerId={limitlessStoredAuth ? String(limitlessStoredAuth.ownerId) : ""}
+        initialBearerToken={limitlessStoredAuth?.bearerToken ?? ""}
         error={limitlessCredentialsError}
         onClose={closeLimitlessCredentialsModal}
         onSubmit={handleSaveLimitlessCredentials}

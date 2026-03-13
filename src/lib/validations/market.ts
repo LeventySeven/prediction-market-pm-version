@@ -3,12 +3,13 @@ import {
   MAX_API_KEY_LENGTH,
   MAX_API_PASSPHRASE_LENGTH,
   MAX_API_SECRET_LENGTH,
+  MAX_BEARER_TOKEN_LENGTH,
   MAX_CLIENT_ORDER_ID_LENGTH,
-  MAX_LIMITLESS_OWNER_ID,
   MAX_MARKET_ACTIVITY_LIMIT,
   MAX_MARKET_COMMENT_LIMIT,
   MAX_MARKET_LIST_PAGE,
   MAX_MARKET_LIST_PAGE_SIZE,
+  MAX_MARKET_ORDERBOOK_DEPTH,
   MAX_MARKET_SEARCH_LIMIT,
   MAX_MARKET_SIMILAR_LIMIT,
   MAX_PRICE_CANDLE_LIMIT,
@@ -24,8 +25,12 @@ import {
   jsonValueSchema,
   marketActivitySideSchema,
   marketBinaryOutcomeSchema,
+  marketCatalogBucketSchema,
   marketOrderTypeSchema,
+  marketOrderbookSideSchema,
+  marketRelayAuthModeSchema,
   marketStateSchema,
+  marketStorageBucketSchema,
   marketTradeActionSchema,
   marketTypeSchema,
   venueProviderFilterSchema,
@@ -89,6 +94,21 @@ export const marketTradeMetaOutput = z
   .nullable()
   .optional();
 
+export const marketCompareGroupOutput = z.object({
+  id: z.string(),
+  marketCount: z.number().int().nonnegative(),
+  providerCount: z.number().int().nonnegative(),
+  totalVolumeUsd: z.number(),
+  category: z.string().nullable().optional(),
+  normalizedClosesAt: z.string().nullable().optional(),
+});
+
+export const marketOrderbookFreshnessOutput = z.object({
+  updatedAt: z.string().nullable(),
+  depthAvailable: z.number().int().nonnegative(),
+  stale: z.boolean(),
+});
+
 export const marketOutput = z.object({
   id: z.string(),
   provider: venueProviderSchema.optional(),
@@ -118,7 +138,13 @@ export const marketOutput = z.object({
   priceYes: z.number(),
   priceNo: z.number(),
   volume: z.number(),
-  totalVolumeUsd: z.number().nullable().optional(),
+  totalVolumeUsd: z.number(),
+  isFastMarket: z.boolean(),
+  catalogBucket: marketStorageBucketSchema,
+  snapshotId: z.number().int().nullable().optional(),
+  liveSeq: z.number().nullable().optional(),
+  compareGroupId: z.string().nullable().optional(),
+  compareGroup: marketCompareGroupOutput.nullable().optional(),
   chance: z.number().nullable().optional(),
   creatorName: z.string().nullable().optional(),
   creatorAvatarUrl: z.string().nullable().optional(),
@@ -132,10 +158,18 @@ export const marketOutput = z.object({
   liveUpdatedAt: z.string().nullable().optional(),
   capabilities: marketCapabilitiesOutput.optional(),
   freshness: marketFreshnessOutput.nullable().optional(),
+  orderbookFreshness: marketOrderbookFreshnessOutput.nullable().optional(),
   tradeMeta: marketTradeMetaOutput,
 });
 
 export const marketOutputArray = z.array(marketOutput);
+
+export const marketPageOutput = z.object({
+  items: marketOutputArray,
+  snapshotId: z.number().int().nullable(),
+  pageScope: z.string(),
+  hasMore: z.boolean(),
+});
 
 export const marketBookmarkOutput = z.object({
   marketId: z.string(),
@@ -255,6 +289,7 @@ export const listMarketsInput = z
     page: z.number().int().positive().max(MAX_MARKET_LIST_PAGE).optional(),
     pageSize: z.number().int().positive().max(MAX_MARKET_LIST_PAGE_SIZE).optional(),
     sortBy: z.enum(["newest", "volume"]).optional(),
+    catalogBucket: marketCatalogBucketSchema.optional(),
     providers: z.array(venueProviderSchema).optional(),
     providerFilter: venueProviderFilterSchema.optional(),
   })
@@ -286,6 +321,7 @@ export const generateMarketContextInput = z.object({
 export const relaySignedOrderInput = z
   .object({
     provider: venueProviderSchema.default("polymarket"),
+    authMode: marketRelayAuthModeSchema.optional(),
     marketId: z.string().min(MIN_MARKET_REF_LENGTH).optional(),
     marketSlug: z.string().min(MIN_MARKET_REF_LENGTH).max(MAX_RELAY_MARKET_SLUG_LENGTH).optional(),
     signedOrder: z.record(z.string(), jsonValueSchema),
@@ -304,8 +340,7 @@ export const relaySignedOrderInput = z
       .optional(),
     limitlessAuth: z
       .object({
-        apiKey: z.string().min(MIN_MARKET_REF_LENGTH).max(MAX_API_KEY_LENGTH),
-        ownerId: z.number().int().positive().max(MAX_LIMITLESS_OWNER_ID),
+        bearerToken: z.string().min(MIN_MARKET_REF_LENGTH).max(MAX_BEARER_TOKEN_LENGTH),
       })
       .optional(),
   })
@@ -342,6 +377,30 @@ export const relaySignedOrderOutput = z.object({
   status: z.number(),
   payload: jsonValueSchema.optional(),
   error: z.string().optional(),
+});
+
+export const getOrderbookInput = z.object({
+  marketId: z.string().min(MIN_MARKET_REF_LENGTH),
+  provider: venueProviderSchema.optional(),
+  depth: z.number().int().positive().max(MAX_MARKET_ORDERBOOK_DEPTH).optional(),
+});
+
+export const marketOrderbookLevelOutput = z.object({
+  side: marketOrderbookSideSchema,
+  price: z.number(),
+  size: z.number(),
+  outcomeId: z.string().nullable().optional(),
+  outcomeTitle: z.string().nullable().optional(),
+});
+
+export const marketOrderbookOutput = z.object({
+  marketId: z.string(),
+  provider: venueProviderSchema,
+  depth: z.number().int().positive(),
+  snapshotId: z.number().int().nullable(),
+  source: z.enum(["upstash", "provider", "none"]),
+  updatedAt: z.string().nullable(),
+  levels: z.array(marketOrderbookLevelOutput),
 });
 
 export const setBookmarkInput = z.object({

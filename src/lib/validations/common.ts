@@ -6,8 +6,12 @@ import {
   MARKET_ACTIVITY_SIDES,
   MARKET_BINARY_OUTCOMES,
   MARKET_CANDLE_INTERVALS,
+  MARKET_CATALOG_BUCKETS,
   MARKET_ORDER_TYPES,
+  MARKET_ORDERBOOK_SIDES,
+  MARKET_RELAY_AUTH_MODES,
   MARKET_STATES,
+  MARKET_STORAGE_BUCKETS,
   MARKET_TRADE_ACTIONS,
   MARKET_TYPES,
   USERNAME_AVAILABILITY_REASONS,
@@ -26,6 +30,10 @@ export const marketTradeActionSchema = z.enum(MARKET_TRADE_ACTIONS);
 export const marketActivitySideSchema = z.enum(MARKET_ACTIVITY_SIDES);
 export const candleIntervalSchema = z.enum(MARKET_CANDLE_INTERVALS);
 export const marketOrderTypeSchema = z.enum(MARKET_ORDER_TYPES);
+export const marketCatalogBucketSchema = z.enum(MARKET_CATALOG_BUCKETS);
+export const marketStorageBucketSchema = z.enum(MARKET_STORAGE_BUCKETS);
+export const marketRelayAuthModeSchema = z.enum(MARKET_RELAY_AUTH_MODES);
+export const marketOrderbookSideSchema = z.enum(MARKET_ORDERBOOK_SIDES);
 export const userEventTypeSchema = z.enum(USER_EVENT_TYPES);
 export const usernameAvailabilityReasonSchema = z.enum(USERNAME_AVAILABILITY_REASONS);
 export const leaderboardSortFieldSchema = z.enum(LEADERBOARD_SORT_FIELDS);

@@ -50,7 +50,7 @@ const resolveProviderFilter = (
 };
 
 const buildCatalogCacheKey = (providerFilter: ProviderFilter, page = 1, sortBy: "newest" | "volume" = "newest") =>
-  `provider:${providerFilter}:page:${page}:sort:${sortBy}`;
+  `provider:${providerFilter}:page:${page}:sort:${sortBy}:bucket:main`;
 
 const buildCatalogBootstrapEntry = async (
   providerFilter: ProviderFilter,
@@ -58,22 +58,27 @@ const buildCatalogBootstrapEntry = async (
 ): Promise<CatalogBootstrapEntry> => {
   const selectedProviders =
     providerFilter === "all" ? enabledProviders : enabledProviders.includes(providerFilter) ? [providerFilter] : enabledProviders;
-  const rows = (await listCanonicalMarkets({
+  const result = await listCanonicalMarkets({
     onlyOpen: false,
     page: 1,
     pageSize: CATALOG_BOOTSTRAP_PAGE_SIZE + 1,
     sortBy: "newest",
+    catalogBucket: "main",
     providerFilter,
     providers: selectedProviders,
-  })) as MarketApiRow[];
+  });
+  const rows = result.items as MarketApiRow[];
 
   return {
     cacheKey: buildCatalogCacheKey(providerFilter, 1, "newest"),
     providerFilter,
     page: 1,
     sortBy: "newest",
+    catalogBucket: "main",
     rows: rows.slice(0, CATALOG_BOOTSTRAP_PAGE_SIZE),
-    hasMore: rows.length > CATALOG_BOOTSTRAP_PAGE_SIZE,
+    hasMore: result.hasMore,
+    snapshotId: result.snapshotId,
+    pageScope: result.pageScope,
     updatedAt: Date.now(),
   };
 };

@@ -39,6 +39,10 @@ export const upstashMarketTradesTtlSec = clampInt(process.env.UPSTASH_MARKET_TRA
 const upstashLiveStateTtlSec = clampInt(process.env.UPSTASH_LIVE_STATE_TTL_SEC, 60, 10, 900);
 const upstashActivityListTtlSec = clampInt(process.env.UPSTASH_ACTIVITY_TTL_SEC, 120, 10, 900);
 const upstashActivityListMaxItems = clampInt(process.env.UPSTASH_ACTIVITY_MAX_ITEMS, 200, 50, 500);
+const upstashSnapshotTtlSec = clampInt(process.env.UPSTASH_SNAPSHOT_TTL_SEC, 300, 30, 3600);
+const upstashSnapshotShardSize = clampInt(process.env.UPSTASH_SNAPSHOT_SHARD_SIZE, 60, 10, 120);
+const upstashOrderbookTtlSec = clampInt(process.env.UPSTASH_ORDERBOOK_TTL_SEC, 45, 10, 900);
+const upstashOrderbookMaxDepth = clampInt(process.env.UPSTASH_ORDERBOOK_MAX_DEPTH, 24, 4, 80);
 
 let redisClient: Redis | null | undefined;
 
@@ -135,6 +139,8 @@ export const buildMarketListCacheKey = (params: {
   page: number;
   pageSize: number;
   sortBy: "newest" | "volume";
+  snapshotId?: number | null;
+  catalogBucket?: "all" | "main" | "fast";
   providers: Array<"polymarket" | "limitless">;
 }): string =>
   [
@@ -144,6 +150,8 @@ export const buildMarketListCacheKey = (params: {
     `page:${params.page}`,
     `size:${params.pageSize}`,
     `sort:${params.sortBy}`,
+    `snapshot:${typeof params.snapshotId === "number" && Number.isFinite(params.snapshotId) ? params.snapshotId : "none"}`,
+    `bucket:${params.catalogBucket ?? "main"}`,
     `providers:${encodeProviderList(params.providers)}`,
   ].join(":");
 
@@ -192,6 +200,38 @@ const buildLiveChannelKey = (marketId: string): string =>
 const buildActivityListKey = (marketId: string): string =>
   ["realtime:market:activity", CACHE_NAMESPACE, marketId.trim()].join(":");
 
+const encodeScopeKey = (scope: string): string =>
+  scope
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:_,-]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "global";
+
+const buildSnapshotCursorKey = (scope: string): string =>
+  ["snapshot", CACHE_NAMESPACE, "cursor", encodeScopeKey(scope)].join(":");
+
+const buildSnapshotMetaKey = (scope: string, snapshotId: number): string =>
+  ["snapshot", CACHE_NAMESPACE, String(Math.max(0, snapshotId)), encodeScopeKey(scope), "meta"].join(":");
+
+const buildSnapshotShardKey = (scope: string, snapshotId: number, shardIndex: number): string =>
+  [
+    "snapshot",
+    CACHE_NAMESPACE,
+    String(Math.max(0, snapshotId)),
+    encodeScopeKey(scope),
+    "shard",
+    String(Math.max(0, shardIndex)),
+  ].join(":");
+
+const buildOrderbookKey = (marketId: string, depth: number): string =>
+  [
+    "orderbook",
+    CACHE_NAMESPACE,
+    marketId.trim(),
+    "depth",
+    String(Math.max(1, Math.min(depth, upstashOrderbookMaxDepth))),
+  ].join(":");
+
 export type UpstashMarketLivePatch = {
   marketId: string;
   bestBid: number | null;
@@ -203,6 +243,9 @@ export type UpstashMarketLivePatch = {
   openInterest: number | null;
   sourceTs: string | null;
   sourceSeq: number | null;
+  snapshotId?: number | null;
+  seq?: number | null;
+  pageScope?: string | null;
 };
 
 export type UpstashActivityTick = {
@@ -216,6 +259,39 @@ export type UpstashActivityTick = {
   notional: number;
   sourceTs: string;
   createdAt: string;
+};
+
+export type UpstashSnapshotMeta = {
+  snapshotId: number;
+  seq: number;
+  scope: string;
+  shardCount: number;
+  marketCount: number;
+  createdAt: string;
+};
+
+export type UpstashSnapshotShard<T = unknown> = {
+  snapshotId: number;
+  scope: string;
+  shardIndex: number;
+  rows: T[];
+};
+
+export type UpstashOrderbookLevel = {
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  outcomeId: string | null;
+  outcomeTitle: string | null;
+};
+
+export type UpstashMarketOrderbook = {
+  marketId: string;
+  provider: "polymarket" | "limitless";
+  depth: number;
+  snapshotId: number | null;
+  updatedAt: string;
+  levels: UpstashOrderbookLevel[];
 };
 
 const toFiniteOrNull = (value: unknown): number | null => {
@@ -244,6 +320,9 @@ const normalizeLivePatch = (value: unknown): UpstashMarketLivePatch | null => {
     openInterest: toFiniteOrNull(parsed.openInterest),
     sourceTs: typeof parsed.sourceTs === "string" ? parsed.sourceTs : null,
     sourceSeq: toFiniteOrNull(parsed.sourceSeq),
+    snapshotId: toFiniteOrNull(parsed.snapshotId),
+    seq: toFiniteOrNull(parsed.seq),
+    pageScope: typeof parsed.pageScope === "string" ? parsed.pageScope : null,
   };
 };
 
@@ -280,6 +359,109 @@ const normalizeActivityTick = (value: unknown): UpstashActivityTick | null => {
   };
 };
 
+const normalizeSnapshotMeta = (value: unknown): UpstashSnapshotMeta | null => {
+  const parsed = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  if (!parsed) return null;
+  const snapshotId = toFiniteOrNull(parsed.snapshotId);
+  const seq = toFiniteOrNull(parsed.seq);
+  const shardCount = toFiniteOrNull(parsed.shardCount);
+  const marketCount = toFiniteOrNull(parsed.marketCount);
+  const scope = typeof parsed.scope === "string" ? parsed.scope.trim() : "";
+  const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt : "";
+  if (
+    snapshotId === null ||
+    seq === null ||
+    shardCount === null ||
+    marketCount === null ||
+    !scope ||
+    !createdAt
+  ) {
+    return null;
+  }
+  return {
+    snapshotId,
+    seq,
+    scope,
+    shardCount,
+    marketCount,
+    createdAt,
+  };
+};
+
+const normalizeOrderbookLevel = (value: unknown): UpstashOrderbookLevel | null => {
+  const parsed = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  if (!parsed) return null;
+  const sideRaw = typeof parsed.side === "string" ? parsed.side.toLowerCase() : "";
+  if (sideRaw !== "bid" && sideRaw !== "ask") return null;
+  const price = toFiniteOrNull(parsed.price);
+  const size = toFiniteOrNull(parsed.size);
+  if (price === null || size === null) return null;
+  return {
+    side: sideRaw,
+    price,
+    size,
+    outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : null,
+    outcomeTitle: typeof parsed.outcomeTitle === "string" ? parsed.outcomeTitle : null,
+  };
+};
+
+const normalizeMarketOrderbook = (value: unknown): UpstashMarketOrderbook | null => {
+  const parsed = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  if (!parsed) return null;
+  const marketId = typeof parsed.marketId === "string" ? parsed.marketId.trim() : "";
+  const provider =
+    parsed.provider === "polymarket" || parsed.provider === "limitless"
+      ? parsed.provider
+      : null;
+  const depth = toFiniteOrNull(parsed.depth);
+  const updatedAt = typeof parsed.updatedAt === "string" ? parsed.updatedAt : "";
+  const levels = Array.isArray(parsed.levels)
+    ? parsed.levels.map((row) => normalizeOrderbookLevel(row)).filter((row): row is UpstashOrderbookLevel => Boolean(row))
+    : [];
+  if (!marketId || !provider || depth === null || !updatedAt) return null;
+  return {
+    marketId,
+    provider,
+    depth,
+    snapshotId: toFiniteOrNull(parsed.snapshotId),
+    updatedAt,
+    levels,
+  };
+};
+
+const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
+  if (rows.length === 0) return [];
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    out.push(rows.slice(i, i + chunkSize));
+  }
+  return out;
+};
+
+export const readUpstashSnapshotCursor = async (scope = "global"): Promise<number | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(buildSnapshotCursorKey(scope));
+    return toFiniteOrNull(maybeJson(raw));
+  } catch {
+    return null;
+  }
+};
+
+export const advanceUpstashSnapshotCursor = async (scope = "global"): Promise<number | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+  try {
+    const next = await redis.incr(buildSnapshotCursorKey(scope));
+    return typeof next === "number" && Number.isFinite(next) ? next : toFiniteOrNull(next);
+  } catch {
+    return null;
+  }
+};
+
 export const writeUpstashMarketLivePatches = async (
   patches: UpstashMarketLivePatch[]
 ): Promise<void> => {
@@ -288,14 +470,37 @@ export const writeUpstashMarketLivePatches = async (
   if (!redis) return;
 
   try {
+    const snapshotId = await advanceUpstashSnapshotCursor("global");
+    const seq = snapshotId;
+    const createdAt = new Date().toISOString();
     const pipeline = redis.pipeline();
     for (const patch of patches) {
       const marketId = patch.marketId.trim();
       if (!marketId) continue;
+      const enriched = {
+        ...patch,
+        snapshotId: patch.snapshotId ?? snapshotId ?? null,
+        seq: patch.seq ?? seq ?? null,
+        pageScope: patch.pageScope ?? null,
+      } satisfies UpstashMarketLivePatch;
       const key = buildLiveStateKey(marketId);
       const channel = buildLiveChannelKey(marketId);
-      pipeline.set(key, patch, { ex: upstashLiveStateTtlSec });
-      pipeline.publish(channel, JSON.stringify(patch));
+      pipeline.set(key, enriched, { ex: upstashLiveStateTtlSec });
+      pipeline.publish(channel, JSON.stringify(enriched));
+    }
+    if (snapshotId !== null && seq !== null) {
+      pipeline.set(
+        buildSnapshotMetaKey("global", snapshotId),
+        {
+          snapshotId,
+          seq,
+          scope: "global",
+          shardCount: 0,
+          marketCount: patches.length,
+          createdAt,
+        } satisfies UpstashSnapshotMeta,
+        { ex: upstashSnapshotTtlSec }
+      );
     }
     await pipeline.exec();
   } catch {
@@ -324,6 +529,93 @@ export const readUpstashMarketLivePatches = async (
     return out;
   } catch {
     return [];
+  }
+};
+
+export const writeUpstashSnapshotShards = async <T>(
+  scope: string,
+  rows: T[],
+  snapshotIdInput?: number | null
+): Promise<UpstashSnapshotMeta | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+
+  const snapshotId = snapshotIdInput ?? (await advanceUpstashSnapshotCursor(scope));
+  if (snapshotId === null) return null;
+
+  const shards = chunkArray(rows, upstashSnapshotShardSize);
+  const meta: UpstashSnapshotMeta = {
+    snapshotId,
+    seq: snapshotId,
+    scope,
+    shardCount: shards.length,
+    marketCount: rows.length,
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    const pipeline = redis.pipeline();
+    pipeline.set(buildSnapshotMetaKey(scope, snapshotId), meta, { ex: upstashSnapshotTtlSec });
+    shards.forEach((shardRows, shardIndex) => {
+      pipeline.set(
+        buildSnapshotShardKey(scope, snapshotId, shardIndex),
+        {
+          snapshotId,
+          scope,
+          shardIndex,
+          rows: shardRows,
+        } satisfies UpstashSnapshotShard<T>,
+        { ex: upstashSnapshotTtlSec }
+      );
+    });
+    await pipeline.exec();
+    return meta;
+  } catch {
+    return null;
+  }
+};
+
+export const readUpstashSnapshotMeta = async (
+  scope: string,
+  snapshotId: number
+): Promise<UpstashSnapshotMeta | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(buildSnapshotMetaKey(scope, snapshotId));
+    return normalizeSnapshotMeta(maybeJson(raw));
+  } catch {
+    return null;
+  }
+};
+
+export const readUpstashSnapshotShard = async <T = unknown>(
+  scope: string,
+  snapshotId: number,
+  shardIndex: number
+): Promise<UpstashSnapshotShard<T> | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+  try {
+    const raw = maybeJson(await redis.get(buildSnapshotShardKey(scope, snapshotId, shardIndex)));
+    const parsed = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+    if (!parsed) return null;
+    const rows = Array.isArray(parsed.rows) ? (parsed.rows as T[]) : null;
+    const scopeValue = typeof parsed.scope === "string" ? parsed.scope : "";
+    const snapshot = toFiniteOrNull(parsed.snapshotId);
+    const shard = toFiniteOrNull(parsed.shardIndex);
+    if (!rows || !scopeValue || snapshot === null || shard === null) return null;
+    return {
+      snapshotId: snapshot,
+      scope: scopeValue,
+      shardIndex: shard,
+      rows,
+    };
+  } catch {
+    return null;
   }
 };
 
@@ -373,5 +665,66 @@ export const readUpstashActivityTicks = async (
     return out;
   } catch {
     return [];
+  }
+};
+
+export const writeUpstashMarketOrderbooks = async (
+  orderbooks: UpstashMarketOrderbook[]
+): Promise<void> => {
+  if (!upstashCacheEnabled || orderbooks.length === 0) return;
+  const redis = getUpstashRedis();
+  if (!redis) return;
+  try {
+    const pipeline = redis.pipeline();
+    for (const orderbook of orderbooks) {
+      const marketId = orderbook.marketId.trim();
+      if (!marketId) continue;
+      const depth = Math.max(1, Math.min(orderbook.depth, upstashOrderbookMaxDepth));
+      const payload = {
+        ...orderbook,
+        marketId,
+        depth,
+        levels: orderbook.levels.slice(0, depth * 2),
+      } satisfies UpstashMarketOrderbook;
+      for (const keyDepth of Array.from(new Set([depth, upstashOrderbookMaxDepth]))) {
+        pipeline.set(
+          buildOrderbookKey(marketId, keyDepth),
+          payload,
+          { ex: upstashOrderbookTtlSec }
+        );
+      }
+    }
+    await pipeline.exec();
+  } catch {
+    // Best-effort orderbook cache write only.
+  }
+};
+
+export const readUpstashMarketOrderbook = async (
+  marketId: string,
+  depth: number
+): Promise<UpstashMarketOrderbook | null> => {
+  if (!upstashCacheEnabled) return null;
+  const redis = getUpstashRedis();
+  if (!redis) return null;
+  const cleanMarketId = marketId.trim();
+  if (!cleanMarketId) return null;
+  const safeDepth = Math.max(1, Math.min(depth, upstashOrderbookMaxDepth));
+  const candidateDepths = Array.from(new Set([safeDepth, upstashOrderbookMaxDepth]));
+  try {
+    for (const candidateDepth of candidateDepths) {
+      const raw = await redis.get(buildOrderbookKey(cleanMarketId, candidateDepth));
+      const normalized = normalizeMarketOrderbook(maybeJson(raw));
+      if (!normalized) continue;
+      if (normalized.depth <= safeDepth) return normalized;
+      return {
+        ...normalized,
+        depth: safeDepth,
+        levels: normalized.levels.slice(0, safeDepth * 2),
+      };
+    }
+    return null;
+  } catch {
+    return null;
   }
 };
