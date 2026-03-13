@@ -125,6 +125,36 @@ const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");
 const POLYMARKET_CLOB_CHAIN_ID = Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137);
+const LIMITLESS_API_ROOT = "https://api.limitless.exchange";
+
+const normalizeApiBase = (value: string): string => value.trim().replace(/\/+$/, "");
+
+const buildLimitlessCandidateBaseUrls = (): string[] => {
+  const fromEnv = normalizeApiBase(process.env.LIMITLESS_API_BASE_URL || LIMITLESS_API_ROOT);
+  const candidates = new Set<string>([fromEnv, LIMITLESS_API_ROOT]);
+
+  const addVariants = (base: string) => {
+    if (base.endsWith("/api/v1")) {
+      const root = base.replace(/\/api\/v1$/, "");
+      candidates.add(root);
+      candidates.add(`${root}/api-v1`);
+      return;
+    }
+    if (base.endsWith("/api-v1")) {
+      const root = base.replace(/\/api-v1$/, "");
+      candidates.add(root);
+      candidates.add(`${root}/api/v1`);
+      return;
+    }
+    candidates.add(`${base}/api/v1`);
+    candidates.add(`${base}/api-v1`);
+  };
+
+  addVariants(fromEnv);
+  addVariants(LIMITLESS_API_ROOT);
+
+  return Array.from(candidates).filter(Boolean);
+};
 
 const CANDLE_RESOLUTION_MS: Record<CandleInterval, number> = {
   "1m": 60_000,
@@ -546,6 +576,93 @@ const fetchPolymarketOrderbookFromProvider = async (
     },
   ]);
   return orderbook;
+};
+
+const fetchLimitlessOrderbookFromProvider = async (
+  market: MarketOutput,
+  depth: number
+): Promise<MarketOrderbookOutput | null> => {
+  const marketSlug =
+    market.tradeMeta?.limitless?.marketSlug?.trim() ||
+    (typeof market.providerMarketId === "string" ? market.providerMarketId.trim() : "");
+  if (!marketSlug) return null;
+
+  for (const base of buildLimitlessCandidateBaseUrls()) {
+    const urls = [`${base}/markets/${encodeURIComponent(marketSlug)}/orderbook`];
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          cache: "no-store",
+          headers: {
+            accept: "application/json",
+          },
+        });
+        if (!response.ok) continue;
+        const payload = asObject(await response.json().catch(() => null));
+        if (!payload) continue;
+        const hasBookArrays = Array.isArray(payload.bids) || Array.isArray(payload.asks);
+        if (!hasBookArrays) continue;
+
+        const levels: UpstashOrderbookLevel[] = [];
+        const tokenId =
+          typeof payload.tokenId === "string" && payload.tokenId.trim().length > 0
+            ? payload.tokenId.trim()
+            : typeof payload.tokenId === "number" && Number.isFinite(payload.tokenId)
+              ? String(payload.tokenId)
+              : null;
+        for (const bid of Array.isArray(payload.bids) ? payload.bids.slice(0, depth) : []) {
+          const price = toFiniteNumber((bid as { price?: string | number }).price);
+          const size = toFiniteNumber((bid as { size?: string | number }).size);
+          if (price === null || size === null) continue;
+          levels.push({
+            side: "bid",
+            price,
+            size,
+            outcomeId: tokenId,
+            outcomeTitle: null,
+          });
+        }
+        for (const ask of Array.isArray(payload.asks) ? payload.asks.slice(0, depth) : []) {
+          const price = toFiniteNumber((ask as { price?: string | number }).price);
+          const size = toFiniteNumber((ask as { size?: string | number }).size);
+          if (price === null || size === null) continue;
+          levels.push({
+            side: "ask",
+            price,
+            size,
+            outcomeId: tokenId,
+            outcomeTitle: null,
+          });
+        }
+        const updatedAt = new Date().toISOString();
+        const snapshotId = await readUpstashSnapshotCursor("global");
+        const orderbook: MarketOrderbookOutput = {
+          marketId: market.id,
+          provider: "limitless",
+          depth,
+          snapshotId,
+          source: "provider",
+          updatedAt,
+          levels,
+        };
+        void writeUpstashMarketOrderbooks([
+          {
+            marketId: market.id,
+            provider: "limitless",
+            depth,
+            snapshotId,
+            updatedAt,
+            levels,
+          },
+        ]);
+        return orderbook;
+      } catch {
+        // try the next candidate URL
+      }
+    }
+  }
+
+  return null;
 };
 
 const resolveMarketCatalogRefId = async (
@@ -1076,6 +1193,16 @@ export const getCanonicalOrderbook = async (params: {
     });
     if (market) {
       const fallback = await fetchPolymarketOrderbookFromProvider(market, depth).catch(() => null);
+      if (fallback) return fallback;
+    }
+  } else if (ref.provider === "limitless") {
+    const market = await getCanonicalMarket({
+      supabaseService: params.supabaseService,
+      marketId: params.marketId,
+      provider: params.provider ?? null,
+    });
+    if (market) {
+      const fallback = await fetchLimitlessOrderbookFromProvider(market, depth).catch(() => null);
       if (fallback) return fallback;
     }
   }

@@ -2692,6 +2692,7 @@ export const marketRouter = router({
         limitlessAuth: input.limitlessAuth
           ? {
               bearerToken: input.limitlessAuth.bearerToken,
+              ownerId: input.limitlessAuth.ownerId,
             }
           : null,
         marketSlug: input.marketSlug ?? null,

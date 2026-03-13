@@ -771,10 +771,40 @@ const fetchMarketRows = async (params: {
 
 const snapshotCache = new Map<string, { expiresAt: number; rows: VenueMarket[] }>();
 
+const LIMITLESS_REQUIRED_ORDER_FIELDS = [
+  "salt",
+  "maker",
+  "signer",
+  "taker",
+  "tokenId",
+  "makerAmount",
+  "takerAmount",
+  "expiration",
+  "nonce",
+  "price",
+  "feeRateBps",
+  "side",
+  "signature",
+  "signatureType",
+] as const;
+
+const hasOrderField = (order: Record<string, unknown>, field: string): boolean => {
+  const value = order[field];
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== null && value !== undefined;
+};
+
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
   const limitlessAuth = input.limitlessAuth;
-  if (!limitlessAuth?.bearerToken || !limitlessAuth.bearerToken.trim()) {
+  const bearerToken = typeof limitlessAuth?.bearerToken === "string" ? limitlessAuth.bearerToken.trim() : "";
+  if (!bearerToken) {
     return { success: false, status: 400, error: "LIMITLESS_AUTH_REQUIRED" };
+  }
+  if (/[\r\n]/.test(bearerToken)) {
+    return { success: false, status: 400, error: "LIMITLESS_AUTH_INVALID_TOKEN_FORMAT" };
+  }
+  if (!Number.isInteger(limitlessAuth.ownerId) || limitlessAuth.ownerId <= 0) {
+    return { success: false, status: 400, error: "LIMITLESS_OWNER_ID_REQUIRED" };
   }
 
   const marketSlug = typeof input.marketSlug === "string" ? input.marketSlug.trim() : "";
@@ -782,20 +812,30 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
     return { success: false, status: 400, error: "LIMITLESS_MARKET_SLUG_REQUIRED" };
   }
 
+  const missingFields = LIMITLESS_REQUIRED_ORDER_FIELDS.filter(
+    (field) => !hasOrderField(input.signedOrder, field)
+  );
+  if (missingFields.length > 0) {
+    return {
+      success: false,
+      status: 400,
+      error: `SIGNED_ORDER_FIELDS_MISSING:${missingFields.join(",")}`,
+    };
+  }
+
   const makerAddress =
     typeof input.makerAddress === "string" && input.makerAddress.trim().length > 0
       ? input.makerAddress.trim()
       : typeof input.signedOrder.maker === "string"
         ? String(input.signedOrder.maker).trim()
-        : typeof input.signedOrder.signer === "string"
-          ? String(input.signedOrder.signer).trim()
-          : "";
+        : "";
   if (!makerAddress) {
     return { success: false, status: 400, error: "SIGNED_ORDER_MAKER_MISSING" };
   }
 
   const body = JSON.stringify({
     order: input.signedOrder,
+    ownerId: limitlessAuth.ownerId,
     orderType: input.orderType,
     marketSlug,
   });
@@ -821,7 +861,7 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          Authorization: `Bearer ${limitlessAuth.bearerToken.trim()}`,
+          Authorization: `Bearer ${bearerToken}`,
           "x-account": makerAddress,
           ...(input.requestIp
             ? {

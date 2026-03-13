@@ -89,7 +89,7 @@ const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
-const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v2";
+const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v3";
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -99,6 +99,7 @@ const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
 
 type LimitlessStoredAuth = {
   bearerToken: string;
+  ownerId: number;
 };
 
 type CanonicalMarketLiveRow = {
@@ -144,10 +145,16 @@ const isCsrfTokenInvalidErrorMessage = (msg?: string) =>
 
 const normalizeLimitlessStoredAuth = (value: unknown): LimitlessStoredAuth | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const rec = value as { bearerToken?: unknown };
+  const rec = value as { bearerToken?: unknown; ownerId?: unknown };
   const bearerToken = typeof rec.bearerToken === "string" ? rec.bearerToken.trim() : "";
-  if (!bearerToken) return null;
-  return { bearerToken };
+  const ownerId =
+    typeof rec.ownerId === "number"
+      ? rec.ownerId
+      : typeof rec.ownerId === "string"
+        ? Number.parseInt(rec.ownerId, 10)
+        : Number.NaN;
+  if (!bearerToken || !Number.isInteger(ownerId) || ownerId <= 0) return null;
+  return { bearerToken, ownerId };
 };
 
 const readStoredLimitlessAuth = (): LimitlessStoredAuth | null => {
@@ -1540,9 +1547,10 @@ export default function HomePage({
   }, []);
 
   const handleSaveLimitlessCredentials = useCallback(
-    async (payload: { bearerToken: string }) => {
+    async (payload: { bearerToken: string; ownerId: number }) => {
       const nextValue: LimitlessStoredAuth = {
         bearerToken: payload.bearerToken.trim(),
+        ownerId: payload.ownerId,
       };
       writeStoredLimitlessAuth(nextValue);
       setLimitlessStoredAuth(nextValue);
@@ -5090,6 +5098,7 @@ export default function HomePage({
         isOpen={limitlessCredentialsOpen}
         lang={lang}
         initialBearerToken={limitlessStoredAuth?.bearerToken ?? ""}
+        initialOwnerId={limitlessStoredAuth?.ownerId ?? null}
         error={limitlessCredentialsError}
         onClose={closeLimitlessCredentialsModal}
         onSubmit={handleSaveLimitlessCredentials}

@@ -33,6 +33,7 @@ const MARKET_WS_URLS = Array.from(
 const FLUSH_INTERVAL_MS = Math.max(500, Number(process.env.COLLECTOR_FLUSH_INTERVAL_MS ?? 2_000));
 const RECONCILE_INTERVAL_MS = Math.max(60_000, Number(process.env.COLLECTOR_RECONCILE_INTERVAL_MS ?? 300_000));
 const HEARTBEAT_TIMEOUT_MS = Math.max(10_000, Number(process.env.COLLECTOR_HEARTBEAT_TIMEOUT_MS ?? 45_000));
+const WS_PING_INTERVAL_MS = Math.max(5_000, Number(process.env.POLYMARKET_WS_PING_INTERVAL_MS ?? 10_000));
 const HEARTBEAT_CLOSE_MULTIPLIER = Math.max(2, Number(process.env.COLLECTOR_HEARTBEAT_CLOSE_MULTIPLIER ?? 4));
 const WS_SUBSCRIPTION_CHUNK_SIZE = Math.max(50, Math.min(500, Number(process.env.COLLECTOR_WS_SUBSCRIPTION_CHUNK_SIZE ?? 250)));
 const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
@@ -101,6 +102,20 @@ type PendingLive = {
   ingested_at: string;
 };
 
+type PendingOrderbookLevel = {
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  outcomeId: string | null;
+  outcomeTitle: string | null;
+};
+
+type PendingOrderbook = {
+  marketId: string;
+  updatedAt: string;
+  levels: PendingOrderbookLevel[];
+};
+
 type PendingCandle = {
   market_id: string;
   bucket_start: string;
@@ -130,6 +145,7 @@ type PendingTick = {
 };
 
 const pendingLive = new Map<string, PendingLive>();
+const pendingOrderbooks = new Map<string, PendingOrderbook>();
 const pendingCandles = new Map<string, PendingCandle>();
 const pendingTicks = new Map<string, PendingTick>();
 const latestLiveState = new Map<string, { sourceSeq: number | null; sourceTsMs: number }>();
@@ -754,6 +770,33 @@ const parseBookPrice = (value: Json | undefined, side: "bid" | "ask"): number | 
   return side === "bid" ? Math.max(...prices) : Math.min(...prices);
 };
 
+const parseBookTopLevel = (
+  value: Json | undefined,
+  side: "bid" | "ask"
+): { price: number; size: number } | null => {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  let best: { price: number; size: number } | null = null;
+  for (const level of value) {
+    const rec = asRecord(level);
+    if (!rec) continue;
+    const rawPrice = toNumber(rec.price ?? rec.p);
+    const rawSize = toNumber(rec.size ?? rec.s);
+    if (rawPrice === null || rawSize === null) continue;
+    const price = clampPrice(rawPrice > 1 ? rawPrice / 100 : rawPrice);
+    const size = Math.max(0, rawSize);
+    if (best === null) {
+      best = { price, size };
+      continue;
+    }
+    if (side === "bid") {
+      if (price > best.price) best = { price, size };
+    } else if (price < best.price) {
+      best = { price, size };
+    }
+  }
+  return best;
+};
+
 const parseBestFromPriceChanges = (value: Json | undefined): { bid: number | null; ask: number | null } => {
   if (!Array.isArray(value) || value.length === 0) return { bid: null, ask: null };
   let bestBid: number | null = null;
@@ -841,6 +884,36 @@ const parseIncomingUpdate = (payload: JsonMap): PendingLive | null => {
   };
 };
 
+const parseIncomingOrderbook = (payload: JsonMap, live: PendingLive): PendingOrderbook | null => {
+  const bestBid = parseBookTopLevel(payload.bids, "bid");
+  const bestAsk = parseBookTopLevel(payload.asks, "ask");
+  if (!bestBid && !bestAsk) return null;
+  const levels: PendingOrderbookLevel[] = [];
+  if (bestBid) {
+    levels.push({
+      side: "bid",
+      price: bestBid.price,
+      size: bestBid.size,
+      outcomeId: null,
+      outcomeTitle: "YES",
+    });
+  }
+  if (bestAsk) {
+    levels.push({
+      side: "ask",
+      price: bestAsk.price,
+      size: bestAsk.size,
+      outcomeId: null,
+      outcomeTitle: "YES",
+    });
+  }
+  return {
+    marketId: live.market_id,
+    updatedAt: live.source_ts,
+    levels,
+  };
+};
+
 const parseIncomingTick = (payload: JsonMap, live: PendingLive): PendingTick | null => {
   const parsed = parseLiveTick(payload as Record<string, unknown>, {
     marketId: live.market_id,
@@ -906,7 +979,7 @@ const applyCandleFromLive = (live: PendingLive) => {
 
 const flushPending = async () => {
   if (flushing) return;
-  if (pendingLive.size === 0 && pendingCandles.size === 0 && pendingTicks.size === 0) return;
+  if (pendingLive.size === 0 && pendingOrderbooks.size === 0 && pendingCandles.size === 0 && pendingTicks.size === 0) return;
 
   flushing = true;
   let liveRows: PendingLive[] = [];
@@ -976,36 +1049,19 @@ const flushPending = async () => {
           sourceSeq: row.source_seq,
         }))
       );
+    }
 
-      await writeUpstashMarketOrderbooks(
-        liveRows.map((row) => ({
-          marketId: venueToCanonicalId("polymarket", row.market_id),
-          provider: "polymarket" as const,
-          depth: 1,
-          snapshotId: null,
-          updatedAt: row.source_ts,
-          levels: [
-            ...(row.best_bid > 0
-              ? [{
-                  side: "bid" as const,
-                  price: row.best_bid,
-                  size: Math.max(0, row.last_trade_size || 0),
-                  outcomeId: null,
-                  outcomeTitle: "YES",
-                }]
-              : []),
-            ...(row.best_ask > 0
-              ? [{
-                  side: "ask" as const,
-                  price: row.best_ask,
-                  size: Math.max(0, row.last_trade_size || 0),
-                  outcomeId: null,
-                  outcomeTitle: "YES",
-                }]
-              : []),
-          ],
-        }))
-      );
+    if (pendingOrderbooks.size > 0) {
+      const orderbookRows = Array.from(pendingOrderbooks.values()).map((row) => ({
+        marketId: venueToCanonicalId("polymarket", row.marketId),
+        provider: "polymarket" as const,
+        depth: 1,
+        snapshotId: null,
+        updatedAt: row.updatedAt,
+        levels: row.levels,
+      }));
+      pendingOrderbooks.clear();
+      await writeUpstashMarketOrderbooks(orderbookRows);
     }
 
     if (tickRows.length > 0) {
@@ -1280,11 +1336,20 @@ const runWsLoop = async () => {
 
       const session = await new Promise<{ stableMs: number }>((resolve, reject) => {
         let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        let pingTimer: ReturnType<typeof setInterval> | null = null;
         const openedAt = Date.now();
 
         socket.onopen = () => {
           console.log("[collector] ws connected");
           void syncMarketSubscriptions(socket, true);
+          pingTimer = setInterval(() => {
+            if (socket.readyState !== WebSocket.OPEN) return;
+            try {
+              socket.send("PING");
+            } catch {
+              // ignore send failures
+            }
+          }, WS_PING_INTERVAL_MS);
           heartbeatTimer = setInterval(() => {
             if (Date.now() - lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS * HEARTBEAT_CLOSE_MULTIPLIER) {
               console.warn("[collector] ws heartbeat timeout, reconnecting");
@@ -1302,6 +1367,17 @@ const runWsLoop = async () => {
           lastWsMessageAt = lastHeartbeatAt;
           const raw = typeof event.data === "string" ? event.data : "";
           if (!raw) return;
+          const trimmed = raw.trim().toUpperCase();
+          if (trimmed === "PING" || trimmed === "PONG") {
+            if (trimmed === "PING") {
+              try {
+                socket.send("PONG");
+              } catch {
+                // ignore send failures
+              }
+            }
+            return;
+          }
 
           try {
             const parsed = JSON.parse(raw) as Json;
@@ -1330,6 +1406,10 @@ const runWsLoop = async () => {
 
               rememberLiveState(update);
               pendingLive.set(update.market_id, update);
+              const orderbook = parseIncomingOrderbook(message, update);
+              if (orderbook) {
+                pendingOrderbooks.set(orderbook.marketId, orderbook);
+              }
               applyCandleFromLive(update);
               const tick = parseIncomingTick(message, update);
               if (tick) {
@@ -1347,6 +1427,7 @@ const runWsLoop = async () => {
 
         socket.onclose = (event) => {
           if (heartbeatTimer) clearInterval(heartbeatTimer);
+          if (pingTimer) clearInterval(pingTimer);
           if (activeSocket === socket) {
             activeSocket = null;
             activeSubscribedAssetIds.clear();

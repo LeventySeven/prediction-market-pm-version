@@ -318,7 +318,7 @@ describe("limitlessAdapter production readiness", () => {
     });
   });
 
-  it("relays signed orders with X-API-Key, ownerId, marketSlug, and x-account", async () => {
+  it("relays signed orders with Bearer auth, ownerId, marketSlug, and x-account", async () => {
     let capturedUrl = "";
     let capturedHeaders: HeadersInit | undefined;
     let capturedBody = "";
@@ -335,13 +335,25 @@ describe("limitlessAdapter production readiness", () => {
 
     const result = await limitlessAdapter.relaySignedOrder({
       signedOrder: {
+        salt: "1",
         maker: "0x4444444444444444444444444444444444444444",
+        signer: "0x4444444444444444444444444444444444444444",
+        taker: "0x0000000000000000000000000000000000000000",
+        tokenId: "123",
+        makerAmount: "1000000",
+        takerAmount: "2000000",
+        expiration: "0",
+        nonce: "7",
+        price: 0.51,
+        feeRateBps: "0",
+        side: 0,
         signature: "0xsig",
+        signatureType: 0,
       },
       orderType: "FOK",
       marketSlug: "market-14",
       limitlessAuth: {
-        apiKey: "lmts_example",
+        bearerToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example",
         ownerId: 42,
       },
       makerAddress: "0x4444444444444444444444444444444444444444",
@@ -350,12 +362,24 @@ describe("limitlessAdapter production readiness", () => {
     const headers = capturedHeaders as Record<string, string>;
     expect(result.success).toBe(true);
     expect(capturedUrl.endsWith("/orders")).toBe(true);
-    expect(headers["X-API-Key"]).toBe("lmts_example");
+    expect(headers.Authorization).toBe("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example");
     expect(headers["x-account"]).toBe("0x4444444444444444444444444444444444444444");
     expect(JSON.parse(capturedBody)).toEqual({
       order: {
+        salt: "1",
         maker: "0x4444444444444444444444444444444444444444",
+        signer: "0x4444444444444444444444444444444444444444",
+        taker: "0x0000000000000000000000000000000000000000",
+        tokenId: "123",
+        makerAmount: "1000000",
+        takerAmount: "2000000",
+        expiration: "0",
+        nonce: "7",
+        price: 0.51,
+        feeRateBps: "0",
+        side: 0,
         signature: "0xsig",
+        signatureType: 0,
       },
       ownerId: 42,
       orderType: "FOK",

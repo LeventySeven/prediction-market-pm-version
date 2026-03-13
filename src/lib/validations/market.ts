@@ -5,6 +5,7 @@ import {
   MAX_API_SECRET_LENGTH,
   MAX_BEARER_TOKEN_LENGTH,
   MAX_CLIENT_ORDER_ID_LENGTH,
+  MAX_LIMITLESS_OWNER_ID,
   MAX_MARKET_ACTIVITY_LIMIT,
   MAX_MARKET_COMMENT_LIMIT,
   MAX_MARKET_LIST_PAGE,
@@ -341,6 +342,7 @@ export const relaySignedOrderInput = z
     limitlessAuth: z
       .object({
         bearerToken: z.string().min(MIN_MARKET_REF_LENGTH).max(MAX_BEARER_TOKEN_LENGTH),
+        ownerId: z.number().int().positive().max(MAX_LIMITLESS_OWNER_ID),
       })
       .optional(),
   })

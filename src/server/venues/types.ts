@@ -81,6 +81,7 @@ export type VenueApiCreds = {
 
 export type VenueLimitlessAuth = {
   bearerToken: string;
+  ownerId: number;
 };
 
 export type VenueRelayOrderInput = {

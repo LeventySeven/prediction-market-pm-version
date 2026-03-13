@@ -197,6 +197,11 @@ const buildLiveStateKey = (marketId: string): string =>
 const buildLiveChannelKey = (marketId: string): string =>
   ["realtime:market:live", CACHE_NAMESPACE, "channel", marketId.trim()].join(":");
 
+export const buildUpstashLiveChannelKey = (marketId: string): string => buildLiveChannelKey(marketId);
+
+export const buildUpstashLiveChannelPattern = (): string =>
+  ["realtime:market:live", CACHE_NAMESPACE, "channel", "*"].join(":");
+
 const buildActivityListKey = (marketId: string): string =>
   ["realtime:market:activity", CACHE_NAMESPACE, marketId.trim()].join(":");
 

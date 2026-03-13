@@ -6,9 +6,10 @@ interface LimitlessCredentialsModalProps {
   isOpen: boolean;
   lang: "RU" | "EN";
   initialBearerToken?: string;
+  initialOwnerId?: number | null;
   error?: string | null;
   onClose: () => void;
-  onSubmit: (payload: { bearerToken: string }) => Promise<void> | void;
+  onSubmit: (payload: { bearerToken: string; ownerId: number }) => Promise<void> | void;
   onClear?: () => void;
 }
 
@@ -16,28 +17,32 @@ const LimitlessCredentialsModal: React.FC<LimitlessCredentialsModalProps> = ({
   isOpen,
   lang,
   initialBearerToken = "",
+  initialOwnerId = null,
   error = null,
   onClose,
   onSubmit,
   onClear,
 }) => {
   const [bearerToken, setBearerToken] = useState(initialBearerToken);
+  const [ownerId, setOwnerId] = useState(initialOwnerId === null ? "" : String(initialOwnerId));
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setBearerToken(initialBearerToken);
+    setOwnerId(initialOwnerId === null ? "" : String(initialOwnerId));
     setSubmitting(false);
-  }, [initialBearerToken, isOpen]);
+  }, [initialBearerToken, initialOwnerId, isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async () => {
     const nextBearerToken = bearerToken.trim();
-    if (!nextBearerToken) return;
+    const parsedOwnerId = Number.parseInt(ownerId.trim(), 10);
+    if (!nextBearerToken || !Number.isInteger(parsedOwnerId) || parsedOwnerId <= 0) return;
     setSubmitting(true);
     try {
-      await onSubmit({ bearerToken: nextBearerToken });
+      await onSubmit({ bearerToken: nextBearerToken, ownerId: parsedOwnerId });
     } finally {
       setSubmitting(false);
     }
@@ -57,12 +62,14 @@ const LimitlessCredentialsModal: React.FC<LimitlessCredentialsModalProps> = ({
                 <span>{lang === "RU" ? "Limitless Auth" : "Limitless Auth"}</span>
               </div>
               <h2 className="text-xl font-semibold leading-tight text-zinc-100 sm:text-2xl">
-                {lang === "RU" ? "Подключите Limitless Bearer token" : "Connect a Limitless Bearer token"}
+                {lang === "RU"
+                  ? "Подключите Limitless token и owner ID"
+                  : "Connect a Limitless token and owner ID"}
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-zinc-400">
                 {lang === "RU"
-                  ? "Bearer token сохраняется только в этом браузере. Ордер подписывается вашим кошельком локально, а сервер только ретранслирует уже подписанный запрос."
-                  : "The Bearer token stays in this browser only. Your wallet signs the order locally, and the server only relays the signed request."}
+                  ? "Bearer token и ownerId сохраняются только в этом браузере. Ордер подписывается вашим кошельком локально, а сервер только ретранслирует уже подписанный запрос."
+                  : "The Bearer token and ownerId stay in this browser only. Your wallet signs the order locally, and the server only relays the signed request."}
               </p>
             </div>
 
@@ -83,8 +90,8 @@ const LimitlessCredentialsModal: React.FC<LimitlessCredentialsModalProps> = ({
               </div>
               <p>
                 {lang === "RU"
-                  ? "Используйте Limitless session / Bearer token для отправки ордера. Токен не хранится на сервере."
-                  : "Use a Limitless session / Bearer token for order relay. The token is never stored on the server."}
+                  ? "Для отправки ордера нужны session / Bearer token и числовой ownerId из Limitless. Эти данные хранятся только локально в браузере."
+                  : "Use a Limitless session / Bearer token and the numeric ownerId from Limitless to relay orders. These values stay only in this browser."}
               </p>
               <a
                 href="https://docs.limitless.exchange/api-reference/trading/create-order"
@@ -116,6 +123,25 @@ const LimitlessCredentialsModal: React.FC<LimitlessCredentialsModalProps> = ({
               </div>
             </div>
 
+            <div>
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                {lang === "RU" ? "Owner ID" : "Owner ID"}
+              </div>
+              <div className="relative">
+                <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
+                <input
+                  value={ownerId}
+                  onChange={(e) => setOwnerId(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="12345"
+                  inputMode="numeric"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="h-12 w-full rounded-[22px] border border-zinc-900 bg-zinc-950 pl-10 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+                />
+              </div>
+            </div>
+
             {error ? (
               <div className="rounded-2xl border border-red-900/70 bg-red-950/30 px-4 py-3 text-sm text-red-200">
                 {error}
@@ -127,7 +153,7 @@ const LimitlessCredentialsModal: React.FC<LimitlessCredentialsModalProps> = ({
             <Button
               onClick={handleSubmit}
               fullWidth
-              disabled={submitting || !bearerToken.trim()}
+              disabled={submitting || !bearerToken.trim() || !ownerId.trim()}
               className="h-11 rounded-full"
             >
               {submitting
