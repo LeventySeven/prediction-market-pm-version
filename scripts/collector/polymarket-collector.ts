@@ -1470,14 +1470,22 @@ const runWsLoop = async () => {
 };
 
 const start = async () => {
+  const runBootstrapStep = async (label: string, task: () => Promise<void>) => {
+    try {
+      await task();
+    } catch (error) {
+      console.error(`[collector] bootstrap ${label} failed`, error instanceof Error ? error.message : String(error));
+    }
+  };
+
   console.log(
     `[collector] starting flush=${FLUSH_INTERVAL_MS}ms headPoll=${NEW_MARKET_POLL_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms snapshotSeed=${ENABLE_SNAPSHOT_REALTIME_SEED} canonicalMirror=${ENABLE_CANONICAL_REALTIME_MIRROR}`
   );
   startHealthServer();
   await loadPersistedLiveState();
-  await syncSnapshot("full");
-  await syncSnapshot("head");
-  await pruneStaleMarkets();
+  await runBootstrapStep("full snapshot", () => syncSnapshot("full"));
+  await runBootstrapStep("head snapshot", () => syncSnapshot("head"));
+  await runBootstrapStep("prune", () => pruneStaleMarkets());
 
   setInterval(() => {
     void flushPending();

@@ -156,7 +156,7 @@ export const isCatalogReadError = (value: unknown): value is CatalogReadError =>
 const ENABLE_MARKET_HOT_READ_FALLBACK =
   (process.env.ENABLE_MARKET_HOT_READ_FALLBACK || "").trim().toLowerCase() === "true";
 const CANONICAL_MARKET_SELECT_V2 =
-  "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, compare_group_id, provider_payload, source_updated_at, last_synced_at";
+  "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, compare_group_id, provider_payload, source_updated_at, last_synced_at";
 const CANONICAL_MARKET_SELECT_LEGACY =
   "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload, source_updated_at, last_synced_at";
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_URL || "https://clob.polymarket.com").replace(/\/+$/, "");

@@ -1,6 +1,12 @@
 import type { VenueMarket, VenueProvider } from "./types";
 
 const toNowIso = () => new Date().toISOString();
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const SPLIT_BACKOFF_MS = 150;
+const MIN_SELECT_SPLIT_BATCH = 50;
+const MAX_SELECT_SPLIT_DEPTH = 5;
+const MIN_UPSERT_SPLIT_BATCH = 25;
+const MAX_UPSERT_SPLIT_DEPTH = 6;
 
 const chunk = <T>(items: T[], size: number): T[][] => {
   const out: T[][] = [];
@@ -66,8 +72,6 @@ type CatalogRowPayload = {
   market_type: "binary" | "multi_choice";
   resolved_outcome_title: string | null;
   total_volume_usd: number;
-  is_fast_market: boolean;
-  catalog_bucket: "main" | "fast";
   provider_payload: unknown;
 };
 
@@ -88,9 +92,176 @@ const catalogRowsEqual = (existing: ExistingCatalogRow, next: CatalogRowPayload)
   normText((existing as Record<string, unknown>).market_type) === normText(next.market_type) &&
   normText((existing as Record<string, unknown>).resolved_outcome_title) === normText(next.resolved_outcome_title) &&
   approxEqual((existing as Record<string, unknown>).total_volume_usd, next.total_volume_usd, 1e-8) &&
-  Boolean((existing as Record<string, unknown>).is_fast_market) === next.is_fast_market &&
-  normText((existing as Record<string, unknown>).catalog_bucket) === normText(next.catalog_bucket) &&
   stableJson(existing.provider_payload) === stableJson(next.provider_payload);
+
+const MARKET_CATALOG_SELECT =
+  "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, provider_payload";
+
+const readErrorMessage = (error: unknown): string =>
+  error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string"
+        ? String((error as { message: string }).message)
+        : "UNKNOWN_ERROR";
+
+const isStatementTimeoutError = (error: unknown): boolean =>
+  readErrorMessage(error).toLowerCase().includes("statement timeout");
+
+const isOptionalCompareSchemaError = (error: unknown): boolean => {
+  const normalized = readErrorMessage(error).toLowerCase();
+  return (
+    normalized.includes("compare_group_id") ||
+    normalized.includes("market_compare_groups") ||
+    normalized.includes("market_compare_members")
+  );
+};
+
+const shouldSkipCompareSyncError = (error: unknown): boolean =>
+  isOptionalCompareSchemaError(error) || isStatementTimeoutError(error);
+
+const fetchExistingCatalogRows = async (
+  supabaseService: unknown,
+  providers: string[],
+  providerMarketIds: string[],
+  depth = 0
+): Promise<ExistingCatalogRow[]> => {
+  if (providers.length === 0 || providerMarketIds.length === 0) return [];
+
+  const { data, error } = await (supabaseService as any)
+    .from("market_catalog")
+    .select(MARKET_CATALOG_SELECT)
+    .in("provider", providers)
+    .in("provider_market_id", providerMarketIds);
+
+  if (!error) {
+    return (data ?? []) as ExistingCatalogRow[];
+  }
+  if (
+    isStatementTimeoutError(error) &&
+    providerMarketIds.length > MIN_SELECT_SPLIT_BATCH &&
+    depth < MAX_SELECT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(providerMarketIds.length / 2);
+    const left = await fetchExistingCatalogRows(
+      supabaseService,
+      providers,
+      providerMarketIds.slice(0, midpoint),
+      depth + 1
+    );
+    await wait(SPLIT_BACKOFF_MS);
+    const right = await fetchExistingCatalogRows(
+      supabaseService,
+      providers,
+      providerMarketIds.slice(midpoint),
+      depth + 1
+    );
+    return [...left, ...right];
+  }
+
+  throw new Error(readErrorMessage(error) || "MARKET_CATALOG_PREFETCH_FAILED");
+};
+
+const fetchCatalogIdsByProviderMarketIds = async (
+  supabaseService: unknown,
+  providers: string[],
+  providerMarketIds: string[],
+  depth = 0
+): Promise<Array<{ id: string; provider: string; provider_market_id: string }>> => {
+  if (providers.length === 0 || providerMarketIds.length === 0) return [];
+
+  const { data, error } = await (supabaseService as any)
+    .from("market_catalog")
+    .select("id, provider, provider_market_id")
+    .in("provider", providers)
+    .in("provider_market_id", providerMarketIds);
+
+  if (!error) {
+    return (data ?? []) as Array<{ id: string; provider: string; provider_market_id: string }>;
+  }
+  if (
+    isStatementTimeoutError(error) &&
+    providerMarketIds.length > MIN_SELECT_SPLIT_BATCH &&
+    depth < MAX_SELECT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(providerMarketIds.length / 2);
+    const left = await fetchCatalogIdsByProviderMarketIds(
+      supabaseService,
+      providers,
+      providerMarketIds.slice(0, midpoint),
+      depth + 1
+    );
+    await wait(SPLIT_BACKOFF_MS);
+    const right = await fetchCatalogIdsByProviderMarketIds(
+      supabaseService,
+      providers,
+      providerMarketIds.slice(midpoint),
+      depth + 1
+    );
+    return [...left, ...right];
+  }
+
+  throw new Error(readErrorMessage(error) || "MARKET_CATALOG_RESOLVE_FAILED");
+};
+
+const upsertCatalogRows = async (
+  supabaseService: unknown,
+  rows: Array<CatalogRowPayload & { source_updated_at: string; last_synced_at: string }>,
+  depth = 0
+): Promise<number> => {
+  if (rows.length === 0) return 0;
+
+  const { error } = await (supabaseService as any)
+    .from("market_catalog")
+    .upsert(rows, { onConflict: "provider,provider_market_id" });
+
+  if (!error) return rows.length;
+  if (
+    isStatementTimeoutError(error) &&
+    rows.length > MIN_UPSERT_SPLIT_BATCH &&
+    depth < MAX_UPSERT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(rows.length / 2);
+    const left = await upsertCatalogRows(supabaseService, rows.slice(0, midpoint), depth + 1);
+    await wait(SPLIT_BACKOFF_MS);
+    const right = await upsertCatalogRows(supabaseService, rows.slice(midpoint), depth + 1);
+    return left + right;
+  }
+
+  throw new Error(readErrorMessage(error) || "MARKET_CATALOG_UPSERT_FAILED");
+};
+
+const upsertOutcomeRows = async (
+  supabaseService: unknown,
+  rows: OutcomeRowPayload[],
+  depth = 0
+): Promise<void> => {
+  if (rows.length === 0) return;
+
+  const { error } = await (supabaseService as any)
+    .from("market_outcomes")
+    .upsert(rows, { onConflict: "market_id,outcome_key" });
+
+  if (!error) return;
+  if (
+    isStatementTimeoutError(error) &&
+    rows.length > MIN_UPSERT_SPLIT_BATCH &&
+    depth < MAX_UPSERT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(rows.length / 2);
+    await upsertOutcomeRows(supabaseService, rows.slice(0, midpoint), depth + 1);
+    await wait(SPLIT_BACKOFF_MS);
+    await upsertOutcomeRows(supabaseService, rows.slice(midpoint), depth + 1);
+    return;
+  }
+
+  throw new Error(readErrorMessage(error) || "MARKET_OUTCOMES_UPSERT_FAILED");
+};
 
 type OutcomeRowPayload = {
   market_id: string;
@@ -339,8 +510,6 @@ export const upsertVenueMarketsToCatalog = async (
       market_type: market.outcomes.length > 2 ? "multi_choice" : "binary",
       resolved_outcome_title: market.resolvedOutcomeTitle,
       total_volume_usd: Math.max(0, Number.isFinite(market.volume) ? market.volume : 0),
-      is_fast_market: true,
-      catalog_bucket: "main",
       provider_payload: {
         ...providerPayload,
         capabilities: market.capabilities,
@@ -364,16 +533,8 @@ export const upsertVenueMarketsToCatalog = async (
     const providers = Array.from(new Set(batch.map((item) => item.provider)));
     const providerMarketIds = Array.from(new Set(batch.map((item) => item.providerMarketId)));
     if (providers.length === 0 || providerMarketIds.length === 0) continue;
-    const { data, error } = await (supabaseService as any)
-      .from("market_catalog")
-      .select(
-        "id, provider, provider_market_id, provider_condition_id, slug, title, description, state, category, source_url, image_url, market_created_at, closes_at, expires_at, market_type, resolved_outcome_title, total_volume_usd, is_fast_market, catalog_bucket, provider_payload"
-      )
-      .in("provider", providers)
-      .in("provider_market_id", providerMarketIds);
-
-    if (error) throw new Error(error.message ?? "MARKET_CATALOG_PREFETCH_FAILED");
-    for (const row of (data ?? []) as ExistingCatalogRow[]) {
+    const data = await fetchExistingCatalogRows(supabaseService, providers, providerMarketIds);
+    for (const row of data) {
       const provider = String((row as Record<string, unknown>).provider ?? "").trim();
       const providerMarketId = String((row as Record<string, unknown>).provider_market_id ?? "").trim();
       if (!provider || !providerMarketId) continue;
@@ -395,11 +556,7 @@ export const upsertVenueMarketsToCatalog = async (
 
   let written = 0;
   for (const batch of chunk(marketRowsToUpsert, 200)) {
-    const { error } = await (supabaseService as any)
-      .from("market_catalog")
-      .upsert(batch, { onConflict: "provider,provider_market_id" });
-    if (error) throw new Error(error.message ?? "MARKET_CATALOG_UPSERT_FAILED");
-    written += batch.length;
+    written += await upsertCatalogRows(supabaseService, batch);
   }
 
   const idsByKey = new Map<string, string>();
@@ -413,15 +570,8 @@ export const upsertVenueMarketsToCatalog = async (
     const providers = Array.from(new Set(missing.map((item) => item.provider)));
     const providerMarketIds = Array.from(new Set(missing.map((item) => item.providerMarketId)));
 
-    const { data, error } = await (supabaseService as any)
-      .from("market_catalog")
-      .select("id, provider, provider_market_id")
-      .in("provider", providers)
-      .in("provider_market_id", providerMarketIds);
-
-    if (error) throw new Error(error.message ?? "MARKET_CATALOG_RESOLVE_FAILED");
-
-    for (const row of data ?? []) {
+    const data = await fetchCatalogIdsByProviderMarketIds(supabaseService, providers, providerMarketIds);
+    for (const row of data) {
       const provider = String((row as Record<string, unknown>).provider ?? "").trim();
       const providerMarketId = String((row as Record<string, unknown>).provider_market_id ?? "").trim();
       const id = String((row as Record<string, unknown>).id ?? "").trim();
@@ -430,7 +580,15 @@ export const upsertVenueMarketsToCatalog = async (
     }
   }
 
-  await syncCompareGroupsForCatalog(supabaseService, dedupedMarkets, idsByKey);
+  try {
+    await syncCompareGroupsForCatalog(supabaseService, dedupedMarkets, idsByKey);
+  } catch (error) {
+    if (shouldSkipCompareSyncError(error)) {
+      console.warn("[catalogStore] compare-group sync skipped", readErrorMessage(error));
+    } else {
+      throw error;
+    }
+  }
 
   const outcomeRows: OutcomeRowPayload[] = [];
 
@@ -488,10 +646,7 @@ export const upsertVenueMarketsToCatalog = async (
   });
 
   for (const batch of chunk(outcomeRowsToUpsert, 400)) {
-    const { error } = await (supabaseService as any)
-      .from("market_outcomes")
-      .upsert(batch, { onConflict: "market_id,outcome_key" });
-    if (error) throw new Error(error.message ?? "MARKET_OUTCOMES_UPSERT_FAILED");
+    await upsertOutcomeRows(supabaseService, batch);
   }
 
   return written;

@@ -2,6 +2,13 @@ import type { PolymarketMarket, PolymarketOutcome } from "./client";
 import { upsertVenueMarketsToCatalog } from "../venues/catalogStore";
 import type { VenueMarket } from "../venues/types";
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const SPLIT_BACKOFF_MS = 150;
+const MIN_SELECT_SPLIT_BATCH = 50;
+const MAX_SELECT_SPLIT_DEPTH = 5;
+const MIN_UPSERT_SPLIT_BATCH = 25;
+const MAX_UPSERT_SPLIT_DEPTH = 6;
+
 type MirrorRow = {
   market_id: string;
   condition_id: string;
@@ -216,6 +223,79 @@ const sanitizeSearch = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const readErrorMessage = (error: unknown): string =>
+  error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string"
+        ? String((error as { message: string }).message)
+        : "UNKNOWN_ERROR";
+
+const isStatementTimeoutError = (error: unknown): boolean =>
+  readErrorMessage(error).toLowerCase().includes("statement timeout");
+
+const fetchExistingMirrorRows = async (
+  supabaseService: unknown,
+  marketIds: string[],
+  depth = 0
+): Promise<ExistingMirrorRow[]> => {
+  if (marketIds.length === 0) return [];
+
+  const { data, error } = await (supabaseService as any)
+    .from("polymarket_market_cache")
+    .select(
+      "market_id, condition_id, slug, title, description, image_url, source_url, state, market_created_at, closes_at, expires_at, category, volume, clob_token_ids, outcomes, resolved_outcome_title, search_text, source_updated_at, last_synced_at"
+    )
+    .in("market_id", marketIds);
+
+  if (!error) {
+    return (data ?? []) as ExistingMirrorRow[];
+  }
+  if (
+    isStatementTimeoutError(error) &&
+    marketIds.length > MIN_SELECT_SPLIT_BATCH &&
+    depth < MAX_SELECT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(marketIds.length / 2);
+    const left = await fetchExistingMirrorRows(supabaseService, marketIds.slice(0, midpoint), depth + 1);
+    await wait(SPLIT_BACKOFF_MS);
+    const right = await fetchExistingMirrorRows(supabaseService, marketIds.slice(midpoint), depth + 1);
+    return [...left, ...right];
+  }
+
+  throw new Error(readErrorMessage(error) || "MIRROR_PREFETCH_FAILED");
+};
+
+const upsertMirrorRows = async (
+  supabaseService: unknown,
+  rows: MirrorRow[],
+  depth = 0
+): Promise<number> => {
+  if (rows.length === 0) return 0;
+
+  const { error } = await (supabaseService as any)
+    .from("polymarket_market_cache")
+    .upsert(rows, { onConflict: "market_id" });
+
+  if (!error) return rows.length;
+  if (
+    isStatementTimeoutError(error) &&
+    rows.length > MIN_UPSERT_SPLIT_BATCH &&
+    depth < MAX_UPSERT_SPLIT_DEPTH
+  ) {
+    await wait(SPLIT_BACKOFF_MS * (depth + 1));
+    const midpoint = Math.floor(rows.length / 2);
+    const left = await upsertMirrorRows(supabaseService, rows.slice(0, midpoint), depth + 1);
+    await wait(SPLIT_BACKOFF_MS);
+    const right = await upsertMirrorRows(supabaseService, rows.slice(midpoint), depth + 1);
+    return left + right;
+  }
+
+  throw new Error(readErrorMessage(error) || "MIRROR_UPSERT_FAILED");
+};
+
 export async function upsertMirroredPolymarketMarkets(
   supabaseService: unknown,
   markets: PolymarketMarket[]
@@ -230,14 +310,8 @@ export async function upsertMirroredPolymarketMarkets(
   const marketIds = Array.from(new Set(rows.map((row) => row.market_id)));
   for (let i = 0; i < marketIds.length; i += 300) {
     const chunk = marketIds.slice(i, i + 300);
-    const { data, error } = await (supabaseService as any)
-      .from("polymarket_market_cache")
-      .select(
-        "market_id, condition_id, slug, title, description, image_url, source_url, state, market_created_at, closes_at, expires_at, category, volume, clob_token_ids, outcomes, resolved_outcome_title, search_text, source_updated_at, last_synced_at"
-      )
-      .in("market_id", chunk);
-    if (error) throw new Error(error.message ?? "MIRROR_PREFETCH_FAILED");
-    for (const row of (data ?? []) as ExistingMirrorRow[]) {
+    const data = await fetchExistingMirrorRows(supabaseService, chunk);
+    for (const row of data) {
       const marketId = String((row as Record<string, unknown>).market_id ?? "").trim();
       if (!marketId) continue;
       existingByMarketId.set(marketId, row);
@@ -258,11 +332,7 @@ export async function upsertMirroredPolymarketMarkets(
 
   for (let i = 0; i < rowsToUpsert.length; i += chunkSize) {
     const batch = rowsToUpsert.slice(i, i + chunkSize);
-    const { error } = await (supabaseService as any)
-      .from("polymarket_market_cache")
-      .upsert(batch, { onConflict: "market_id" });
-    if (error) throw new Error(error.message ?? "MIRROR_UPSERT_FAILED");
-    written += batch.length;
+    written += await upsertMirrorRows(supabaseService, batch);
   }
 
   try {
