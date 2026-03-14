@@ -1,17 +1,12 @@
 import "server-only";
 import { publicProcedure, router } from "../trpc";
-import { listMirroredPolymarketMarkets } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
 import { listEnabledProviders } from "../../venues/registry";
-import { resolveDisplayVolume } from "../../../lib/marketPresentation";
 import { API_VERSION_V1, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from "@/src/lib/constants";
 import { feedOutput, getFeedInput } from "@/src/lib/validations/feed";
+import type { VenueProvider } from "../../venues/types";
 
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
-type MarketLiveFeedRow = Pick<
-  Database["public"]["Tables"]["polymarket_market_live"]["Row"],
-  "market_id" | "source_ts"
->;
 type FeedEventRow = Pick<Database["public"]["Tables"]["user_events"]["Row"], "market_id" | "event_type">;
 
 type FeedMarketCandidate = {
@@ -54,61 +49,63 @@ export const feedRouter = router({
       const limit = Math.max(1, Math.min(MAX_FEED_LIMIT, Number(input?.limit ?? DEFAULT_FEED_LIMIT)));
       const offset = decodeCursor(input?.cursor);
 
-      const polymarketRows = await listMirroredPolymarketMarkets(ctx.supabaseService, {
-        onlyOpen: true,
-        limit: 700,
-      });
+      const enabledProviders = new Set(listEnabledProviders());
+      const providerList = Array.from(enabledProviders) as VenueProvider[];
 
-      const candidates: FeedMarketCandidate[] = polymarketRows.map((market) => ({
-        marketId: market.id,
-        category: market.category ?? "general",
-        fallbackVolume: resolveDisplayVolume(market.volume).raw ?? 0,
-      }));
-
+      // Fetch all open markets from canonical market_catalog for all enabled providers
+      const candidates: FeedMarketCandidate[] = [];
       const freshnessByMarket = new Map<string, { sourceTs: number }>();
 
-      if (polymarketRows.length > 0) {
-        const marketIds = polymarketRows.map((m) => m.id);
-        const liveRes = await ctx.supabaseService
-          .from("polymarket_market_live")
-          .select("market_id, source_ts")
-          .in("market_id", marketIds);
-
-        for (const row of (liveRes.data ?? []) as MarketLiveFeedRow[]) {
-          const marketId = row.market_id.trim();
-          if (!marketId) continue;
-          const ts = Date.parse(row.source_ts ?? "");
-          freshnessByMarket.set(marketId, {
-            sourceTs: Number.isFinite(ts) ? ts : 0,
-          });
-        }
-      }
-
-      const enabledProviders = new Set(listEnabledProviders());
-      if (enabledProviders.has("limitless")) {
+      const CATALOG_CHUNK_SIZE = 700;
+      for (const provider of providerList) {
         const { data: catalogRows } = await (ctx.supabaseService as any)
           .from("market_catalog")
-          .select("provider_market_id, category, total_volume_usd, source_updated_at")
-          .eq("provider", "limitless")
+          .select("id, provider, provider_market_id, category, total_volume_usd, source_updated_at")
+          .eq("provider", provider)
           .eq("state", "open")
-          .limit(500);
+          .limit(CATALOG_CHUNK_SIZE);
 
         const rows = Array.isArray(catalogRows)
           ? (catalogRows as Array<Record<string, unknown>>)
           : [];
         for (const row of rows) {
-          const providerMarketId = String(row.provider_market_id ?? "").trim();
-          if (!providerMarketId) continue;
-          const marketId = `limitless:${providerMarketId}`;
+          const marketId = String(row.id ?? "").trim();
+          if (!marketId) continue;
           const totalVolumeUsd = Number(row.total_volume_usd ?? 0);
-          const sourceTs = Date.parse(String(row.source_updated_at ?? ""));
           candidates.push({
             marketId,
             category: String(row.category ?? "general"),
-            fallbackVolume: resolveDisplayVolume(totalVolumeUsd).raw ?? 0,
+            fallbackVolume: Number.isFinite(totalVolumeUsd) ? totalVolumeUsd : 0,
           });
+          const sourceTs = Date.parse(String(row.source_updated_at ?? ""));
           if (Number.isFinite(sourceTs)) {
             freshnessByMarket.set(marketId, { sourceTs });
+          }
+        }
+      }
+
+      // Enrich freshness from canonical market_live for all candidates
+      if (candidates.length > 0) {
+        const marketIds = candidates.map((c) => c.marketId);
+        const LIVE_CHUNK_SIZE = 400;
+        for (let i = 0; i < marketIds.length; i += LIVE_CHUNK_SIZE) {
+          const chunk = marketIds.slice(i, i + LIVE_CHUNK_SIZE);
+          const { data: liveRows } = await (ctx.supabaseService as any)
+            .from("market_live")
+            .select("market_id, source_ts")
+            .in("market_id", chunk);
+
+          for (const row of (liveRows ?? []) as Array<{ market_id: string; source_ts: string | null }>) {
+            const mid = String(row.market_id ?? "").trim();
+            if (!mid) continue;
+            const ts = Date.parse(row.source_ts ?? "");
+            if (Number.isFinite(ts)) {
+              const existing = freshnessByMarket.get(mid);
+              // Prefer the more recent timestamp between catalog and live
+              if (!existing || ts > existing.sourceTs) {
+                freshnessByMarket.set(mid, { sourceTs: ts });
+              }
+            }
           }
         }
       }

@@ -610,6 +610,47 @@ export type Database = {
           },
         ];
       };
+      market_ai_tags: {
+        Row: {
+          id: number;
+          market_id: string;
+          tag: string;
+          confidence: number;
+          model: string;
+          prompt_version: string;
+          snapshot_fingerprint: string;
+          classified_at: string;
+        };
+        Insert: {
+          id?: number;
+          market_id: string;
+          tag: string;
+          confidence: number;
+          model?: string;
+          prompt_version?: string;
+          snapshot_fingerprint?: string;
+          classified_at?: string;
+        };
+        Update: {
+          id?: number;
+          market_id?: string;
+          tag?: string;
+          confidence?: number;
+          model?: string;
+          prompt_version?: string;
+          snapshot_fingerprint?: string;
+          classified_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "market_ai_tags_market_id_fkey";
+            columns: ["market_id"];
+            isOneToOne: false;
+            referencedRelation: "market_catalog";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

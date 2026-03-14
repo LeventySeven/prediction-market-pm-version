@@ -25,6 +25,9 @@ const publicColumns =
 type DbUserRow = Database["public"]["Tables"]["users"]["Row"];
 type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 
+/** Normalize an email for consistent lookup: trim whitespace and lowercase. */
+export const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
 const PRIVY_PLACEHOLDER_DOMAIN = "privy.local";
 const buildPrivyEmail = (privyUserId: string) => `privy_${privyUserId}@${PRIVY_PLACEHOLDER_DOMAIN}`;
 
@@ -144,10 +147,11 @@ const resolvePrivyUserConflict = async (
 
   if (!identity.email) return null;
 
+  const normalizedConflictEmail = normalizeEmail(identity.email);
   const byEmail = await supabaseService
     .from("users")
     .select(publicColumns)
-    .eq("email", identity.email)
+    .ilike("email", normalizedConflictEmail)
     .maybeSingle();
   if (byEmail.error || !byEmail.data) return null;
 
@@ -192,10 +196,11 @@ const upsertPrivyUser = async (
   }
 
   if (!userRow && identity.email) {
+    const normalizedLookupEmail = normalizeEmail(identity.email);
     const byEmail = await supabaseService
       .from("users")
       .select(publicColumns)
-      .eq("email", identity.email)
+      .ilike("email", normalizedLookupEmail)
       .maybeSingle();
     if (byEmail.error) {
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: byEmail.error.message });
@@ -227,7 +232,7 @@ const upsertPrivyUser = async (
     return updated.data as DbUserRow;
   }
 
-  const email = identity.email ?? buildPrivyEmail(identity.privyUserId);
+  const email = normalizeEmail(identity.email ?? buildPrivyEmail(identity.privyUserId));
   let insertedUser: DbUserRow | null = null;
   let lastError: string | null = null;
 

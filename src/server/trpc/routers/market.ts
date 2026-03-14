@@ -76,7 +76,6 @@ import {
 import {
   getMirroredPolymarketMarketById,
   listMirroredPolymarketMarkets,
-  searchMirroredPolymarketMarkets,
   upsertMirroredPolymarketMarkets,
 } from "../../polymarket/mirror";
 import type { Database } from "../../../types/database";
@@ -2081,30 +2080,32 @@ export const marketRouter = router({
             providers: input?.providers,
             providerFilter: input?.providerFilter,
           });
-          const isLimitlessOnly =
-            selectedProviders.length === 1 && selectedProviders[0] === "limitless";
-          if (isLimitlessOnly && result.items.length === 0) {
-            const adapter = getVenueAdapter("limitless");
-            if (adapter.isEnabled()) {
-              const fallbackLimit = Math.max(page * pageSize, 200);
-              const rows = await adapter.listMarketsSnapshot({
-                onlyOpen,
-                limit: fallbackLimit,
-                sortBy,
-              });
-              if (rows.length > 0) {
-                if (ENABLE_CATALOG_SYNC_ON_READ) {
+          // Live provider fallback is disabled by default; only enabled via
+          // ENABLE_CATALOG_SYNC_ON_READ for ops/debug recovery scenarios.
+          if (ENABLE_CATALOG_SYNC_ON_READ) {
+            const isLimitlessOnly =
+              selectedProviders.length === 1 && selectedProviders[0] === "limitless";
+            if (isLimitlessOnly && result.items.length === 0) {
+              const adapter = getVenueAdapter("limitless");
+              if (adapter.isEnabled()) {
+                const fallbackLimit = Math.max(page * pageSize, 200);
+                const rows = await adapter.listMarketsSnapshot({
+                  onlyOpen,
+                  limit: fallbackLimit,
+                  sortBy,
+                });
+                if (rows.length > 0) {
                   void upsertVenueMarketsToCatalog(ctx.supabaseService, rows).catch(() => {
                     // best-effort sync
                   });
+                  const mapped = sortMarketRows(rows.map(mapVenueMarketToMarketOutput), sortBy);
+                  const offset = (page - 1) * pageSize;
+                  return {
+                    ...result,
+                    items: mapped.slice(offset, offset + pageSize),
+                    hasMore: mapped.length > offset + pageSize,
+                  };
                 }
-                const mapped = sortMarketRows(rows.map(mapVenueMarketToMarketOutput), sortBy);
-                const offset = (page - 1) * pageSize;
-                return {
-                  ...result,
-                  items: mapped.slice(offset, offset + pageSize),
-                  hasMore: mapped.length > offset + pageSize,
-                };
               }
             }
           }
@@ -2172,127 +2173,65 @@ export const marketRouter = router({
         providers: input.providers,
         providerFilter: input.providerFilter,
       });
-      const limitlessWorkerFresh = selectedProviders.includes("limitless")
-        ? await isLimitlessWorkerFresh(ctx.supabaseService).catch(() => false)
-        : false;
       if (query.length < 2) {
         return { apiVersion: API_VERSION_V1, items: [] };
       }
 
-      const scoredItems: Array<{ market: MarketOutput; score: number }> = [];
+      // Fetch candidate markets from canonical tables for all selected providers uniformly
+      const candidateLimit = Math.max(limit * 10, 200);
+      const canonicalMarkets: MarketOutput[] = [];
+      for (const provider of selectedProviders) {
+        const rows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+          provider,
+          onlyOpen,
+          limit: candidateLimit,
+        });
+        canonicalMarkets.push(...rows);
+      }
 
-      if (selectedProviders.includes("polymarket")) {
-        const primary = await searchMirroredPolymarketMarkets(ctx.supabaseService, query, limit * 8);
-        const fallback =
-          primary.length > 0
-            ? []
-            : await listMirroredPolymarketMarkets(ctx.supabaseService, { onlyOpen: true, limit: 300 });
+      if (canonicalMarkets.length === 0) {
+        return { apiVersion: API_VERSION_V1, items: [] };
+      }
 
-        const byId = new Map<string, PolymarketMarket>();
-        for (const row of [...primary, ...fallback]) {
-          if (onlyOpen && row.state !== "open") continue;
-          byId.set(row.id, row);
-        }
-        const candidates = Array.from(byId.values());
-        if (candidates.length > 0) {
-          const marketIds = candidates.map((m) => m.id);
-          const liveByMarket = await fetchMarketLiveSnapshots(ctx.supabaseService, marketIds);
-
-          const vectorByMarket = new Map<string, number[]>();
-          const chunkSize = 200;
-          for (let i = 0; i < marketIds.length; i += chunkSize) {
-            const chunk = marketIds.slice(i, i + chunkSize);
-            const { data } = await ctx.supabaseService
-              .from("market_embeddings")
-              .select("market_id, embedding")
-              .in("market_id", chunk);
-            for (const row of (data ?? []) as MarketEmbeddingRow[]) {
-              const marketId = row.market_id.trim();
-              const vector = parseVector(row.embedding);
-              if (marketId && vector) vectorByMarket.set(marketId, vector);
-            }
-          }
-
-          const queryVector = await getQueryEmbedding(query);
-          const mapped = candidates.map(mapPolymarketMarket);
-          const merged = mergeMarketsWithLive(mapped, liveByMarket);
-
-          scoredItems.push(
-            ...merged.map((market) => {
-              const raw = byId.get(market.id);
-              const lex = raw ? lexicalScore(query, raw) : 0;
-              const semanticVector = queryVector ? vectorByMarket.get(market.id) ?? null : null;
-              const semantic =
-                queryVector && semanticVector ? clamp01((dot(queryVector, semanticVector) + 1) / 2) : 0;
-              const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
-              const score =
-                queryVector && semanticVector
-                  ? clamp01(semantic * 0.65 + lex * 0.25 + volumeBoost * 0.1)
-                  : clamp01(lex * 0.8 + volumeBoost * 0.2);
-              return { market, score };
-            })
-          );
+      // Fetch embeddings from canonical market_embeddings for all candidates
+      const marketIds = canonicalMarkets.map((m) => m.id);
+      const vectorByMarket = new Map<string, number[]>();
+      const embChunkSize = 200;
+      for (let i = 0; i < marketIds.length; i += embChunkSize) {
+        const chunk = marketIds.slice(i, i + embChunkSize);
+        const { data } = await ctx.supabaseService
+          .from("market_embeddings")
+          .select("market_id, embedding")
+          .in("market_id", chunk);
+        for (const row of (data ?? []) as MarketEmbeddingRow[]) {
+          const marketId = row.market_id.trim();
+          const vector = parseVector(row.embedding);
+          if (marketId && vector) vectorByMarket.set(marketId, vector);
         }
       }
 
-      if (selectedProviders.includes("limitless")) {
-        let usedWorkerSearch = false;
-        if (limitlessWorkerFresh) {
-          const workerRows = await listCanonicalProviderMarkets(ctx.supabaseService, {
-            provider: "limitless",
-            onlyOpen,
-            limit: Math.max(limit * 10, 200),
-          });
-          if (workerRows.length > 0) {
-            usedWorkerSearch = true;
-            scoredItems.push(
-              ...workerRows.map((market) => {
-                const lex = lexicalScoreText(
-                  query,
-                  `${market.titleEn} ${market.description ?? ""} ${market.categoryLabelEn ?? market.categoryLabelRu ?? ""} ${(market.outcomes ?? [])
-                    .map((outcome) => outcome.title)
-                    .join(" ")}`
-                );
-                const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
-                return {
-                  market,
-                  score: clamp01(lex * 0.8 + volumeBoost * 0.2),
-                };
-              })
-            );
-          }
-        }
+      const queryVector = await getQueryEmbedding(query);
 
-        if (!usedWorkerSearch) {
-          const adapter = getVenueAdapter("limitless");
-          if (adapter.isEnabled()) {
-            const rows = await adapter.searchMarkets(query, Math.max(limit * 6, 60));
-            const filtered = onlyOpen ? rows.filter((row) => row.state === "open") : rows;
-            if (ENABLE_CATALOG_SYNC_ON_READ && filtered.length > 0) {
-              void upsertVenueMarketsToCatalog(ctx.supabaseService, filtered).catch(() => {
-                // Best effort sync.
-              });
-            }
-            scoredItems.push(
-              ...filtered.map((row) => {
-                const market = mapVenueMarketToMarketOutput(row);
-                const lex = lexicalScoreText(
-                  query,
-                  `${row.title} ${row.description ?? ""} ${row.category ?? ""} ${row.outcomes
-                    .map((outcome) => outcome.title)
-                    .join(" ")}`
-                );
-                const volumeBoost = clamp01(Math.log10(Math.max(0, row.volume) + 1) / 6);
-                return {
-                  market,
-                  score: clamp01(lex * 0.8 + volumeBoost * 0.2),
-                };
-              })
-            );
-          }
-        }
-      }
+      // Score each candidate with lexical + semantic + volume boost
+      const scoredItems = canonicalMarkets.map((market) => {
+        const lex = lexicalScoreText(
+          query,
+          `${market.titleEn} ${market.description ?? ""} ${market.categoryLabelEn ?? market.categoryLabelRu ?? ""} ${(market.outcomes ?? [])
+            .map((outcome) => outcome.title)
+            .join(" ")}`
+        );
+        const semanticVector = queryVector ? vectorByMarket.get(market.id) ?? null : null;
+        const semantic =
+          queryVector && semanticVector ? clamp01((dot(queryVector, semanticVector) + 1) / 2) : 0;
+        const volumeBoost = clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6);
+        const score =
+          queryVector && semanticVector
+            ? clamp01(semantic * 0.65 + lex * 0.25 + volumeBoost * 0.1)
+            : clamp01(lex * 0.8 + volumeBoost * 0.2);
+        return { market, score };
+      });
 
+      // Deduplicate by canonical market ID
       const deduped = new Map<string, { market: MarketOutput; score: number }>();
       for (const item of scoredItems) {
         const key =
@@ -2318,37 +2257,50 @@ export const marketRouter = router({
     .input(getSimilarMarketsInput)
     .output(similarMarketsV1Output)
     .query(async ({ ctx, input }) => {
-      const baseMarket = await getMarketFromMirrorOrLive(ctx.supabaseService, input.marketId);
-      if (!baseMarket) {
+      // Resolve the base market from canonical tables
+      let baseMarketOutput: MarketOutput | null = null;
+      try {
+        baseMarketOutput = await getCanonicalMarket({
+          supabaseService: ctx.supabaseService,
+          marketId: input.marketId,
+          provider: null,
+        });
+      } catch {
+        // Canonical lookup failed
+      }
+      if (!baseMarketOutput) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Market not found" });
       }
 
       const limit = Math.max(1, Math.min(MAX_MARKET_SIMILAR_LIMIT, Number(input.limit ?? DEFAULT_MARKET_SIMILAR_LIMIT)));
-      const targetVector = await getEmbeddingByMarketId(ctx.supabaseService, baseMarket.id);
+      const targetVector = await getEmbeddingByMarketId(ctx.supabaseService, baseMarketOutput.id);
 
       if (!targetVector) {
-        const pool = await listMirroredPolymarketMarkets(ctx.supabaseService, {
-          onlyOpen: true,
-          limit: 300,
-        });
-        const sameCategory = pool
-          .filter((row) => row.id !== baseMarket.id && row.category === baseMarket.category)
+        // Fallback: find same-category markets from canonical catalog, all providers
+        const enabledProviders = listEnabledVenueProviders();
+        const poolMarkets: MarketOutput[] = [];
+        for (const provider of enabledProviders) {
+          const rows = await listCanonicalProviderMarkets(ctx.supabaseService, {
+            provider,
+            onlyOpen: true,
+            limit: 300,
+          });
+          poolMarkets.push(...rows);
+        }
+        const sameCategory = poolMarkets
+          .filter((m) => m.id !== baseMarketOutput!.id && m.categoryLabelEn === baseMarketOutput!.categoryLabelEn)
           .sort((a, b) => b.volume - a.volume)
           .slice(0, limit);
-        const mapped = sameCategory.map(mapPolymarketMarket);
-        const liveByMarket = await fetchMarketLiveSnapshots(
-          ctx.supabaseService,
-          mapped.map((m) => m.id)
-        );
         return {
           apiVersion: API_VERSION_V1,
-          items: mergeMarketsWithLive(mapped, liveByMarket).map((market) => ({
+          items: sameCategory.map((market) => ({
             market,
             score: clamp01(Math.log10(Math.max(0, market.volume) + 1) / 6),
           })),
         };
       }
 
+      // Embedding-based similarity using canonical market_embeddings
       const { data } = await ctx.supabaseService
         .from("market_embeddings")
         .select("market_id, embedding")
@@ -2357,7 +2309,7 @@ export const marketRouter = router({
       const scored = (data ?? [])
         .map((row: MarketEmbeddingRow) => {
           const marketId = row.market_id.trim();
-          if (!marketId || marketId === baseMarket.id) return null;
+          if (!marketId || marketId === baseMarketOutput!.id) return null;
           const vector = parseVector(row.embedding);
           if (!vector) return null;
           const score = clamp01((dot(targetVector, vector) + 1) / 2);
@@ -2367,32 +2319,34 @@ export const marketRouter = router({
         .sort((a, b) => b.score - a.score)
         .slice(0, limit * 3);
 
-      const markets = await Promise.all(
-        scored.map(async (row) => ({
-          row,
-          market: await getMarketFromMirrorOrLive(ctx.supabaseService, row.marketId),
-        }))
+      // Resolve similar markets from canonical tables
+      const resolvedMarkets = await Promise.all(
+        scored.map(async (row) => {
+          let market: MarketOutput | null = null;
+          try {
+            market = await getCanonicalMarket({
+              supabaseService: ctx.supabaseService,
+              marketId: row.marketId,
+              provider: null,
+            });
+          } catch {
+            // Skip markets that fail canonical lookup
+          }
+          return { row, market };
+        })
       );
 
-      const mapped = markets
-        .filter((entry): entry is { row: { marketId: string; score: number }; market: PolymarketMarket } => Boolean(entry.market))
+      const items = resolvedMarkets
+        .filter((entry): entry is { row: { marketId: string; score: number }; market: MarketOutput } => Boolean(entry.market))
         .map((entry) => ({
-          market: mapPolymarketMarket(entry.market),
+          market: entry.market,
           score: entry.row.score,
         }))
         .slice(0, limit);
 
-      const liveByMarket = await fetchMarketLiveSnapshots(
-        ctx.supabaseService,
-        mapped.map((m) => m.market.id)
-      );
-
       return {
         apiVersion: API_VERSION_V1,
-        items: mapped.map((item) => ({
-          market: mergeMarketWithLive(item.market, liveByMarket.get(item.market.id)),
-          score: item.score,
-        })),
+        items,
       };
     }),
 

@@ -110,6 +110,11 @@ export const marketOrderbookFreshnessOutput = z.object({
   stale: z.boolean(),
 });
 
+export const marketAiTagOutput = z.object({
+  tag: z.string(),
+  confidence: z.number(),
+});
+
 export const marketOutput = z.object({
   id: z.string(),
   slug: z.string().nullable().optional(),
@@ -162,6 +167,7 @@ export const marketOutput = z.object({
   freshness: marketFreshnessOutput.nullable().optional(),
   orderbookFreshness: marketOrderbookFreshnessOutput.nullable().optional(),
   tradeMeta: marketTradeMetaOutput,
+  aiTags: z.array(marketAiTagOutput).optional(),
 });
 
 export const marketOutputArray = z.array(marketOutput);
@@ -475,3 +481,4 @@ export type LimitlessTradeMetaOutput = z.infer<typeof limitlessTradeMetaOutput>;
 export type PriceCandleOutput = z.infer<typeof priceCandleOutput>;
 export type PublicTradeOutput = z.output<typeof publicTradeOutput>;
 export type LiveActivityTickOutput = z.output<typeof liveActivityTickOutput>;
+export type MarketAiTagOutput = z.infer<typeof marketAiTagOutput>;
