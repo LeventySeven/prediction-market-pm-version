@@ -55,4 +55,24 @@ describe("market external url normalization", () => {
     expect(pm).toBe("https://polymarket.com/event/btc-halving");
     expect(lm).toBe("https://limitless.exchange/market/eth-6k");
   });
+
+  it("prefers canonical slugs over brittle provider ids when rebuilding venue links", () => {
+    const pm = getExternalMarketUrl({
+      id: "polymarket:0xabc123",
+      slug: "fed-march-rate-cut",
+      provider: "polymarket",
+      providerMarketId: "0xabc123",
+      source: null,
+    } as any);
+    const lm = getExternalMarketUrl({
+      id: "limitless:99123",
+      slug: "will-solana-hit-500",
+      provider: "limitless",
+      providerMarketId: "99123",
+      source: null,
+    } as any);
+
+    expect(pm).toBe("https://polymarket.com/event/fed-march-rate-cut");
+    expect(lm).toBe("https://limitless.exchange/market/will-solana-hit-500");
+  });
 });

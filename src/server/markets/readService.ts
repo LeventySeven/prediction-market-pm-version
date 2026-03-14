@@ -522,6 +522,7 @@ const mapLiveVenueMarketToOutput = (
 
   return {
     id: venueToCanonicalId(market.provider, market.providerMarketId),
+    slug: market.slug,
     provider: market.provider,
     providerMarketId: market.providerMarketId,
     canonicalMarketId: venueToCanonicalId(market.provider, market.providerMarketId),
@@ -750,66 +751,6 @@ const buildCandlesFromPriceHistory = (
   }
 
   return Array.from(byBucket.values()).sort((a, b) => candleTs(a) - candleTs(b));
-};
-
-const buildFlatBaselineCandles = (
-  price: number,
-  limit: number,
-  interval: CandleInterval
-): PriceCandleOutput[] => {
-  const resolutionMs = CANDLE_RESOLUTION_MS[interval];
-  const pointCount = Math.max(interval === "1m" ? 60 : 24, Math.min(limit, interval === "1m" ? 240 : 120));
-  const safePrice = clamp01(price);
-  const alignedNow = Math.floor(Date.now() / resolutionMs) * resolutionMs;
-  const firstTs = alignedNow - (pointCount - 1) * resolutionMs;
-
-  return Array.from({ length: pointCount }, (_, index) => {
-    const bucketStart = firstTs + index * resolutionMs;
-    return {
-      bucket: new Date(bucketStart).toISOString(),
-      outcomeId: null,
-      outcomeTitle: null,
-      outcomeColor: null,
-      open: safePrice,
-      high: safePrice,
-      low: safePrice,
-      close: safePrice,
-      volume: 0,
-      tradesCount: 0,
-    } satisfies PriceCandleOutput;
-  });
-};
-
-const deriveBaselinePriceFromCanonicalMarket = (market: MarketOutput | null): number => {
-  if (!market) return 0.5;
-  if (typeof market.priceYes === "number" && Number.isFinite(market.priceYes)) {
-    return clamp01(market.priceYes);
-  }
-  const outcomes = Array.isArray(market.outcomes) ? market.outcomes : [];
-  const { yes } = pickBinaryOutcomes(outcomes);
-  if (typeof yes?.price === "number" && Number.isFinite(yes.price)) {
-    return clamp01(yes.price);
-  }
-  if (typeof market.lastTradePrice === "number" && Number.isFinite(market.lastTradePrice)) {
-    return clamp01(market.lastTradePrice);
-  }
-  if (typeof market.mid === "number" && Number.isFinite(market.mid)) {
-    return clamp01(market.mid);
-  }
-  return 0.5;
-};
-
-const deriveBaselinePriceFromVenueMarket = (market: VenueMarket | null): number => {
-  if (!market) return 0.5;
-  const { yes } = pickBinaryOutcomes(market.outcomes);
-  if (typeof yes?.price === "number" && Number.isFinite(yes.price)) {
-    return clamp01(yes.price);
-  }
-  const firstOutcome = market.outcomes.find((outcome) => Number.isFinite(outcome.price));
-  if (firstOutcome) {
-    return clamp01(firstOutcome.price);
-  }
-  return 0.5;
 };
 
 const fetchCompareGroupAggregates = async (
@@ -1171,6 +1112,7 @@ const mapCanonicalRows = (
 
     return {
       id: outputId,
+      slug: row.slug,
       provider,
       providerMarketId: row.provider_market_id,
       canonicalMarketId: outputId,
@@ -1946,6 +1888,9 @@ export const getCanonicalPriceCandles = async (params: {
     if (adapter.isEnabled()) {
       liveVenueMarket = await adapter.getMarketById(ref.providerMarketId);
       if (liveVenueMarket) {
+        if (liveVenueMarket.outcomes.length > 2) {
+          return [];
+        }
         const history = await adapter.getPriceHistory(liveVenueMarket, rawLimit, { interval });
         const providerRows = buildCandlesFromPriceHistory(history, interval);
         if (providerRows.length > 0) {
@@ -1956,23 +1901,9 @@ export const getCanonicalPriceCandles = async (params: {
       }
     }
   } catch {
-    // fall through to baseline candles below
-  }
-
-  const baseline = buildFlatBaselineCandles(
-    liveVenueMarket
-      ? deriveBaselinePriceFromVenueMarket(liveVenueMarket)
-      : deriveBaselinePriceFromCanonicalMarket(market),
-    limit,
-    interval
-  );
-  if (baseline.length > 0) {
-    return baseline;
-  }
-
-  if (ENABLE_MARKET_HOT_READ_FALLBACK && ref.provider) {
     return [];
   }
+
   return [];
 };
 

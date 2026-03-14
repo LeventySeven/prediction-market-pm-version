@@ -3,7 +3,7 @@ import type { Market } from "@/types";
 const POLYMARKET_SITE_URL = "https://polymarket.com";
 const LIMITLESS_SITE_URL = "https://limitless.exchange";
 
-export type ExternalLinkMarket = Pick<Market, "id" | "provider" | "providerMarketId" | "source">;
+export type ExternalLinkMarket = Pick<Market, "id" | "slug" | "provider" | "providerMarketId" | "source">;
 
 export const defaultExternalMarketUrl = (provider?: Market["provider"]): string =>
   provider === "limitless" ? LIMITLESS_SITE_URL : POLYMARKET_SITE_URL;
@@ -27,11 +27,12 @@ export const buildCanonicalVenueUrl = (
     if (!sourceValue) return "";
     return extractVenueSlug(sourceValue);
   })();
+  const fallbackSlug = String(market?.slug ?? "").trim();
   const fallbackId = String(market?.providerMarketId ?? market?.id ?? "")
     .trim()
     .replace(/^limitless:/i, "")
     .replace(/^polymarket:/i, "");
-  const slug = fromSource || fallbackId;
+  const slug = fromSource || fallbackSlug || fallbackId;
   if (!slug) return fallbackBase;
 
   if (provider === "limitless") {

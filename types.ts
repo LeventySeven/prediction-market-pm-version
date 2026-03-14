@@ -60,6 +60,7 @@ export interface LimitlessTradeMeta {
 
 export interface Market {
   id: string;
+  slug?: string | null;
   provider?: "polymarket" | "limitless";
   providerMarketId?: string;
   canonicalMarketId?: string;

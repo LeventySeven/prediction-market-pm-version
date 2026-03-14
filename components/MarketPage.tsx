@@ -7,6 +7,7 @@ import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
 import TradingViewCandles from './TradingViewCandles';
 import { buildMarketChartSeries } from '@/src/lib/charts/marketChartSeries';
 import { getChartRangeRequest, MARKET_CHART_RANGES, type MarketChartRange } from '@/src/lib/chartRanges';
+import { normalizeExternalMarketUrl } from '@/src/lib/marketExternalUrl';
 import { formatPercent, roundPercentValue } from '@/src/lib/marketPresentation';
 
 type ErrorLike = string | Error | { message?: string } | null | undefined;
@@ -602,8 +603,15 @@ const MarketPage: React.FC<MarketPageProps> = ({
   };
 
   const sourceLabel = lang === "RU" ? "Источник" : "Source";
-  const sourceValue = (market.source ?? "").trim();
+  const sourceValue = normalizeExternalMarketUrl(market.source, market.provider) ?? (market.source ?? "").trim();
   const sourceIsUrl = /^https?:\/\//i.test(sourceValue);
+  const normalizedMarketContextSources = useMemo(
+    () =>
+      marketContextSources
+        .map((url) => normalizeExternalMarketUrl(url, market.provider) ?? String(url).trim())
+        .filter((url): url is string => url.length > 0),
+    [market.provider, marketContextSources]
+  );
   const providerLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
   const externalVenueLabel = market.provider === "limitless" ? "Limitless" : "Polymarket";
   const supportsTrading = market.capabilities?.supportsTrading !== false;
@@ -1434,13 +1442,13 @@ const MarketPage: React.FC<MarketPageProps> = ({
               <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
                 {marketContext}
               </p>
-              {marketContextSources.length > 0 && (
+              {normalizedMarketContextSources.length > 0 && (
                 <div className="mt-4 text-xs text-zinc-400">
                   <div className="uppercase tracking-wider text-zinc-500">
                     {lang === 'RU' ? 'Источники' : 'Sources'}
                   </div>
                   <div className="mt-2 flex flex-col gap-1">
-                    {marketContextSources.map((url) => (
+                    {normalizedMarketContextSources.map((url) => (
                       <a
                         key={url}
                         href={url}

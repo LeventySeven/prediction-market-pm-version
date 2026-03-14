@@ -224,7 +224,7 @@ describe("buildMarketChartSeries", () => {
     expect(first.data.map((row) => row.ts)).toEqual(second.data.map((row) => row.ts));
   });
 
-  test("binary series falls back to baseline when candle history is empty", () => {
+  test("binary series returns no chart rows when candle history is empty", () => {
     const series = buildMarketChartSeries({
       priceCandles: [],
       market: baseMarket({
@@ -238,11 +238,10 @@ describe("buildMarketChartSeries", () => {
 
     expect(series.mode).toBe("binary");
     if (series.mode !== "binary") return;
-    expect(series.data.length).toBeGreaterThan(0);
-    expect(series.data[series.data.length - 1]?.close).toBeCloseTo(67, 2);
+    expect(series.data).toHaveLength(0);
   });
 
-  test("multi series falls back to baseline when only aggregate candles are available", () => {
+  test("multi series returns no chart rows when only aggregate candles are available", () => {
     const outcomes = [
       {
         id: "yes",
@@ -299,9 +298,6 @@ describe("buildMarketChartSeries", () => {
 
     expect(series.mode).toBe("multi");
     if (series.mode !== "multi") return;
-    expect(series.data.length).toBeGreaterThan(0);
-    const latest = series.data[series.data.length - 1];
-    expect(latest?.values.yes).toBeCloseTo(63, 2);
-    expect(latest?.values.no).toBeCloseTo(37, 2);
+    expect(series.data).toHaveLength(0);
   });
 });

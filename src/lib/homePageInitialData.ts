@@ -5,6 +5,7 @@ export type ProviderFilter = "all" | "polymarket" | "limitless";
 
 export type MarketApiRow = {
   id: string;
+  slug?: string | null;
   provider?: "polymarket" | "limitless";
   providerMarketId?: string;
   canonicalMarketId?: string;
@@ -97,7 +98,7 @@ export type MarketApiRow = {
   } | null;
 };
 
-export type CatalogPageScope = "main" | "fast";
+export type CatalogPageScope = "main";
 
 export type CatalogBootstrapEntry = {
   cacheKey: string;

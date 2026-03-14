@@ -1,9 +1,12 @@
 'use client';
 
 import dynamic from "next/dynamic";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { Route } from "next";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
 import MarketCard from "@/components/MarketCard";
+import ClientErrorBoundary from "@/components/ClientErrorBoundary";
 import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
 import LimitlessCredentialsModal from "@/components/LimitlessCredentialsModal";
 import OnboardingModal from "@/components/OnboardingModal";
@@ -228,6 +231,7 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const displayVolume = resolveDisplayVolume(totalVolumeUsd ?? m.volume);
   return {
     id: String(m.id),
+    slug: typeof m.slug === "string" ? m.slug : null,
     provider: m.provider ?? "polymarket",
     providerMarketId: m.providerMarketId ?? String(m.id),
     canonicalMarketId:
@@ -729,6 +733,7 @@ const buildMarketCandleCacheKey = (params: {
   range: MarketChartRange;
 }) =>
   [
+    "real-only-v2",
     params.provider,
     params.marketId.trim(),
     params.interval,
@@ -789,6 +794,7 @@ export default function HomePage({
   initialMarketComments = [],
   initialEnabledProviders,
 }: HomePageInitialData = {}) {
+  const router = useRouter();
   const bootstrappedCatalog = initialCatalogBootstrap ?? readWarmCatalogBootstrap();
   const [activeCategoryId, setActiveCategoryId] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -817,9 +823,7 @@ export default function HomePage({
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("ALL");
   type CatalogTimeFilter = "ANY" | "HOUR" | "DAY" | "WEEK";
   const [catalogTimeFilter, setCatalogTimeFilter] = useState<CatalogTimeFilter>("ANY");
-  const [catalogBucket, setCatalogBucket] = useState<CatalogPageScope>(() =>
-    typeof window === "undefined" ? "main" : getCatalogBucketFromLocation()
-  );
+  const [catalogBucket] = useState<CatalogPageScope>("main");
   const [activeProviderFilter, setActiveProviderFilter] = useState<ProviderFilter>(() =>
     initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation())
   );
@@ -1052,27 +1056,29 @@ export default function HomePage({
     },
     []
   );
+  const transitionCatalogState = useCallback((apply: () => void) => {
+    startTransition(() => {
+      catalogAutoAdvancePageRef.current = 0;
+      apply();
+    });
+  }, []);
   const navigateToMarketUrl = useCallback((marketId: string, title?: string | null) => {
-    if (typeof window === "undefined") return;
     const next = buildMarketPath(marketId, title);
-    commitHistoryNavigation("push", next, { marketId });
-  }, [commitHistoryNavigation]);
+    router.push(next as Route, { scroll: false });
+  }, [router]);
   const navigateToCatalogUrl = useCallback(() => {
     if (typeof window === "undefined") return;
     const nextPath = getCatalogPathForProvider(activeProviderFilter);
-    commitHistoryNavigation("push", nextPath + window.location.search, {});
-  }, [activeProviderFilter, commitHistoryNavigation]);
+    router.push(`${nextPath}${window.location.search}` as Route, { scroll: false });
+  }, [activeProviderFilter, router]);
   const navigateToViewUrl = useCallback((view: ViewType) => {
-    if (typeof window === "undefined") return;
     const next = view === "CATALOG" ? getCatalogPathForProvider(activeProviderFilter) : getPathForView(view);
-    commitHistoryNavigation("push", next, { view });
-  }, [activeProviderFilter, commitHistoryNavigation]);
+    router.push(next as Route, { scroll: false });
+  }, [activeProviderFilter, router]);
 
   const applyCatalogStateFromUrl = useCallback(() => {
     if (typeof window === "undefined") return;
     const providerFromPath = getCatalogProviderFromLocation();
-    setActiveProviderFilter(providerFromPath);
-
     const url = new URL(window.location.href);
     const q = (url.searchParams.get("q") ?? "").trim();
     const category = (url.searchParams.get("category") ?? "").trim();
@@ -1080,9 +1086,6 @@ export default function HomePage({
     const status = (url.searchParams.get("status") ?? "").trim().toUpperCase();
     const time = (url.searchParams.get("time") ?? "").trim().toUpperCase();
     const page = Number(url.searchParams.get("page") ?? "1");
-
-    setSearchQuery(q);
-    setActiveCategoryId(category || "all");
 
     const isSort =
       sort === "ENDING_SOON" ||
@@ -1092,16 +1095,20 @@ export default function HomePage({
       sort === "VOLUME_ASC" ||
       sort === "CATEGORY_ASC" ||
       sort === "CATEGORY_DESC";
-    setCatalogSort(isSort ? sort : DEFAULT_CATALOG_SORT);
 
     const isStatus = status === "ALL" || status === "ONGOING" || status === "ENDED";
-    setCatalogStatus(isStatus ? status : "ALL");
 
     const isTime = time === "ANY" || time === "HOUR" || time === "DAY" || time === "WEEK";
-    setCatalogTimeFilter(isTime ? time : "ANY");
-    setCatalogBucket("main");
-    setCatalogPage(Number.isFinite(page) && page > 0 ? Math.floor(page) : 1);
-  }, []);
+    transitionCatalogState(() => {
+      setActiveProviderFilter(providerFromPath);
+      setSearchQuery(q);
+      setActiveCategoryId(category || "all");
+      setCatalogSort(isSort ? sort : DEFAULT_CATALOG_SORT);
+      setCatalogStatus(isStatus ? status : "ALL");
+      setCatalogTimeFilter(isTime ? time : "ANY");
+      setCatalogPage(Number.isFinite(page) && page > 0 ? Math.floor(page) : 1);
+    });
+  }, [transitionCatalogState]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1165,6 +1172,14 @@ export default function HomePage({
     selectedMarketId,
     commitHistoryNavigation,
   ]);
+
+  const handleCatalogSearchChange = useCallback((value: string) => {
+    transitionCatalogState(() => {
+      setCatalogPage(1);
+      setSearchQuery(value);
+    });
+  }, [transitionCatalogState]);
+
   const [myPositions, setMyPositions] = useState<Position[]>([]);
   const [myTrades, setMyTrades] = useState<Trade[]>([]);
   const [myBetsLoading, setMyBetsLoading] = useState(false);
@@ -2028,13 +2043,23 @@ export default function HomePage({
     if (!enabledProvidersResolved) return;
     if (activeProviderFilter === "all") return;
     if (enabledProviderSet.has(activeProviderFilter)) return;
-    setCatalogPage(1);
-    setActiveProviderFilter("all");
+    transitionCatalogState(() => {
+      setCatalogPage(1);
+      setActiveProviderFilter("all");
+    });
     if (typeof window !== "undefined") {
       const next = `/catalog${window.location.search}`;
       commitHistoryNavigation("replace", next, { view: "CATALOG" });
     }
-  }, [activeProviderFilter, commitHistoryNavigation, currentView, enabledProviderSet, enabledProvidersResolved, selectedMarketId]);
+  }, [
+    activeProviderFilter,
+    commitHistoryNavigation,
+    currentView,
+    enabledProviderSet,
+    enabledProvidersResolved,
+    selectedMarketId,
+    transitionCatalogState,
+  ]);
 
   type CatalogFetchParams = {
     page: number;
@@ -2129,30 +2154,28 @@ export default function HomePage({
     const entries: CatalogBootstrapEntry[] = [];
     const providersToPersist = Array.from(new Set<ProviderFilter>(["all", ...enabledProviders]));
     for (const providerFilter of providersToPersist) {
-      for (const bucket of ["main", "fast"] as const) {
-        const cacheKey = buildCatalogFetchKey({
-          providerFilter,
-          page: 1,
-          sortBy: DEFAULT_CATALOG_BACKEND_SORT,
-          catalogBucket: bucket,
-        });
-        const cached = catalogPageCacheRef.current.get(cacheKey);
-        if (!cached) continue;
-        entries.push({
-          cacheKey,
-          providerFilter,
-          page: 1,
-          sortBy: DEFAULT_CATALOG_BACKEND_SORT,
-          catalogBucket: bucket,
-          rows: cached.rows,
-          hasMore: cached.hasMore,
-          snapshotId: cached.snapshotId ?? null,
-          pageScope: cached.pageScope,
-          source: cached.source ?? "supabase",
-          stale: cached.stale ?? false,
-          updatedAt: cached.updatedAt,
-        });
-      }
+      const cacheKey = buildCatalogFetchKey({
+        providerFilter,
+        page: 1,
+        sortBy: DEFAULT_CATALOG_BACKEND_SORT,
+        catalogBucket: "main",
+      });
+      const cached = catalogPageCacheRef.current.get(cacheKey);
+      if (!cached) continue;
+      entries.push({
+        cacheKey,
+        providerFilter,
+        page: 1,
+        sortBy: DEFAULT_CATALOG_BACKEND_SORT,
+        catalogBucket: "main",
+        rows: cached.rows,
+        hasMore: cached.hasMore,
+        snapshotId: cached.snapshotId ?? null,
+        pageScope: cached.pageScope,
+        source: cached.source ?? "supabase",
+        stale: cached.stale ?? false,
+        updatedAt: cached.updatedAt,
+      });
     }
     if (entries.length === 0) return;
     persistWarmCatalogBootstrap({
@@ -2402,7 +2425,7 @@ export default function HomePage({
 
   useEffect(() => {
     const byId = new Map<string, MarketCategoryStrict>();
-    for (const market of markets) {
+    for (const market of mergedMarkets) {
       const provider = market.provider ?? "polymarket";
       if (activeProviderFilter !== "all" && provider !== activeProviderFilter) continue;
       const categoryId = String(market.categoryId ?? "").trim();
@@ -2432,7 +2455,7 @@ export default function HomePage({
       if (prev === "all") return prev;
       return byId.has(prev) ? prev : "all";
     });
-  }, [activeProviderFilter, markets]);
+  }, [activeProviderFilter, mergedMarkets]);
 
   useEffect(() => {
     catalogAutoAdvancePageRef.current = 0;
@@ -2529,7 +2552,9 @@ export default function HomePage({
         if (loadingMarkets || !hasNextCatalogPage) return;
         if (catalogAutoAdvancePageRef.current === catalogPage) return;
         catalogAutoAdvancePageRef.current = catalogPage;
-        setCatalogPage((prev) => prev + 1);
+        transitionCatalogState(() => {
+          setCatalogPage((prev) => prev + 1);
+        });
       },
       {
         rootMargin: "480px 0px",
@@ -2539,7 +2564,7 @@ export default function HomePage({
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [catalogPage, currentView, hasNextCatalogPage, loadingMarkets, selectedMarketId]);
+  }, [catalogPage, currentView, hasNextCatalogPage, loadingMarkets, selectedMarketId, transitionCatalogState]);
 
   useEffect(() => {
     if (selectedMarketId || currentView !== "CATALOG") return;
@@ -3724,6 +3749,7 @@ export default function HomePage({
     }
 
     let cancelled = false;
+    let candleRequestSeq = 0;
     const activeMarketId = selectedMarketId;
     const activeMarketQueryId =
       selectedProvider && selectedMarket?.providerMarketId
@@ -3744,6 +3770,9 @@ export default function HomePage({
     const hasFreshCachedCandles =
       Boolean(cachedCandleEntry) &&
       Date.now() - (cachedCandleEntry?.cachedAt ?? 0) <= MARKET_CANDLE_CACHE_TTL_MS;
+    if (!hasFreshCachedCandles) {
+      setMarketCandles([]);
+    }
     void trpcClient.events.track
       .mutate({
         sessionId: sessionIdRef.current,
@@ -3759,6 +3788,8 @@ export default function HomePage({
     // Upstash SSE remains the primary live path and API polling is the stable fallback.
 
     async function fetchCandles(options?: { background?: boolean }) {
+      const requestId = candleRequestSeq + 1;
+      candleRequestSeq = requestId;
       if (!options?.background) {
         setMarketInsightsLoading(true);
       }
@@ -3771,7 +3802,7 @@ export default function HomePage({
           limit: candleLimit,
           range: marketChartRange,
         });
-        if (cancelled) return;
+        if (cancelled || requestId !== candleRequestSeq) return;
         const candlesParsed = priceCandlesSchema.parse(candlesRaw);
         const candles: PriceCandle[] = candlesParsed.map((c) => ({
           bucket: requireValue(c.bucket, "CANDLE_BUCKET_MISSING"),
@@ -3800,12 +3831,15 @@ export default function HomePage({
         }
       } catch (err) {
         console.error("Failed to load price candles", err);
-        if (!cancelled) {
+        if (!cancelled && requestId === candleRequestSeq) {
           maybeRequireRelogin(err);
+          if (!hasFreshCachedCandles) {
+            setMarketCandles([]);
+          }
           setMarketInsightsError(getErrorMessage(err));
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === candleRequestSeq) {
           setMarketInsightsLoading(false);
         }
       }
@@ -4617,12 +4651,22 @@ export default function HomePage({
   }, [marketContextLoadingId]);
 
   return (
-    <div className="tg-scroll bg-black text-zinc-100 font-sans">
+    <ClientErrorBoundary
+      lang={lang}
+      onReset={() => {
+        setMarketBetIntent(null);
+        setCatalogFiltersOpen(false);
+        setSelectedMarketId(null);
+        setCurrentView("CATALOG");
+        void loadMarkets();
+      }}
+    >
+      <div className="tg-scroll bg-black text-zinc-100 font-sans">
       {selectedMarket ? (
         <>
           <Header
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={handleCatalogSearchChange}
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
@@ -4715,7 +4759,7 @@ export default function HomePage({
         <>
           <Header
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={handleCatalogSearchChange}
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
@@ -4761,10 +4805,7 @@ export default function HomePage({
                         <input
                           type="text"
                           value={searchQuery}
-                          onChange={(e) => {
-                            setCatalogPage(1);
-                            setSearchQuery(e.target.value);
-                          }}
+                          onChange={(e) => handleCatalogSearchChange(e.target.value)}
                           placeholder={lang === "RU" ? "Поиск..." : "Search..."}
                           className="h-11 w-full rounded-[20px] border border-zinc-800 bg-zinc-950/80 px-4 pl-11 text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-700"
                         />
@@ -4778,8 +4819,10 @@ export default function HomePage({
                         <button
                           type="button"
                           onClick={() => {
-                            setCatalogPage(1);
-                            setActiveCategoryId("all");
+                            transitionCatalogState(() => {
+                              setCatalogPage(1);
+                              setActiveCategoryId("all");
+                            });
                           }}
                             className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
                               activeCategoryId === "all"
@@ -4797,8 +4840,10 @@ export default function HomePage({
                               key={c.id}
                               type="button"
                               onClick={() => {
-                                setCatalogPage(1);
-                                setActiveCategoryId(c.id);
+                                transitionCatalogState(() => {
+                                  setCatalogPage(1);
+                                  setActiveCategoryId(c.id);
+                                });
                               }}
                               className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
                                 selected
@@ -4825,15 +4870,13 @@ export default function HomePage({
                               aria-label={provider.ariaLabel ?? label}
                               title={provider.ariaLabel ?? label}
                               onClick={() => {
-                                setCatalogPage(1);
-                                setActiveProviderFilter(provider.id);
+                                transitionCatalogState(() => {
+                                  setCatalogPage(1);
+                                  setActiveProviderFilter(provider.id);
+                                });
                                 if (typeof window !== "undefined" && currentView === "CATALOG") {
                                   const nextPath = getCatalogPathForProvider(provider.id);
-                                  commitHistoryNavigation(
-                                    "push",
-                                    `${nextPath}${window.location.search}`,
-                                    { view: "CATALOG" }
-                                  );
+                                  router.push(`${nextPath}${window.location.search}` as Route, { scroll: false });
                                 }
                               }}
                               className={`shrink-0 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
@@ -4932,7 +4975,11 @@ export default function HomePage({
                               {!loadingMarkets && hasNextCatalogPage ? (
                                 <button
                                   type="button"
-                                  onClick={() => setCatalogPage((prev) => prev + 1)}
+                                  onClick={() =>
+                                    transitionCatalogState(() => {
+                                      setCatalogPage((prev) => prev + 1);
+                                    })
+                                  }
                                   className="h-10 rounded-full border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 hover:bg-zinc-950/80"
                                 >
                                   {lang === "RU" ? "Загрузить еще" : "Load more"}
@@ -5150,7 +5197,12 @@ export default function HomePage({
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    onClick={() => setCatalogStatus(opt.id)}
+                    onClick={() =>
+                      transitionCatalogState(() => {
+                        setCatalogPage(1);
+                        setCatalogStatus(opt.id);
+                      })
+                    }
                     className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
                       selected
                         ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
@@ -5180,7 +5232,12 @@ export default function HomePage({
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    onClick={() => setCatalogTimeFilter(opt.id)}
+                    onClick={() =>
+                      transitionCatalogState(() => {
+                        setCatalogPage(1);
+                        setCatalogTimeFilter(opt.id);
+                      })
+                    }
                     className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
                       selected
                         ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
@@ -5215,8 +5272,10 @@ export default function HomePage({
                     role="radio"
                     aria-checked={selected}
                     onClick={() => {
-                      setCatalogPage(1);
-                      setCatalogSort(opt.id);
+                      transitionCatalogState(() => {
+                        setCatalogPage(1);
+                        setCatalogSort(opt.id);
+                      });
                     }}
                     className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
                       selected
@@ -5232,10 +5291,12 @@ export default function HomePage({
             <button
               type="button"
               onClick={() => {
-                setCatalogStatus("ALL");
-                setCatalogTimeFilter("ANY");
-                setCatalogSort(DEFAULT_CATALOG_SORT);
-                setCatalogPage(1);
+                transitionCatalogState(() => {
+                  setCatalogStatus("ALL");
+                  setCatalogTimeFilter("ANY");
+                  setCatalogSort(DEFAULT_CATALOG_SORT);
+                  setCatalogPage(1);
+                });
               }}
               className="mt-3 w-full h-10 rounded-full border border-zinc-800 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-200 text-sm font-semibold transition-colors"
             >
@@ -5372,6 +5433,7 @@ export default function HomePage({
           setCurrentView("CATALOG");
         }}
       />
-    </div>
+      </div>
+    </ClientErrorBoundary>
   );
 }

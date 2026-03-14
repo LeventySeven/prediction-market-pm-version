@@ -112,6 +112,7 @@ export const marketOrderbookFreshnessOutput = z.object({
 
 export const marketOutput = z.object({
   id: z.string(),
+  slug: z.string().nullable().optional(),
   provider: venueProviderSchema.optional(),
   providerMarketId: z.string().optional(),
   canonicalMarketId: z.string().optional(),

@@ -205,6 +205,7 @@ export const buildMarketCandlesCacheKey = (params: {
     CACHE_NAMESPACE,
     params.provider,
     params.providerMarketId.trim(),
+    "shape:real-only-v2",
     `interval:${params.interval}`,
     `limit:${Math.max(1, params.limit)}`,
     `range:${(params.range ?? "none").toString()}`,

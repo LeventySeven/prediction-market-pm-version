@@ -70,6 +70,6 @@ describe("upstash cache key behavior", () => {
         limit: 720,
         range: "1M",
       })
-    ).toContain("market:candles:v2:polymarket:abc-123:interval:1h:limit:720:range:1M");
+    ).toContain("market:candles:v2:polymarket:abc-123:shape:real-only-v2:interval:1h:limit:720:range:1M");
   });
 });

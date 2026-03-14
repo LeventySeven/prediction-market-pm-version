@@ -62,29 +62,6 @@ const resolutionMsByInterval: Record<CandleInterval, number> = {
   "1h": 60 * 60 * 1000,
 };
 
-const fallbackPointsByInterval: Record<CandleInterval, number> = {
-  "1m": 120,
-  "1h": 24,
-};
-
-const buildFallbackTimeline = (
-  inputTimes: number[],
-  interval: CandleInterval,
-  points = fallbackPointsByInterval[interval]
-): number[] => {
-  const sortedUnique = Array.from(new Set(inputTimes.filter((ts) => Number.isFinite(ts)))).sort(
-    (a, b) => a - b
-  );
-  if (sortedUnique.length > 0) {
-    return sortedUnique.slice(Math.max(0, sortedUnique.length - points));
-  }
-  const now = Date.now();
-  const resolutionMs = resolutionMsByInterval[interval];
-  const alignedNow = Math.floor(now / resolutionMs) * resolutionMs;
-  const firstTs = alignedNow - (points - 1) * resolutionMs;
-  return Array.from({ length: points }, (_, idx) => firstTs + idx * resolutionMs);
-};
-
 const aggregatePriceCandles = (candles: PriceCandle[], interval: CandleInterval): PriceCandle[] => {
   if (candles.length === 0) return [];
   const resolutionMs = resolutionMsByInterval[interval];
@@ -262,25 +239,9 @@ export const buildMarketChartSeries = ({
     });
 
     if (normalizedRows.length === 0) {
-      const timeline = buildFallbackTimeline(candleTimes, interval);
-      const fallbackRows = timeline.map((ts) => {
-        const values: Record<string, number> = {};
-        outcomeLines.forEach((line) => {
-          values[line.id] = Number(
-            (initialProbByOutcomeId.get(line.id) ?? 100 / Math.max(1, outcomeLines.length)).toFixed(2)
-          );
-        });
-        return {
-          ts,
-          label: labelFor(ts),
-          spansMultipleDays,
-          values,
-          volume: 0,
-        };
-      });
       return {
         mode: "multi",
-        data: fallbackRows,
+        data: [],
         lines: outcomeLines.sort((a, b) => a.sortOrder - b.sortOrder),
       };
     }
@@ -358,21 +319,7 @@ export const buildMarketChartSeries = ({
     .sort((a, b) => a.ts - b.ts);
 
   if (rows.length === 0) {
-    const timeline = buildFallbackTimeline(candleTimes, interval);
-    const fallbackPrice = clampPrice(Number.isFinite(market.yesPrice) ? market.yesPrice : 0.5);
-    const fallbackValue = Number((fallbackPrice * 100).toFixed(2));
-    const fallbackRows = timeline.map((ts) => ({
-      ts,
-      label: labelFor(ts),
-      value: fallbackValue,
-      open: fallbackValue,
-      high: fallbackValue,
-      low: fallbackValue,
-      close: fallbackValue,
-      spansMultipleDays,
-      volume: 0,
-    }));
-    return { mode: "binary", data: fallbackRows, lines: [] };
+    return { mode: "binary", data: [], lines: [] };
   }
 
   const liveValue = Number(
