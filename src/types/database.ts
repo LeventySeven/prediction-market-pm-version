@@ -651,6 +651,118 @@ export type Database = {
           },
         ];
       };
+      communities: {
+        Row: {
+          id: string;
+          creator_user_id: string;
+          slug: string;
+          name: string;
+          description: string | null;
+          avatar_url: string | null;
+          accent_color: string;
+          visibility: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          creator_user_id: string;
+          slug: string;
+          name: string;
+          description?: string | null;
+          avatar_url?: string | null;
+          accent_color?: string;
+          visibility?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          creator_user_id?: string;
+          slug?: string;
+          name?: string;
+          description?: string | null;
+          avatar_url?: string | null;
+          accent_color?: string;
+          visibility?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "communities_creator_user_id_fkey";
+            columns: ["creator_user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      community_tag_filters: {
+        Row: {
+          id: number;
+          community_id: string;
+          tag: string;
+        };
+        Insert: {
+          id?: number;
+          community_id: string;
+          tag: string;
+        };
+        Update: {
+          id?: number;
+          community_id?: string;
+          tag?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "community_tag_filters_community_id_fkey";
+            columns: ["community_id"];
+            isOneToOne: false;
+            referencedRelation: "communities";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      community_memberships: {
+        Row: {
+          id: number;
+          community_id: string;
+          user_id: string;
+          role: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          community_id: string;
+          user_id: string;
+          role?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          community_id?: string;
+          user_id?: string;
+          role?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "community_memberships_community_id_fkey";
+            columns: ["community_id"];
+            isOneToOne: false;
+            referencedRelation: "communities";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "community_memberships_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

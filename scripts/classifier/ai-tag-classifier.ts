@@ -24,8 +24,8 @@ const POLL_INTERVAL_MS = Math.max(5_000, Number(process.env.CLASSIFIER_POLL_INTE
 const HEALTH_PORT = Math.max(0, Number(process.env.CLASSIFIER_HEALTH_PORT ?? 8082));
 const CONFIDENCE_THRESHOLD = Math.max(0, Math.min(1, Number(process.env.CLASSIFIER_CONFIDENCE_THRESHOLD ?? 0.5)));
 const MODEL_NAME = (process.env.CLASSIFIER_MODEL ?? "gpt-5-nano").trim();
-const PROMPT_VERSION = (process.env.CLASSIFIER_PROMPT_VERSION ?? "v1").trim();
-const CLASSIFIER_VERSION = "ai-tag-classifier-v2026-03-15a";
+const PROMPT_VERSION = (process.env.CLASSIFIER_PROMPT_VERSION ?? "v2").trim();
+const CLASSIFIER_VERSION = "ai-tag-classifier-v2026-03-15b";
 
 // ---------------------------------------------------------------------------
 // Clients
@@ -47,16 +47,24 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const TAXONOMY = [
   "crypto",
   "technology",
+  "ai",
   "macroeconomics",
   "business",
+  "finance",
+  "stocks",
   "politics",
   "geopolitics",
   "elections",
-  "sports",
+  "regulation",
   "science",
   "weather",
+  "sports",
   "entertainment",
-  "regulation",
+  "culture",
+  "health",
+  "energy",
+  "legal",
+  "world",
 ] as const;
 
 type TaxonomyTag = (typeof TAXONOMY)[number];

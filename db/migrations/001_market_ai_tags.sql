@@ -1,3 +1,7 @@
+-- Taxonomy (19 tags):
+-- crypto, technology, ai, macroeconomics, business, finance, stocks,
+-- politics, geopolitics, elections, regulation, science, weather,
+-- sports, entertainment, culture, health, energy, legal, world
 CREATE TABLE IF NOT EXISTS market_ai_tags (
   id bigint generated always as identity primary key,
   market_id uuid NOT NULL REFERENCES market_catalog(id) ON DELETE CASCADE,
