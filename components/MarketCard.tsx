@@ -199,10 +199,10 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
                 onQuickBet?.("YES");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(190,255,29,1)] hover:text-white active:border-[rgba(190,255,29,1)] active:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${yesLabel} ${formatPercent(market.chance)}`}
+              aria-label={`${yesLabel} ${Math.round(displayChance)}%`}
             >
               <span>{yesLabel}</span>
-              <span className="font-mono">{formatPercent(market.chance)}</span>
+              <span className="font-mono">{Math.round(displayChance)}%</span>
             </button>
             <button
               type="button"
@@ -211,10 +211,10 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
                 onQuickBet?.("NO");
               }}
               className="h-10 rounded-xl border border-zinc-900 bg-zinc-950/40 px-3 text-sm font-semibold text-zinc-200 hover:border-[rgba(245,68,166,1)] hover:text-white transition-colors flex items-center justify-between tabular-nums"
-              aria-label={`${noLabel} ${formatPercent(100 - market.chance)}`}
+              aria-label={`${noLabel} ${Math.round(100 - displayChance)}%`}
             >
               <span>{noLabel}</span>
-              <span className="font-mono">{formatPercent(100 - market.chance)}</span>
+              <span className="font-mono">{Math.round(100 - displayChance)}%</span>
             </button>
           </div>
         )}

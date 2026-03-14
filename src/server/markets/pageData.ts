@@ -203,14 +203,17 @@ const getMarketDetailData = async (
 export const getHomePageInitialData = async (params?: {
   initialView?: ViewType;
   providerFilter?: ProviderFilter;
+  lang?: "RU" | "EN";
 }): Promise<HomePageInitialData> => {
   const enabledProviders = getPublicEnabledProviders();
   const providerFilter = resolveProviderFilter(params?.providerFilter, enabledProviders);
+  const lang = params?.lang ?? "EN";
 
   try {
     return {
       initialView: params?.initialView ?? "CATALOG",
       initialProviderFilter: providerFilter,
+      initialLang: lang,
       initialCatalogBootstrap: await buildInitialCatalogBootstrap(providerFilter, enabledProviders),
       initialEnabledProviders: enabledProviders,
       initialCatalogError: null,
@@ -220,6 +223,7 @@ export const getHomePageInitialData = async (params?: {
     return {
       initialView: params?.initialView ?? "CATALOG",
       initialProviderFilter: providerFilter,
+      initialLang: lang,
       initialCatalogBootstrap: null,
       initialEnabledProviders: enabledProviders,
       initialCatalogError: isCatalogReadError(error) ? error.code : null,
@@ -236,6 +240,7 @@ export const getMarketRouteInitialData = async (
     inferProviderFilterFromMarketId(marketId),
     enabledProviders
   );
+  const lang = params?.lang ?? "EN";
 
   try {
     const market = (await getCanonicalMarket({ marketId })) as MarketApiRow | null;
@@ -249,6 +254,7 @@ export const getMarketRouteInitialData = async (
       return {
         initialView: "CATALOG",
         initialProviderFilter: resolvedProviderFilter,
+        initialLang: lang,
         initialSelectedMarketId: marketId,
         initialCatalogBootstrap,
         initialEnabledProviders: enabledProviders,
@@ -256,10 +262,11 @@ export const getMarketRouteInitialData = async (
       };
     }
 
-    const detailData = await getMarketDetailData(market, params?.lang ?? "EN");
+    const detailData = await getMarketDetailData(market, lang);
     return {
       initialView: "CATALOG",
       initialProviderFilter: resolvedProviderFilter,
+      initialLang: lang,
       initialSelectedMarketId: market.id,
       initialCatalogBootstrap,
       initialSelectedMarket: market,
@@ -272,6 +279,7 @@ export const getMarketRouteInitialData = async (
     return {
       initialView: "CATALOG",
       initialProviderFilter: providerFilter,
+      initialLang: lang,
       initialSelectedMarketId: marketId,
       initialCatalogBootstrap: null,
       initialEnabledProviders: enabledProviders,

@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import HomePageClient from "@/components/HomePageClient";
 import { getCanonicalMarket } from "@/src/server/markets/readService";
 import { getMarketRouteInitialData } from "@/src/server/markets/pageData";
+import { detectLang } from "@/src/server/detectLang";
 
 type PageProps = {
   params: Promise<{ marketId: string }>;
@@ -63,7 +64,8 @@ export const generateMetadata = async ({ params }: PageProps): Promise<Metadata>
 
 export default async function MarketRoutePage({ params }: PageProps) {
   const { marketId } = await params;
-  const initialData = await getMarketRouteInitialData(marketId);
+  const lang = await detectLang();
+  const initialData = await getMarketRouteInitialData(marketId, { lang });
 
   return <HomePageClient {...initialData} />;
 }

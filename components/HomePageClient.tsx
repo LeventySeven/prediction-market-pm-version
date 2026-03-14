@@ -803,6 +803,7 @@ const persistWarmCatalogBootstrap = (payload: InitialCatalogBootstrap) => {
 export default function HomePage({
   initialView,
   initialProviderFilter,
+  initialLang,
   initialSelectedMarketId = null,
   initialCatalogBootstrap = null,
   initialCatalogError = null,
@@ -871,10 +872,10 @@ export default function HomePage({
     | null;
   const [postAuthAction, setPostAuthAction] = useState<PostAuthAction>(null);
   const [lang, setLang] = useState<"RU" | "EN">(() => {
-    if (typeof window === "undefined") return "EN";
+    if (typeof window === "undefined") return initialLang ?? "EN";
     try {
       const stored = localStorage.getItem("lang");
-      return stored === "RU" || stored === "EN" ? stored : "EN";
+      return stored === "RU" || stored === "EN" ? stored : (initialLang ?? "EN");
     } catch {
       return "EN";
     }
@@ -943,19 +944,20 @@ export default function HomePage({
     comments: initialMarketComments,
   });
   const [markets, setMarkets] = useState<Market[]>(() => {
+    const ssrLang = initialLang ?? "EN";
     const bootstrap = bootstrapRef.current;
     if (!bootstrap) {
       if (!initialSelectedMarket) return [];
-      return [mapMarketApiToMarket(initialSelectedMarket, "EN")];
+      return [mapMarketApiToMarket(initialSelectedMarket, ssrLang)];
     }
     const desiredProvider =
       initialProviderFilter ?? (typeof window === "undefined" ? "all" : getCatalogProviderFromLocation());
     const desiredBucket = typeof window === "undefined" ? "main" : getCatalogBucketFromLocation();
     const key = `provider:${desiredProvider}:page:1:sort:${DEFAULT_CATALOG_BACKEND_SORT}:bucket:${desiredBucket}`;
     const entry = bootstrap.entries.find((row) => row.cacheKey === key);
-    const rows = entry ? entry.rows.map((row) => mapMarketApiToMarket(row, "EN")) : [];
+    const rows = entry ? entry.rows.map((row) => mapMarketApiToMarket(row, ssrLang)) : [];
     if (initialSelectedMarket) {
-      const selectedMapped = mapMarketApiToMarket(initialSelectedMarket, "EN");
+      const selectedMapped = mapMarketApiToMarket(initialSelectedMarket, ssrLang);
       if (!rows.some((row) => row.id === selectedMapped.id)) {
         return [selectedMapped, ...rows];
       }
@@ -1439,6 +1441,7 @@ export default function HomePage({
       const next = prev === "RU" ? "EN" : "RU";
       try {
         localStorage.setItem("lang", next);
+        document.cookie = `lang=${next};path=/;max-age=${365 * 24 * 60 * 60};samesite=lax`;
       } catch {
         // ignore
       }

@@ -124,6 +124,7 @@ export type InitialCatalogBootstrap = {
 export type HomePageInitialData = {
   initialView?: ViewType;
   initialProviderFilter?: ProviderFilter;
+  initialLang?: "RU" | "EN";
   initialSelectedMarketId?: string | null;
   initialCatalogBootstrap?: InitialCatalogBootstrap | null;
   initialSelectedMarket?: MarketApiRow | null;
