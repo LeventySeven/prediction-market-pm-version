@@ -39,8 +39,8 @@ const WS_SUBSCRIPTION_CHUNK_SIZE = Math.max(50, Math.min(500, Number(process.env
 const RECONNECT_JITTER_MS = Math.max(0, Number(process.env.COLLECTOR_RECONNECT_JITTER_MS ?? 700));
 const DEAD_LETTER_LOG_EVERY_MS = Math.max(500, Number(process.env.COLLECTOR_DEAD_LETTER_LOG_EVERY_MS ?? 5000));
 const HEALTH_PORT = Math.max(0, Number(process.env.COLLECTOR_HEALTH_PORT ?? 0));
-const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 200)));
-const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 15)));
+const SNAPSHOT_PAGE_SIZE = Math.max(50, Math.min(250, Number(process.env.COLLECTOR_SNAPSHOT_PAGE_SIZE ?? 100)));
+const SNAPSHOT_MAX_PAGES = Math.max(1, Math.min(50, Number(process.env.COLLECTOR_SNAPSHOT_MAX_PAGES ?? 8)));
 const NEW_MARKET_POLL_INTERVAL_MS = Math.max(
   5000,
   Number(process.env.COLLECTOR_NEW_MARKET_POLL_INTERVAL_MS ?? 10_000)
@@ -208,6 +208,33 @@ const parseTsMs = (value: Json | undefined): number | null => {
 const minuteBucketIso = (tsMs: number): string => {
   const minute = Math.floor(tsMs / 60_000) * 60_000;
   return new Date(minute).toISOString();
+};
+
+const readErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isTransientDbPressureError = (error: unknown): boolean => {
+  const normalized = readErrorMessage(error).toLowerCase();
+  return (
+    normalized.includes("statement timeout") ||
+    normalized.includes("timed out acquiring connection from connection pool") ||
+    normalized.includes("upstream request timeout")
+  );
+};
+
+const safeUpsertSyncState = async (payload: {
+  provider: "polymarket";
+  scope: string;
+  startedAt?: string;
+  successAt?: string;
+  errorMessage?: string | null;
+  stats?: Record<string, unknown> | null;
+}) => {
+  try {
+    await upsertProviderSyncState(supabase, payload);
+  } catch (error) {
+    console.warn("[collector] provider_sync_state write failed", readErrorMessage(error));
+  }
 };
 
 const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
@@ -1102,7 +1129,7 @@ const syncSnapshot = async (mode: "full" | "head") => {
   const syncScope = "catalog";
   const startedAt = new Date().toISOString();
   try {
-    await upsertProviderSyncState(supabase, {
+    await safeUpsertSyncState({
       provider: "polymarket",
       scope: syncScope,
       startedAt,
@@ -1123,7 +1150,7 @@ const syncSnapshot = async (mode: "full" | "head") => {
     });
 
     if (markets.length === 0) {
-      await upsertProviderSyncState(supabase, {
+      await safeUpsertSyncState({
         provider: "polymarket",
         scope: syncScope,
         successAt: new Date().toISOString(),
@@ -1140,7 +1167,14 @@ const syncSnapshot = async (mode: "full" | "head") => {
 
     const changedMarkets = selectChangedMarkets(markets);
     if (changedMarkets.length > 0) {
-      await upsertMirroredPolymarketMarkets(supabase, changedMarkets);
+      try {
+        await upsertMirroredPolymarketMarkets(supabase, changedMarkets);
+      } catch (error) {
+        console.error("[collector] catalog mirror degraded", readErrorMessage(error));
+        if (!isTransientDbPressureError(error)) {
+          throw error;
+        }
+      }
     }
 
     if (ENABLE_SNAPSHOT_REALTIME_SEED) {
@@ -1210,7 +1244,7 @@ const syncSnapshot = async (mode: "full" | "head") => {
     console.log(
       `[collector] ${tag} fetched=${markets.length} changed=${changedMarkets.length} trackedAssets=${trackedAssetIds.size}`
     );
-    await upsertProviderSyncState(supabase, {
+    await safeUpsertSyncState({
       provider: "polymarket",
       scope: syncScope,
       successAt: new Date().toISOString(),
@@ -1224,8 +1258,8 @@ const syncSnapshot = async (mode: "full" | "head") => {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await upsertProviderSyncState(supabase, {
+    const message = readErrorMessage(error);
+    await safeUpsertSyncState({
       provider: "polymarket",
       scope: syncScope,
       errorMessage: message,
@@ -1236,7 +1270,9 @@ const syncSnapshot = async (mode: "full" | "head") => {
       },
     });
     console.error(`[collector] ${mode} snapshot sync failed`, message);
-    throw error;
+    if (!isTransientDbPressureError(error)) {
+      throw error;
+    }
   } finally {
     const now = Date.now();
     if (mode === "full") {

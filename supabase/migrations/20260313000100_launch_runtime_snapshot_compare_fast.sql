@@ -27,12 +27,7 @@ create table if not exists public.market_compare_members (
 );
 
 alter table if exists public.market_catalog
-  add column if not exists is_fast_market boolean not null default false,
-  add column if not exists catalog_bucket text not null default 'main' check (catalog_bucket in ('main', 'fast')),
   add column if not exists compare_group_id uuid null references public.market_compare_groups(id) on delete set null;
-
-create index if not exists market_catalog_bucket_state_volume_idx
-  on public.market_catalog (catalog_bucket, state, total_volume_usd desc);
 
 create index if not exists market_catalog_compare_group_idx
   on public.market_catalog (compare_group_id)
@@ -63,30 +58,5 @@ begin
   end if;
 end
 $$;
-
-update public.market_catalog
-set
-  is_fast_market = (
-    closes_at <= now() + interval '15 minutes'
-    or lower(coalesce(title, '')) ~ '(^|[^a-z])(5|10|15)\s*(min|mins|minute|minutes)\b'
-    or (
-      lower(coalesce(title, '')) ~ '\b(up|down)\b'
-      and lower(coalesce(title, '')) ~ '\b(sol|solana|btc|bitcoin|eth|ethereum)\b'
-      and lower(coalesce(title, '')) ~ '(5|10|15)\s*(min|mins|minute|minutes)\b'
-    )
-  ),
-  catalog_bucket = case
-    when (
-      closes_at <= now() + interval '15 minutes'
-      or lower(coalesce(title, '')) ~ '(^|[^a-z])(5|10|15)\s*(min|mins|minute|minutes)\b'
-      or (
-        lower(coalesce(title, '')) ~ '\b(up|down)\b'
-        and lower(coalesce(title, '')) ~ '\b(sol|solana|btc|bitcoin|eth|ethereum)\b'
-        and lower(coalesce(title, '')) ~ '(5|10|15)\s*(min|mins|minute|minutes)\b'
-      )
-    )
-      then 'fast'
-    else 'main'
-  end;
 
 commit;

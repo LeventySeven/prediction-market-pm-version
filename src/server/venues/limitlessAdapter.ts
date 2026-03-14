@@ -16,7 +16,7 @@ const DEFAULT_SITE = "https://limitless.exchange";
 const SNAPSHOT_CACHE_TTL_MS = Math.max(1000, Number(process.env.LIMITLESS_MARKETS_CACHE_TTL_MS ?? 15_000));
 const LIMITLESS_ACTIVE_PAGE_LIMIT = Math.max(
   1,
-  Math.min(200, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 200))
+  Math.min(100, Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? 20))
 );
 const LIMITLESS_DEBUG = (process.env.LIMITLESS_DEBUG || "").trim().toLowerCase() === "true";
 const LIMITLESS_HTTP_TIMEOUT_MS = Math.max(2_000, Number(process.env.LIMITLESS_HTTP_TIMEOUT_MS ?? 10_000));

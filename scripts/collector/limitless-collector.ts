@@ -29,10 +29,10 @@ const RECONCILE_INTERVAL_MS = Math.max(
   Number(process.env.LIMITLESS_COLLECTOR_RECONCILE_INTERVAL_MS ?? 300_000)
 );
 const HEALTH_PORT = Math.max(0, Number(process.env.LIMITLESS_COLLECTOR_HEALTH_PORT ?? 8081));
-const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 1200)));
+const SNAPSHOT_LIMIT = Math.max(50, Math.min(1500, Number(process.env.LIMITLESS_COLLECTOR_SNAPSHOT_LIMIT ?? 400)));
 const HEAD_SNAPSHOT_LIMIT = Math.max(
   20,
-  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 400))
+  Math.min(SNAPSHOT_LIMIT, Number(process.env.LIMITLESS_COLLECTOR_HEAD_SNAPSHOT_LIMIT ?? 120))
 );
 const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.LIMITLESS_COLLECTOR_PRUNE_INTERVAL_MS ?? 3_600_000));
 const PRUNE_EXPIRED_AFTER_DAYS = Math.max(
@@ -64,6 +64,10 @@ const WS_MAX_1002_BEFORE_DISABLE = Math.max(
 const CATALOG_ID_CACHE_TTL_MS = Math.max(
   30_000,
   Number(process.env.LIMITLESS_COLLECTOR_CATALOG_ID_CACHE_TTL_MS ?? 30 * 60_000)
+);
+const CATALOG_ID_LOOKUP_CHUNK_SIZE = Math.max(
+  25,
+  Math.min(100, Number(process.env.LIMITLESS_COLLECTOR_CATALOG_ID_LOOKUP_CHUNK_SIZE ?? 50))
 );
 const SEED_REALTIME_FROM_SNAPSHOT =
   (process.env.LIMITLESS_COLLECTOR_SEED_REALTIME_FROM_SNAPSHOT ?? "true")
@@ -220,6 +224,33 @@ const minuteBucketIso = (tsMs: number): string => {
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const readErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isTransientDbPressureError = (error: unknown): boolean => {
+  const normalized = readErrorMessage(error).toLowerCase();
+  return (
+    normalized.includes("statement timeout") ||
+    normalized.includes("timed out acquiring connection from connection pool") ||
+    normalized.includes("upstream request timeout")
+  );
+};
+
+const safeUpsertSyncState = async (payload: {
+  provider: "limitless";
+  scope: string;
+  startedAt?: string;
+  successAt?: string;
+  errorMessage?: string | null;
+  stats?: Record<string, unknown> | null;
+}) => {
+  try {
+    await upsertProviderSyncState(supabase, payload);
+  } catch (error) {
+    console.warn("[limitless-collector] provider_sync_state write failed", readErrorMessage(error));
+  }
+};
 
 const parseNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -644,8 +675,8 @@ const resolveCatalogIds = async (providerMarketIds: string[]): Promise<Map<strin
     }
   }
 
-  for (let i = 0; i < misses.length; i += 200) {
-    const chunk = misses.slice(i, i + 200);
+  for (let i = 0; i < misses.length; i += CATALOG_ID_LOOKUP_CHUNK_SIZE) {
+    const chunk = misses.slice(i, i + CATALOG_ID_LOOKUP_CHUNK_SIZE);
     const { data, error } = await (supabase as any)
       .from("market_catalog")
       .select("id, provider_market_id")
@@ -685,7 +716,10 @@ const flushPending = async () => {
         ...Array.from(pendingCandlesByProviderMarketAndBucket.values()).map((entry) => entry.providerMarketId),
       ])
     );
-    const catalogIds = await resolveCatalogIds(providerMarketIds);
+    const catalogIds =
+      runningFullSnapshot || runningHeadSnapshot
+        ? new Map<string, string>()
+        : await resolveCatalogIds(providerMarketIds);
 
     if (pendingLiveByProviderMarketId.size > 0) {
       const rows: PendingLive[] = [];
@@ -776,7 +810,7 @@ const snapshotSync = async (mode: "head" | "full") => {
   try {
     console.log(`[limitless-collector] ${mode} snapshot sync started`);
     if (writeSyncState) {
-      await upsertProviderSyncState(supabase, {
+      await safeUpsertSyncState({
         provider: "limitless",
         scope: syncScope,
         startedAt,
@@ -802,7 +836,14 @@ const snapshotSync = async (mode: "head" | "full") => {
       refreshWsSubscriptionTargets(markets);
       const changedMarkets = selectChangedMarkets(markets);
       if (changedMarkets.length > 0) {
-        await upsertVenueMarketsToCatalog(supabase, changedMarkets);
+        try {
+          await upsertVenueMarketsToCatalog(supabase, changedMarkets);
+        } catch (error) {
+          console.error("[limitless-collector] catalog sync degraded", readErrorMessage(error));
+          if (!isTransientDbPressureError(error)) {
+            throw error;
+          }
+        }
       }
       console.log(`[limitless-collector] ${mode} snapshot changed=${changedMarkets.length}`);
 
@@ -859,7 +900,7 @@ const snapshotSync = async (mode: "head" | "full") => {
 
     if (writeSyncState) {
       const finishedAt = new Date().toISOString();
-      await upsertProviderSyncState(supabase, {
+      await safeUpsertSyncState({
         provider: "limitless",
         scope: syncScope,
         startedAt,
@@ -880,7 +921,7 @@ const snapshotSync = async (mode: "head" | "full") => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[limitless-collector] ${mode} snapshot sync failed`, message);
     if (writeSyncState) {
-      await upsertProviderSyncState(supabase, {
+      await safeUpsertSyncState({
         provider: "limitless",
         scope: syncScope,
         startedAt,
@@ -1317,13 +1358,22 @@ const start = async () => {
   console.log(
     `[limitless-collector] starting version=${COLLECTOR_VERSION} base=${LIMITLESS_BASE_URL} ws=${LIMITLESS_WS_CONFIG?.url ?? "none"} poll=${POLL_INTERVAL_MS}ms flush=${FLUSH_INTERVAL_MS}ms reconcile=${RECONCILE_INTERVAL_MS}ms prune=${PRUNE_INTERVAL_MS}ms headLimit=${HEAD_SNAPSHOT_LIMIT} snapshotLimit=${SNAPSHOT_LIMIT} seedFromSnapshot=${SEED_REALTIME_FROM_SNAPSHOT}`
   );
+  const runBootstrapStep = async (label: string, task: () => Promise<void>) => {
+    try {
+      await task();
+    } catch (error) {
+      console.error(`[limitless-collector] bootstrap ${label} failed`, readErrorMessage(error));
+    }
+  };
   startHealthServer();
-  await snapshotSync("full");
-  await snapshotSync("head");
-  await pruneStaleMarkets();
+  await runBootstrapStep("full snapshot", () => snapshotSync("full"));
+  await runBootstrapStep("head snapshot", () => snapshotSync("head"));
+  await runBootstrapStep("prune", () => pruneStaleMarkets());
 
   setInterval(() => {
-    void snapshotSync("head");
+    void snapshotSync("head").catch((error) => {
+      console.error("[limitless-collector] head snapshot failed", readErrorMessage(error));
+    });
   }, POLL_INTERVAL_MS);
 
   setInterval(() => {
@@ -1331,7 +1381,9 @@ const start = async () => {
   }, FLUSH_INTERVAL_MS);
 
   setInterval(() => {
-    void snapshotSync("full");
+    void snapshotSync("full").catch((error) => {
+      console.error("[limitless-collector] full snapshot failed", readErrorMessage(error));
+    });
   }, RECONCILE_INTERVAL_MS);
 
   setInterval(() => {

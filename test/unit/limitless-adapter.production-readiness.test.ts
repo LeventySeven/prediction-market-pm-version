@@ -55,7 +55,7 @@ describe("limitlessAdapter production readiness", () => {
   it("caps page size to API-safe limits and returns newest-first markets", async () => {
     const requested: Array<{ path: string; page: number; limit: number }> = [];
     const total = 220;
-    const pageSize = 200;
+    const pageSize = 100;
 
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
       const url = getUrl(input);
@@ -76,7 +76,7 @@ describe("limitlessAdapter production readiness", () => {
 
     expect(rows).toHaveLength(220);
     expect(rows[0]?.providerMarketId).toBe("220");
-    expect(requested.map((r) => `${r.page}:${r.limit}`)).toEqual(["1:200", "2:20"]);
+    expect(requested.map((r) => `${r.page}:${r.limit}`)).toEqual(["1:100", "2:100", "3:20"]);
     expect(new Set(requested.map((r) => r.path))).toEqual(new Set(["/markets/active"]));
   });
 

@@ -106,8 +106,14 @@ const readErrorMessage = (error: unknown): string =>
         ? String((error as { message: string }).message)
         : "UNKNOWN_ERROR";
 
-const isStatementTimeoutError = (error: unknown): boolean =>
-  readErrorMessage(error).toLowerCase().includes("statement timeout");
+const isStatementTimeoutError = (error: unknown): boolean => {
+  const normalized = readErrorMessage(error).toLowerCase();
+  return (
+    normalized.includes("statement timeout") ||
+    normalized.includes("timed out acquiring connection from connection pool") ||
+    normalized.includes("upstream request timeout")
+  );
+};
 
 const isOptionalCompareSchemaError = (error: unknown): boolean => {
   const normalized = readErrorMessage(error).toLowerCase();

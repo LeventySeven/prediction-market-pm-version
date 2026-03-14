@@ -632,11 +632,6 @@ const mergeHotProviderFallbacks = async (params: {
     (provider) => !params.basePage.items.some((item) => item.provider === provider)
   );
   if (missingProviders.length === 0) return params.basePage;
-  console.warn("[markets.readService] merge fallback start", {
-    selectedProviders: params.selectedProviders,
-    missingProviders,
-    baseCount: params.basePage.items.length,
-  });
 
   const offset = (params.page - 1) * params.pageSize;
   const mergedById = new Map<string, MarketOutput>(
@@ -653,7 +648,6 @@ const mergeHotProviderFallbacks = async (params: {
         limit: Math.max(params.page * params.pageSize, 200),
         sortBy: params.sortBy,
       });
-      console.warn("[markets.readService] merge fallback rows", provider, fallbackRows.length);
       if (fallbackRows.length === 0) continue;
       if (ENABLE_CATALOG_SYNC_ON_READ) {
         void upsertVenueMarketsToCatalog(params.supabaseService, fallbackRows).catch(() => {
@@ -672,7 +666,6 @@ const mergeHotProviderFallbacks = async (params: {
   }
 
   const merged = sortMarketRows(Array.from(mergedById.values()), params.sortBy);
-  console.warn("[markets.readService] merge fallback merged", merged.length);
   const arranged =
     params.selectedProviders.length > 1
       ? (() => {
