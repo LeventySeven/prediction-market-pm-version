@@ -296,6 +296,7 @@ export type UpstashSnapshotMeta = {
   shardCount: number;
   marketCount: number;
   createdAt: string;
+  hasMore: boolean | null;
 };
 
 export type UpstashSnapshotShard<T = unknown> = {
@@ -413,6 +414,7 @@ const normalizeSnapshotMeta = (value: unknown): UpstashSnapshotMeta | null => {
     shardCount,
     marketCount,
     createdAt,
+    hasMore: typeof parsed.hasMore === "boolean" ? parsed.hasMore : null,
   };
 };
 
@@ -529,6 +531,7 @@ export const writeUpstashMarketLivePatches = async (
           shardCount: 0,
           marketCount: patches.length,
           createdAt,
+          hasMore: null,
         } satisfies UpstashSnapshotMeta,
         { ex: upstashSnapshotTtlSec }
       );
@@ -566,7 +569,10 @@ export const readUpstashMarketLivePatches = async (
 export const writeUpstashSnapshotShards = async <T>(
   scope: string,
   rows: T[],
-  snapshotIdInput?: number | null
+  snapshotIdInput?: number | null,
+  options?: {
+    hasMore?: boolean | null;
+  }
 ): Promise<UpstashSnapshotMeta | null> => {
   if (!upstashCacheEnabled) return null;
   const redis = getUpstashRedis();
@@ -583,6 +589,7 @@ export const writeUpstashSnapshotShards = async <T>(
     shardCount: shards.length,
     marketCount: rows.length,
     createdAt: new Date().toISOString(),
+    hasMore: typeof options?.hasMore === "boolean" ? options.hasMore : null,
   };
 
   try {
@@ -648,6 +655,43 @@ export const readUpstashSnapshotShard = async <T = unknown>(
   } catch {
     return null;
   }
+};
+
+export const readUpstashSnapshotRows = async <T = unknown>(
+  scope: string,
+  snapshotId: number
+): Promise<{
+  meta: UpstashSnapshotMeta;
+  rows: T[];
+} | null> => {
+  const meta = await readUpstashSnapshotMeta(scope, snapshotId);
+  if (!meta || meta.shardCount <= 0) {
+    if (meta && meta.shardCount === 0) {
+      return {
+        meta,
+        rows: [],
+      };
+    }
+    return null;
+  }
+
+  const shards = await Promise.all(
+    Array.from({ length: meta.shardCount }, (_, shardIndex) =>
+      readUpstashSnapshotShard<T>(scope, snapshotId, shardIndex)
+    )
+  );
+  if (shards.some((shard) => !shard)) return null;
+
+  const rows: T[] = [];
+  for (const shard of shards) {
+    if (!shard) return null;
+    rows.push(...shard.rows);
+  }
+
+  return {
+    meta,
+    rows,
+  };
 };
 
 export const writeUpstashActivityTicks = async (

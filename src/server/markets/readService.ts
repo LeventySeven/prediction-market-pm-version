@@ -1,7 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ClobClient } from "@polymarket/clob-client";
-import type { z } from "zod";
+import { z } from "zod";
 import { getSupabaseServiceClient } from "../supabase/client";
 import type { Database } from "../../types/database";
 import {
@@ -19,6 +19,7 @@ import {
   buildMarketListCacheKey,
   readUpstashCache,
   readUpstashMarketOrderbook,
+  readUpstashSnapshotRows,
   readUpstashSnapshotCursor,
   upstashMarketCandlesTtlSec,
   upstashMarketDetailTtlSec,
@@ -1561,6 +1562,47 @@ export const listCanonicalMarkets = async (
     catalogBucket,
     providers: selectedProviders,
   });
+  const snapshotPage = snapshotId !== null ? await readUpstashSnapshotRows<unknown>(pageScope, snapshotId) : null;
+  const parsedSnapshotItems =
+    snapshotPage && Array.isArray(snapshotPage.rows)
+      ? z.array(marketOutput).safeParse(snapshotPage.rows)
+      : null;
+  if (
+    parsedSnapshotItems?.success &&
+    !isSuspiciousZeroVolumePage({
+      items: parsedSnapshotItems.data,
+      snapshotId,
+      pageScope,
+      hasMore:
+        typeof snapshotPage.meta.hasMore === "boolean"
+          ? snapshotPage.meta.hasMore
+          : parsedSnapshotItems.data.length >= pageSize,
+      source: "redis",
+      stale: false,
+    }) &&
+    hasProviderCoverage(parsedSnapshotItems.data, selectedProviders)
+  ) {
+    return await mergeHotProviderFallbacks({
+      supabaseService,
+      basePage: {
+        items: parsedSnapshotItems.data,
+        snapshotId,
+        pageScope,
+        hasMore:
+          typeof snapshotPage.meta.hasMore === "boolean"
+            ? snapshotPage.meta.hasMore
+            : parsedSnapshotItems.data.length >= pageSize,
+        source: "redis",
+        stale: false,
+      },
+      selectedProviders,
+      onlyOpen,
+      page,
+      pageSize,
+      sortBy,
+      snapshotId,
+    });
+  }
   const latestCached = await readUpstashCache(latestListCacheKey, marketPageOutput);
   if (
     latestCached &&
@@ -1720,7 +1762,7 @@ export const listCanonicalMarkets = async (
   });
   void writeUpstashCache(listCacheKey, out, upstashMarketListTtlSec);
   void writeUpstashCache(latestListCacheKey, out, upstashMarketListTtlSec);
-  void writeUpstashSnapshotShards(pageScope, out.items, snapshotId);
+  void writeUpstashSnapshotShards(pageScope, out.items, snapshotId, { hasMore: out.hasMore });
   return out;
 };
 
