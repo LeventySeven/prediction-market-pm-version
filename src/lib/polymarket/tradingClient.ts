@@ -58,8 +58,11 @@ export async function buildSignedBuyOrder(input: BuildSignedBuyOrderInput): Prom
   if (!tokenId) throw new Error("TOKEN_ID_REQUIRED");
   if (!isFinitePositive(input.amountUsd)) throw new Error("AMOUNT_INVALID");
   if (!isFinitePositive(input.limitPrice)) throw new Error("PRICE_INVALID");
+  if (input.limitPrice < 0.001 || input.limitPrice > 0.999) {
+    throw new Error("PRICE_OUT_OF_RANGE");
+  }
 
-  const safePrice = Math.max(0.001, Math.min(0.999, input.limitPrice));
+  const safePrice = input.limitPrice;
   const shares = input.amountUsd / safePrice;
   if (!isFinitePositive(shares)) throw new Error("SHARES_INVALID");
 

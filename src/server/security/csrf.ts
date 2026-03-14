@@ -64,7 +64,14 @@ export const buildCsrfCookieValue = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID().replace(/-/g, "");
   }
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  // Fallback: use crypto.randomBytes for secure token generation in Node.js
+  try {
+    const { randomBytes } = require("node:crypto");
+    return randomBytes(16).toString("hex");
+  } catch {
+    // Last-resort fallback if crypto module is somehow unavailable
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
 };
 
 export const csrfCookie = (token: string): string => {

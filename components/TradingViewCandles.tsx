@@ -378,10 +378,14 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   }, [normalizedLines, props.mode]);
 
   return (
-    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-[26px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(17,17,22,0.95),rgba(0,0,0,1))]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(163,230,53,0.12),transparent_42%),radial-gradient(circle_at_85%_100%,rgba(244,63,164,0.12),transparent_50%)]" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),transparent)]" />
-      <div ref={containerRef} className="h-full w-full" />
+    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-[26px] bg-black p-px"
+      style={{
+        background: 'linear-gradient(180deg, rgba(163,230,53,0.25) 0%, rgba(39,39,42,0.4) 40%, rgba(39,39,42,0.4) 60%, rgba(244,63,164,0.25) 100%)',
+      }}
+    >
+      <div className="relative h-full w-full overflow-hidden rounded-[25px] bg-black">
+        <div ref={containerRef} className="h-full w-full" />
+      </div>
     </div>
   );
 };

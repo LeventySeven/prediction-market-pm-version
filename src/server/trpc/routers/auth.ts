@@ -7,6 +7,8 @@ import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
 import { verifyPrivyAccessToken } from "../../auth/privy";
 import { assertCsrfForMutation } from "../../security/csrf";
+import { consumeDurableRateLimit } from "../../security/rateLimit";
+import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
 import {
   isPlaceholderDisplayName,
@@ -292,6 +294,17 @@ export const authRouter = router({
             message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
           });
         }
+
+        const ip = getTrustedClientIpFromRequest(ctx.req) ?? "unknown";
+        const loginRate = await consumeDurableRateLimit(ctx.supabaseService, {
+          key: `login:${ip}`,
+          limit: 15,
+          windowSeconds: 60,
+        });
+        if (!loginRate.allowed) {
+          throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "LOGIN_RATE_LIMITED" });
+        }
+
         const identity = await verifyPrivyAccessToken(input.accessToken);
         const userRow = await upsertPrivyUser(ctx.supabaseService as any, identity);
         await issueAuthCookie(ctx.setCookie, userRow);

@@ -1,7 +1,9 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
 import { randomBytes } from "node:crypto";
-import { publicProcedure, router } from "../trpc";
+import { authenticatedProcedure, publicProcedure, router } from "../trpc";
+import { consumeDurableRateLimit } from "../../security/rateLimit";
+import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
 import { DEFAULT_LEADERBOARD_LIMIT } from "@/src/lib/constants";
@@ -210,13 +212,19 @@ export const userRouter = router({
       }
     }),
 
-  updateDisplayName: publicProcedure
+  updateDisplayName: authenticatedProcedure
     .input(updateDisplayNameInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 20,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const displayName = normalizeDisplayName(input.displayName);
       const updated = await (supabaseService as any)
         .from("users")
@@ -228,13 +236,19 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  updateProfileIdentity: publicProcedure
+  updateProfileIdentity: authenticatedProcedure
     .input(updateProfileIdentityInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 20,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
 
       const normalizedUsername = normalizeHandleInput(input.username);
       const displayName = normalizeDisplayName(input.displayName);
@@ -278,13 +292,19 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  updateAvatarUrl: publicProcedure
+  updateAvatarUrl: authenticatedProcedure
     .input(updateAvatarUrlInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 20,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const updatePayload: Record<string, unknown> = {
         avatar_url: input.avatarUrl,
       };
@@ -303,13 +323,19 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  completeProfileSetup: publicProcedure
+  completeProfileSetup: authenticatedProcedure
     .input(completeProfileSetupInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 20,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
 
       const normalizedUsername = normalizeHandleInput(input.username);
       const displayName = normalizeDisplayName(input.displayName);
@@ -389,12 +415,18 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  createReferralLink: publicProcedure
+  createReferralLink: authenticatedProcedure
     .output(createReferralLinkOutput)
     .mutation(async ({ ctx }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 10,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const user = await (supabaseService as any)
         .from("users")
         .select("id, referral_code")

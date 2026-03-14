@@ -3,7 +3,8 @@ import { TRPCError } from "@trpc/server";
 import { createHash, createHmac } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
-import { publicProcedure, router } from "../trpc";
+import { authenticatedProcedure, publicProcedure, router } from "../trpc";
+import { assertCsrfForMutation } from "../../security/csrf";
 import {
   API_VERSION_V1,
   DEFAULT_MARKET_ACTIVITY_LIMIT,
@@ -2395,13 +2396,18 @@ export const marketRouter = router({
       };
     }),
 
-  relaySignedOrder: publicProcedure
+  relaySignedOrder: authenticatedProcedure
     .input(relaySignedOrderInput)
     .output(relaySignedOrderOutput)
     .mutation(async ({ ctx, input }) => {
       const { authUser } = ctx;
-      if (!authUser) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      try {
+        assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
+      } catch (error) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
+        });
       }
       ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
 
@@ -2556,11 +2562,20 @@ export const marketRouter = router({
       };
     }),
 
-  generateMarketContext: publicProcedure
+  generateMarketContext: authenticatedProcedure
     .input(generateMarketContextInput)
     .output(marketContextOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService } = ctx;
+      const { supabaseService, authUser } = ctx;
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const contextRate = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `context:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 5,
+        windowSeconds: 60,
+      });
+      if (!contextRate.allowed) {
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "CONTEXT_RATE_LIMITED" });
+      }
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
       const contextMarketKey =
         ref.provider === "polymarket"
@@ -2624,11 +2639,10 @@ export const marketRouter = router({
       };
     }),
 
-  myBookmarks: publicProcedure
+  myBookmarks: authenticatedProcedure
     .output(marketBookmarkOutputArray)
     .query(async ({ ctx }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       const { data, error } = await supabaseService
         .from("market_bookmarks")
         .select("market_id, created_at")
@@ -2641,12 +2655,18 @@ export const marketRouter = router({
       }));
     }),
 
-  setBookmark: publicProcedure
+  setBookmark: authenticatedProcedure
     .input(setBookmarkInput)
     .output(setBookmarkOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `bookmark:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 30,
+        windowSeconds: 60,
+      });
+      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
       const marketRefId = await resolveMarketCatalogRefId(
         ctx.supabaseService,
@@ -2877,12 +2897,20 @@ export const marketRouter = router({
       });
     }),
 
-  postMarketComment: publicProcedure
+  postMarketComment: authenticatedProcedure
     .input(postMarketCommentInput)
     .output(marketCommentOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const commentRate = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `comment:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 10,
+        windowSeconds: 60,
+      });
+      if (!commentRate.allowed) {
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "COMMENT_RATE_LIMITED" });
+      }
       const body = input.body.trim();
       if (!body) throw new TRPCError({ code: "BAD_REQUEST", message: "Comment body is required" });
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
@@ -2928,12 +2956,20 @@ export const marketRouter = router({
       };
     }),
 
-  toggleMarketCommentLike: publicProcedure
+  toggleMarketCommentLike: authenticatedProcedure
     .input(toggleMarketCommentLikeInput)
     .output(toggleMarketCommentLikeOutput)
     .mutation(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+      const ip = getTrustedClientIpFromRequest(ctx.req);
+      const likeRate = await consumeDurableRateLimit(ctx.supabaseService, {
+        key: `like:${authUser.id}:${ip ?? "unknown"}`,
+        limit: 30,
+        windowSeconds: 60,
+      });
+      if (!likeRate.allowed) {
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "LIKE_RATE_LIMITED" });
+      }
       const existing = await supabaseService
         .from("market_comment_likes")
         .select("comment_id, user_id")
@@ -2969,12 +3005,11 @@ export const marketRouter = router({
       };
     }),
 
-  myComments: publicProcedure
+  myComments: authenticatedProcedure
     .input(myCommentsInput)
     .output(myCommentOutputArray)
     .query(async ({ ctx, input }) => {
       const { supabaseService, authUser } = ctx;
-      if (!authUser) throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
       const limit = input?.limit ?? 100;
       const { data, error } = await supabaseService
         .from("market_comments")

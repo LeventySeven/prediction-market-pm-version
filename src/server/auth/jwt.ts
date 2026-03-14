@@ -3,7 +3,7 @@ import { SignJWT, jwtVerify } from "jose";
 const JWT_SECRET = process.env.AUTH_JWT_SECRET;
 const JWT_ISSUER = "pravda-app";
 const JWT_AUDIENCE = "pravda-users";
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const IS_PROD = process.env.NODE_ENV === "production";
 const COOKIE_SAME_SITE = IS_PROD ? "None" : "Lax";
 const COOKIE_SECURE_PART = IS_PROD ? " Secure;" : "";

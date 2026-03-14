@@ -1,7 +1,6 @@
 import {
   BrowserProvider,
   Contract,
-  MaxUint256,
   ZeroAddress,
   type TypedDataField,
   getAddress,
@@ -123,7 +122,9 @@ const ensureAllowance = async (params: {
   const allowance = BigInt(await token.allowance(params.ownerAddress, getAddress(params.spenderAddress)));
   if (allowance >= params.requiredAmount) return false;
 
-  const tx = await token.approve(getAddress(params.spenderAddress), MaxUint256);
+  // Approve only the exact required amount instead of MaxUint256 to limit
+  // exposure if the exchange contract is ever compromised.
+  const tx = await token.approve(getAddress(params.spenderAddress), params.requiredAmount);
   await tx.wait();
   return true;
 };
@@ -135,8 +136,11 @@ export async function buildSignedBuyOrder(
   if (!input.tradeMeta) throw new Error("LIMITLESS_TRADE_META_REQUIRED");
   if (!isFinitePositive(input.amountUsd)) throw new Error("AMOUNT_INVALID");
   if (!isFinitePositive(input.limitPrice)) throw new Error("PRICE_INVALID");
+  if (input.limitPrice < 0.001 || input.limitPrice > 0.999) {
+    throw new Error("PRICE_OUT_OF_RANGE");
+  }
 
-  const priceUsed = Math.max(0.001, Math.min(0.999, input.limitPrice));
+  const priceUsed = input.limitPrice;
   const shares = input.amountUsd / priceUsed;
   if (!isFinitePositive(shares)) throw new Error("SHARES_INVALID");
 
