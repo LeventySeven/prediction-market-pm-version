@@ -143,17 +143,15 @@ Return a JSON object mapping each taxonomy tag to a confidence score between 0.0
 
 const RESPONSE_SCHEMA = {
   type: "json_schema" as const,
-  json_schema: {
-    name: "market_tags",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: Object.fromEntries(
-        TAXONOMY.map((tag) => [tag, { type: "number" }])
-      ),
-      required: [...TAXONOMY],
-      additionalProperties: false,
-    },
+  name: "market_tags",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: Object.fromEntries(
+      TAXONOMY.map((tag) => [tag, { type: "number" }])
+    ),
+    required: [...TAXONOMY],
+    additionalProperties: false,
   },
 };
 
