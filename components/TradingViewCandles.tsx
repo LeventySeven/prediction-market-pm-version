@@ -145,23 +145,26 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   const lineSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
 
+  const areaPoints = props.mode === 'area' ? props.points : undefined;
+  const lineInputs = props.mode === 'lines' ? props.lines : undefined;
+
   const normalizedVolume = useMemo(
     () => normalizeVolumeBars(props.volumeBars ?? []),
     [props.volumeBars]
   );
   const normalizedArea = useMemo(
-    () => (props.mode === 'area' ? normalizeAreaPoints(props.points) : null),
-    [props]
+    () => (areaPoints ? normalizeAreaPoints(areaPoints) : null),
+    [areaPoints]
   );
   const normalizedLines = useMemo(
     () =>
-      props.mode === 'lines'
-        ? props.lines.map((line) => ({
+      lineInputs
+        ? lineInputs.map((line) => ({
             ...line,
             points: normalizeLinePoints(line.points),
           }))
         : [],
-    [props]
+    [lineInputs]
   );
 
   useEffect(() => {
@@ -249,7 +252,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
       window.cancelAnimationFrame(frameId);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [normalizedArea, normalizedLines, normalizedVolume]);
+  }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -323,7 +326,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
     if (allTimes.length > 0) {
       chart.timeScale().fitContent();
     }
-  }, [normalizedArea, props]);
+  }, [normalizedArea, props.mode, props.color]);
 
   useEffect(() => {
     const chart = chartRef.current;

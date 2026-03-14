@@ -1395,6 +1395,10 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       }))}
                     />
                   )
+                ) : insightsLoading ? (
+                  <div className="flex h-full items-center justify-center">
+                    <Loader2 size={28} className="animate-spin text-zinc-500" />
+                  </div>
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-neutral-500">
                     {lang === 'RU' ? 'Нет данных для графика' : 'No chart data yet'}

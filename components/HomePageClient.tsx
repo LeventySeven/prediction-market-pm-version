@@ -3814,8 +3814,12 @@ export default function HomePage({
     const hasFreshCachedCandles =
       Boolean(cachedCandleEntry) &&
       Date.now() - (cachedCandleEntry?.cachedAt ?? 0) <= MARKET_CANDLE_CACHE_TTL_MS;
-    if (!hasFreshCachedCandles) {
+    const hasStaleCachedCandles = Boolean(cachedCandleEntry) && (cachedCandleEntry?.candles?.length ?? 0) > 0;
+    if (!hasFreshCachedCandles && !hasStaleCachedCandles) {
       setMarketCandles([]);
+    } else if (!hasFreshCachedCandles && hasStaleCachedCandles) {
+      // Keep stale candles visible while fetching fresh data
+      setMarketCandles(cachedCandleEntry!.candles);
     }
     void trpcClient.events.track
       .mutate({
