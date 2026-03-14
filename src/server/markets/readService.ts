@@ -708,6 +708,93 @@ const mergeHotProviderFallbacks = async (params: {
   };
 };
 
+const buildLiveProviderFallbackPage = async (params: {
+  supabaseService: SupabaseServiceClient;
+  selectedProviders: VenueProvider[];
+  onlyOpen: boolean;
+  page: number;
+  pageSize: number;
+  sortBy: "newest" | "volume";
+  snapshotId: number | null;
+  pageScope: string;
+  stale: boolean;
+}): Promise<MarketPageOutput | null> => {
+  const mergedById = new Map<string, MarketOutput>();
+
+  for (const provider of params.selectedProviders) {
+    const adapter = getVenueAdapter(provider);
+    if (!adapter.isEnabled()) continue;
+    try {
+      const fallbackRows = await adapter.listMarketsSnapshot({
+        onlyOpen: params.onlyOpen,
+        limit: Math.max(params.page * params.pageSize, 200),
+        sortBy: params.sortBy,
+      });
+      if (fallbackRows.length === 0) continue;
+      if (ENABLE_CATALOG_SYNC_ON_READ) {
+        void upsertVenueMarketsToCatalog(params.supabaseService, fallbackRows).catch(() => {
+          // Best-effort canonical repair only.
+        });
+      }
+      for (const row of fallbackRows) {
+        const output = mapLiveVenueMarketToOutput(row, params.snapshotId);
+        if (!mergedById.has(output.id)) {
+          mergedById.set(output.id, output);
+        }
+      }
+    } catch (error) {
+      console.warn("[markets.readService] live provider fallback failed", provider, error);
+    }
+  }
+
+  if (mergedById.size === 0) return null;
+
+  const merged = sortMarketRows(Array.from(mergedById.values()), params.sortBy);
+  const arranged =
+    params.selectedProviders.length > 1
+      ? (() => {
+          const buckets = new Map<VenueProvider, MarketOutput[]>();
+          for (const provider of params.selectedProviders) {
+            buckets.set(
+              provider,
+              merged.filter((item) => item.provider === provider)
+            );
+          }
+          const seen = new Set<string>();
+          const interleaved: MarketOutput[] = [];
+          let added = true;
+          while (added) {
+            added = false;
+            for (const provider of params.selectedProviders) {
+              const bucket = buckets.get(provider);
+              if (!bucket || bucket.length === 0) continue;
+              const next = bucket.shift();
+              if (!next || seen.has(next.id)) continue;
+              seen.add(next.id);
+              interleaved.push(next);
+              added = true;
+            }
+          }
+          for (const item of merged) {
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+            interleaved.push(item);
+          }
+          return interleaved;
+        })()
+      : merged;
+
+  const offset = (params.page - 1) * params.pageSize;
+  return {
+    items: arranged.slice(offset, offset + params.pageSize),
+    snapshotId: params.snapshotId,
+    pageScope: params.pageScope,
+    hasMore: arranged.length > offset + params.pageSize,
+    source: "redis",
+    stale: params.stale,
+  };
+};
+
 const buildCandlesFromPriceHistory = (
   points: Array<{ ts: number; price: number }>,
   interval: CandleInterval
@@ -1618,6 +1705,23 @@ export const listCanonicalMarkets = async (
         sortBy,
         snapshotId,
       });
+    }
+    const liveFallback = await buildLiveProviderFallbackPage({
+      supabaseService,
+      selectedProviders,
+      onlyOpen,
+      page,
+      pageSize,
+      sortBy,
+      snapshotId,
+      pageScope,
+      stale: true,
+    });
+    if (liveFallback) {
+      void writeUpstashCache(listCacheKey, liveFallback, upstashMarketListTtlSec);
+      void writeUpstashCache(latestListCacheKey, liveFallback, upstashMarketListTtlSec);
+      void writeUpstashSnapshotShards(pageScope, liveFallback.items, snapshotId, { hasMore: liveFallback.hasMore });
+      return liveFallback;
     }
     throw error;
   }

@@ -1279,7 +1279,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
           id="chart-section"
           className="scroll-mt-24 lg:col-span-8 lg:col-start-1 lg:row-start-2"
         >
-          <div className="relative h-[580px] overflow-hidden rounded-[30px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(19,19,24,0.96),rgba(4,4,6,1))] p-5 sm:p-6">
+          <div className="relative h-[min(72vh,580px)] min-h-[540px] overflow-hidden rounded-[30px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(19,19,24,0.96),rgba(4,4,6,1))] p-5 sm:p-6">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(190,255,29,0.12),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(245,68,166,0.12),transparent_38%)]" />
 
             <div className="relative flex h-full flex-col">
@@ -1292,7 +1292,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   </div>
                   <div className="mt-3 flex items-end gap-3">
                     <span
-                      className={`text-5xl font-semibold tracking-tight text-zinc-50 transition-transform duration-200 ${
+                      className={`text-[2.75rem] sm:text-5xl font-semibold tracking-tight text-zinc-50 transition-transform duration-200 ${
                         chanceBump ? 'scale-105' : 'scale-100'
                       }`}
                     >
@@ -1364,7 +1364,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 </div>
               ) : null}
 
-              <div className="relative mt-5 flex-1">
+              <div className="relative mt-5 min-h-[260px] flex-1">
                 {chartSeries.data.length > 0 ? (
                   chartSeries.mode === 'multi' ? (
                     <TradingViewCandles

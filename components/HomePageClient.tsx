@@ -86,7 +86,7 @@ const MarketPulseBoard = dynamic(() => import("@/components/MarketPulseBoard"));
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
-const CATALOG_PAGE_SIZE = 100;
+const CATALOG_PAGE_SIZE = 60;
 const MARKETS_WS_URL = (process.env.NEXT_PUBLIC_MARKETS_WS_URL ?? "").trim();
 const ENABLE_MARKETS_WS = MARKETS_WS_URL.length > 0;
 const ENABLE_UPSTASH_STREAM = process.env.NEXT_PUBLIC_ENABLE_UPSTASH_STREAM === "true";
@@ -105,6 +105,25 @@ const MARKET_HIGHLIGHT_MS = {
 } as const;
 type MarketHighlightKind = keyof typeof MARKET_HIGHLIGHT_MS;
 const toMajorUnits = (minor: number) => minor / Math.pow(10, VCOIN_DECIMALS);
+
+const isTransientCatalogFetchError = (error: unknown): boolean => {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : error && typeof error === "object" && "message" in error && typeof (error as { message?: unknown }).message === "string"
+          ? String((error as { message?: string }).message)
+          : "";
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("networkerror") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("fetch resource") ||
+    normalized.includes("load failed") ||
+    normalized.includes("network request failed")
+  );
+};
 
 type LimitlessStoredAuth = {
   bearerToken: string;
@@ -2237,15 +2256,36 @@ export default function HomePage({
         return { rows: [], hasMore: false };
       }
       const fetchSize = CATALOG_PAGE_SIZE + 1;
-      const response = await trpcClient.market.listMarkets.query({
-        onlyOpen: false,
-        page: params.page,
-        pageSize: fetchSize,
-        sortBy: params.sortBy,
-        providerFilter: params.providerFilter,
-        providers: selectedProviders,
-        catalogBucket: params.catalogBucket,
-      });
+      const requestCatalogPage = () =>
+        trpcClient.market.listMarkets.query({
+          onlyOpen: false,
+          page: params.page,
+          pageSize: fetchSize,
+          sortBy: params.sortBy,
+          providerFilter: params.providerFilter,
+          providers: selectedProviders,
+          catalogBucket: params.catalogBucket,
+        });
+      let response;
+      try {
+        response = await requestCatalogPage();
+      } catch (error) {
+        const cached = catalogPageCacheRef.current.get(cacheKey);
+        if (isTransientCatalogFetchError(error)) {
+          response = await requestCatalogPage();
+        } else if (cached) {
+          return {
+            rows: cached.rows,
+            hasMore: cached.hasMore,
+            snapshotId: cached.snapshotId ?? null,
+            pageScope: cached.pageScope,
+            source: cached.source ?? "supabase",
+            stale: true,
+          };
+        } else {
+          throw error;
+        }
+      }
       const rows = ((response?.items ?? []).slice(0, CATALOG_PAGE_SIZE) as MarketApiRow[]);
       const hasMore = Boolean(response?.hasMore);
       catalogPageCacheRef.current.set(cacheKey, {
@@ -2349,6 +2389,10 @@ export default function HomePage({
     } catch (err) {
       console.error("Failed to load markets", err);
       if (requestSeq !== loadMarketsRequestSeqRef.current) return;
+      if (hasCached || hasCurrentMarketsForActiveKey) {
+        setMarketsError(null);
+        return;
+      }
       const message = getErrorMessage(err)?.toUpperCase() ?? "";
       setMarketsError(
         message.includes("CATALOG_READ_FAILED")

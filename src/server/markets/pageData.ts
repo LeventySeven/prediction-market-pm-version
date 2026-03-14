@@ -21,7 +21,7 @@ import {
   listCanonicalMarkets,
 } from "./readService";
 
-const CATALOG_BOOTSTRAP_PAGE_SIZE = 100;
+const CATALOG_BOOTSTRAP_PAGE_SIZE = 60;
 const INTERNAL_REQUEST_URL = "http://localhost/internal";
 const DEFAULT_CATALOG_BOOTSTRAP_SORT: "newest" | "volume" = "volume";
 let hasLoggedRouteBootstrapFallback = false;

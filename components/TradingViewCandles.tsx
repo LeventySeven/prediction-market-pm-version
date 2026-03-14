@@ -214,6 +214,44 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   }, []);
 
   useEffect(() => {
+    const container = containerRef.current;
+    const chart = chartRef.current;
+    if (!container || !chart) return;
+
+    const syncSize = () => {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width <= 0 || height <= 0) return;
+      chart.resize(width, height);
+    };
+
+    syncSize();
+    const frameId = window.requestAnimationFrame(syncSize);
+    const onVisibilityChange = () => {
+      if (!document.hidden) syncSize();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        window.cancelAnimationFrame(frameId);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      syncSize();
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frameId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [normalizedArea, normalizedLines, normalizedVolume]);
+
+  useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
 
@@ -337,7 +375,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   }, [normalizedLines, props.mode]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-[26px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(17,17,22,0.95),rgba(0,0,0,1))]">
+    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-[26px] border border-zinc-900 bg-[linear-gradient(180deg,rgba(17,17,22,0.95),rgba(0,0,0,1))]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(163,230,53,0.12),transparent_42%),radial-gradient(circle_at_85%_100%,rgba(244,63,164,0.12),transparent_50%)]" />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),transparent)]" />
       <div ref={containerRef} className="h-full w-full" />
