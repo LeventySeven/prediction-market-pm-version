@@ -754,18 +754,24 @@ const flushPending = async () => {
       }
       pendingLiveByProviderMarketId.clear();
 
+      // Publish to Upstash (latency-critical for SSE) in parallel with DB write
+      const livePromises: Promise<void>[] = [];
       if (upstashPatches.length > 0) {
-        await writeUpstashMarketLivePatches(upstashPatches);
+        livePromises.push(writeUpstashMarketLivePatches(upstashPatches));
       }
-
       if (rows.length > 0) {
-        const { error } = await (supabase as any)
-          .from("market_live")
-          .upsert(rows, { onConflict: "market_id" });
-        if (error) {
-          console.error("[limitless-collector] market_live upsert failed", error.message);
-        }
+        livePromises.push(
+          (supabase as any)
+            .from("market_live")
+            .upsert(rows, { onConflict: "market_id" })
+            .then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                console.error("[limitless-collector] market_live upsert failed", error.message);
+              }
+            })
+        );
       }
+      await Promise.all(livePromises);
     }
 
     if (pendingCandlesByProviderMarketAndBucket.size > 0) {

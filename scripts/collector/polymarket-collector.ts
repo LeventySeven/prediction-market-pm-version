@@ -1061,20 +1061,27 @@ const flushPending = async () => {
       }
     }
 
+    // Publish to Upstash in parallel — these are the latency-critical path
+    // that powers the SSE stream to browsers.  Running them concurrently with
+    // each other (and after the DB writes above) shaves ~100-200ms per flush.
+    const upstashPromises: Promise<void>[] = [];
+
     if (liveRows.length > 0) {
-      await writeUpstashMarketLivePatches(
-        liveRows.map((row) => ({
-          marketId: venueToCanonicalId("polymarket", row.market_id),
-          bestBid: row.best_bid,
-          bestAsk: row.best_ask,
-          mid: row.mid,
-          lastTradePrice: row.last_trade_price,
-          lastTradeSize: row.last_trade_size,
-          rolling24hVolume: row.rolling_24h_volume,
-          openInterest: row.open_interest,
-          sourceTs: row.source_ts,
-          sourceSeq: row.source_seq,
-        }))
+      upstashPromises.push(
+        writeUpstashMarketLivePatches(
+          liveRows.map((row) => ({
+            marketId: venueToCanonicalId("polymarket", row.market_id),
+            bestBid: row.best_bid,
+            bestAsk: row.best_ask,
+            mid: row.mid,
+            lastTradePrice: row.last_trade_price,
+            lastTradeSize: row.last_trade_size,
+            rolling24hVolume: row.rolling_24h_volume,
+            openInterest: row.open_interest,
+            sourceTs: row.source_ts,
+            sourceSeq: row.source_seq,
+          }))
+        )
       );
     }
 
@@ -1088,24 +1095,31 @@ const flushPending = async () => {
         levels: row.levels,
       }));
       pendingOrderbooks.clear();
-      await writeUpstashMarketOrderbooks(orderbookRows);
+      upstashPromises.push(writeUpstashMarketOrderbooks(orderbookRows));
     }
 
     if (tickRows.length > 0) {
-      await writeUpstashActivityTicks(
-        tickRows.map((row) => ({
-          id: row.dedupe_key,
-          marketId: venueToCanonicalId("polymarket", row.market_id),
-          tradeId: row.trade_id ?? null,
-          side: row.side,
-          outcome: row.outcome ?? null,
-          price: row.price,
-          size: row.size,
-          notional: row.price * row.size,
-          sourceTs: row.source_ts,
-          createdAt: row.created_at,
-        }))
+      upstashPromises.push(
+        writeUpstashActivityTicks(
+          tickRows.map((row) => ({
+            id: row.dedupe_key,
+            marketId: venueToCanonicalId("polymarket", row.market_id),
+            tradeId: row.trade_id ?? null,
+            side: row.side,
+            outcome: row.outcome ?? null,
+            price: row.price,
+            size: row.size,
+            notional: row.price * row.size,
+            sourceTs: row.source_ts,
+            createdAt: row.created_at,
+          }))
+        )
       );
+    }
+
+    // Fire all Upstash writes concurrently
+    if (upstashPromises.length > 0) {
+      await Promise.all(upstashPromises);
     }
 
     if (ENABLE_CANONICAL_REALTIME_MIRROR && (liveRows.length > 0 || candleRows.length > 0)) {

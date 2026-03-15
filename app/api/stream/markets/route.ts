@@ -68,7 +68,23 @@ const toFiniteNumber = (value: unknown): number | null => {
   return null;
 };
 
-const coerceLivePatch = (value: unknown) => {
+type LivePatch = {
+  marketId: string;
+  bestBid: number | null;
+  bestAsk: number | null;
+  mid: number | null;
+  lastTradePrice: number | null;
+  lastTradeSize: number | null;
+  rolling24hVolume: number | null;
+  openInterest: number | null;
+  sourceTs: string | null;
+  sourceSeq: number | null;
+  snapshotId: number | null;
+  seq: number | null;
+  pageScope: string | null;
+};
+
+const coerceLivePatch = (value: unknown): LivePatch | null => {
   const parsed =
     typeof value === "string"
       ? (() => {
@@ -101,12 +117,94 @@ const coerceLivePatch = (value: unknown) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Shared psubscribe singleton — one Redis subscription per Node.js process,
+// fanned out to all connected SSE clients.  This avoids opening N separate
+// psubscribe connections for N concurrent users.
+// ---------------------------------------------------------------------------
+
+type ClientEntry = {
+  channels: Set<string>; // the channel keys this client cares about
+  onPatch: (patch: LivePatch) => void;
+  onError: (err: unknown) => void;
+};
+
+let sharedSubscription: {
+  on: (type: string, listener: (event: any) => void) => void;
+  unsubscribe: (channels?: string[]) => Promise<void>;
+  removeAllListeners?: () => void;
+} | null = null;
+const connectedClients = new Set<ClientEntry>();
+let subscriberSetupInProgress = false;
+
+const ensureSharedSubscriber = () => {
+  if (sharedSubscription || subscriberSetupInProgress) return;
+  const redis = getUpstashRedis();
+  if (!redis) return;
+
+  subscriberSetupInProgress = true;
+  const pattern = buildUpstashLiveChannelPattern();
+  const sub = redis.psubscribe(pattern);
+
+  sub.on("pmessage", (event: any) => {
+    if (!event || typeof event !== "object") return;
+    const channel = typeof event.channel === "string" ? event.channel : "";
+    if (!channel) return;
+    const patch = coerceLivePatch(event.message);
+    if (!patch) return;
+
+    // Fan out to all clients interested in this channel
+    for (const client of connectedClients) {
+      if (client.channels.has(channel)) {
+        try {
+          client.onPatch(patch);
+        } catch {
+          // individual client handler error — skip
+        }
+      }
+    }
+  });
+
+  sub.on("error", (event: any) => {
+    console.error("[stream] shared psubscribe error", event);
+    for (const client of connectedClients) {
+      try {
+        client.onError(event);
+      } catch {
+        // skip
+      }
+    }
+    // Reset so next request creates a fresh subscriber
+    sharedSubscription = null;
+    subscriberSetupInProgress = false;
+  });
+
+  sharedSubscription = sub;
+  subscriberSetupInProgress = false;
+};
+
+const registerClient = (client: ClientEntry) => {
+  ensureSharedSubscriber();
+  connectedClients.add(client);
+};
+
+const unregisterClient = (client: ClientEntry) => {
+  connectedClients.delete(client);
+  // If no more clients, tear down the shared subscriber to free resources
+  if (connectedClients.size === 0 && sharedSubscription) {
+    const sub = sharedSubscription;
+    sharedSubscription = null;
+    sub.unsubscribe().catch(() => {});
+    sub.removeAllListeners?.();
+  }
+};
+
+// ---------------------------------------------------------------------------
+
 export async function GET(request: NextRequest) {
   if (!upstashStreamEnabled) {
     return NextResponse.json(
-      {
-        error: "UPSTASH_STREAM_DISABLED",
-      },
+      { error: "UPSTASH_STREAM_DISABLED" },
       { status: 503 }
     );
   }
@@ -114,48 +212,34 @@ export async function GET(request: NextRequest) {
   const marketIds = parseMarketIds(request);
   if (marketIds.length === 0) {
     return NextResponse.json(
-      {
-        error: "MISSING_MARKET_IDS",
-      },
+      { error: "MISSING_MARKET_IDS" },
       { status: 400 }
+    );
+  }
+
+  const redis = getUpstashRedis();
+  if (!redis) {
+    return NextResponse.json(
+      { error: "UPSTASH_STREAM_UNAVAILABLE" },
+      { status: 503 }
     );
   }
 
   const encoder = new TextEncoder();
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let closed = false;
-  let subscription: {
-    on: (type: string, listener: (event: any) => void) => void;
-    unsubscribe: (channels?: string[]) => Promise<void>;
-    removeAllListeners?: () => void;
-  } | null = null;
-  const redis = getUpstashRedis();
-
-  if (!redis) {
-    return NextResponse.json(
-      {
-        error: "UPSTASH_STREAM_UNAVAILABLE",
-      },
-      { status: 503 }
-    );
-  }
+  let clientEntry: ClientEntry | null = null;
 
   const latestFingerprints = new Map<string, string>();
   const liveChannels = new Set(marketIds.map((marketId) => buildUpstashLiveChannelKey(marketId)));
-  const liveChannelPattern = buildUpstashLiveChannelPattern();
 
-  const cleanup = async () => {
+  const cleanup = () => {
     if (closed) return;
     closed = true;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
-    if (subscription) {
-      try {
-        await subscription.unsubscribe();
-      } catch {
-        // ignore unsubscribe failures
-      }
-      subscription.removeAllListeners?.();
-      subscription = null;
+    if (clientEntry) {
+      unregisterClient(clientEntry);
+      clientEntry = null;
     }
   };
 
@@ -163,12 +247,21 @@ export async function GET(request: NextRequest) {
     async start(controller) {
       const send = (event: string, payload: unknown) => {
         if (closed) return;
-        controller.enqueue(encoder.encode(formatSseEvent(event, payload)));
+        try {
+          controller.enqueue(encoder.encode(formatSseEvent(event, payload)));
+        } catch {
+          // Stream may have been closed by the client
+          cleanup();
+        }
       };
 
       const sendHeartbeat = () => {
         if (closed) return;
-        controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
+        } catch {
+          cleanup();
+        }
       };
 
       const flushSnapshot = async () => {
@@ -217,45 +310,47 @@ export async function GET(request: NextRequest) {
         }
       };
 
-      send("ready", {
-        ok: true,
-        marketIds,
-        mode: "pubsub",
-      });
-      let buffering = true;
-      const bufferedPatches = new Map<string, NonNullable<ReturnType<typeof coerceLivePatch>>>();
-      subscription = redis.psubscribe(liveChannelPattern);
-      subscription.on("pmessage", (event) => {
-        if (closed || !event || typeof event !== "object") return;
-        const channel = typeof event.channel === "string" ? event.channel : "";
-        if (!channel || !liveChannels.has(channel)) return;
-        const patch = coerceLivePatch(event.message);
-        if (!patch) return;
-        if (buffering) {
-          bufferedPatches.set(patch.marketId, patch);
-          return;
-        }
-        const fingerprint = buildFingerprint(patch);
-        const previous = latestFingerprints.get(patch.marketId);
-        if (previous === fingerprint) return;
-        latestFingerprints.set(patch.marketId, fingerprint);
-        send("live", {
-          marketIds,
-          snapshotId: patch.snapshotId ?? null,
-          seq: patch.seq ?? null,
-          patches: [patch],
-          source: "upstash",
-        });
-      });
-      subscription.on("error", (event) => {
-        send("error", {
-          message: event instanceof Error ? event.message : "UPSTASH_STREAM_SUBSCRIBE_FAILED",
-        });
-        void cleanup();
-        controller.close();
-      });
+      // 1. Send ready event
+      send("ready", { ok: true, marketIds, mode: "pubsub" });
 
+      // 2. Buffer patches while we fetch the initial snapshot
+      let buffering = true;
+      const bufferedPatches = new Map<string, LivePatch>();
+
+      clientEntry = {
+        channels: liveChannels,
+        onPatch: (patch) => {
+          if (closed) return;
+          if (buffering) {
+            bufferedPatches.set(patch.marketId, patch);
+            return;
+          }
+          const fingerprint = buildFingerprint(patch);
+          const previous = latestFingerprints.get(patch.marketId);
+          if (previous === fingerprint) return;
+          latestFingerprints.set(patch.marketId, fingerprint);
+          send("live", {
+            marketIds,
+            snapshotId: patch.snapshotId ?? null,
+            seq: patch.seq ?? null,
+            patches: [patch],
+            source: "upstash",
+          });
+        },
+        onError: (event) => {
+          send("error", {
+            message: event instanceof Error ? event.message : "UPSTASH_STREAM_SUBSCRIBE_FAILED",
+          });
+          cleanup();
+          try { controller.close(); } catch { /* already closed */ }
+        },
+      };
+      registerClient(clientEntry);
+
+      // 3. Fetch & send initial snapshot from Upstash cache
       const initialSent = await flushSnapshot();
+
+      // 4. Flush any patches buffered during snapshot fetch
       buffering = false;
       const buffered = Array.from(bufferedPatches.values()).filter((patch) => {
         const fingerprint = buildFingerprint(patch);
@@ -265,6 +360,7 @@ export async function GET(request: NextRequest) {
         return true;
       });
       bufferedPatches.clear();
+
       if (!initialSent && buffered.length === 0) {
         send("live", {
           marketIds,
@@ -300,17 +396,19 @@ export async function GET(request: NextRequest) {
           source: "upstash",
         });
       }
+
+      // 5. Start heartbeat
       heartbeatTimer = setInterval(sendHeartbeat, STREAM_HEARTBEAT_MS);
+
+      // 6. Cleanup on client disconnect
       request.signal.addEventListener(
         "abort",
-        () => {
-          void cleanup();
-        },
+        () => { cleanup(); },
         { once: true }
       );
     },
     cancel() {
-      void cleanup();
+      cleanup();
     },
   });
 
