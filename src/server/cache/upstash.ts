@@ -470,13 +470,24 @@ const chunkArray = <T>(rows: T[], chunkSize: number): T[][] => {
   return out;
 };
 
+// Short-lived memo for the snapshot cursor.  Within a single server request
+// (typically <500ms) the cursor value doesn't change, so we avoid hitting
+// Redis 12 times for the same key.  Expires after 2 seconds.
+let memoizedCursor: { value: number | null; scope: string; expiresAt: number } | null = null;
+
 export const readUpstashSnapshotCursor = async (scope = "global"): Promise<number | null> => {
+  const now = Date.now();
+  if (memoizedCursor && memoizedCursor.scope === scope && memoizedCursor.expiresAt > now) {
+    return memoizedCursor.value;
+  }
   if (!upstashCacheEnabled) return null;
   const redis = getUpstashRedis();
   if (!redis) return null;
   try {
     const raw = await redis.get(buildSnapshotCursorKey(scope));
-    return toFiniteOrNull(maybeJson(raw));
+    const value = toFiniteOrNull(maybeJson(raw));
+    memoizedCursor = { value, scope, expiresAt: Date.now() + 2_000 };
+    return value;
   } catch (err) {
     console.error('[upstash] snapshot cursor read failed', { scope, err });
     return null;
@@ -484,12 +495,16 @@ export const readUpstashSnapshotCursor = async (scope = "global"): Promise<numbe
 };
 
 export const advanceUpstashSnapshotCursor = async (scope = "global"): Promise<number | null> => {
+  // Invalidate memo since we're changing the value
+  memoizedCursor = null;
   if (!upstashCacheEnabled) return null;
   const redis = getUpstashRedis();
   if (!redis) return null;
   try {
     const next = await redis.incr(buildSnapshotCursorKey(scope));
-    return typeof next === "number" && Number.isFinite(next) ? next : toFiniteOrNull(next);
+    const value = typeof next === "number" && Number.isFinite(next) ? next : toFiniteOrNull(next);
+    memoizedCursor = { value, scope, expiresAt: Date.now() + 2_000 };
+    return value;
   } catch (err) {
     console.error('[upstash] snapshot cursor advance failed', { scope, err });
     return null;
@@ -525,21 +540,10 @@ export const writeUpstashMarketLivePatches = async (
         pipeline.publish(buildLiveScopeChannelKey(enriched.pageScope), JSON.stringify(enriched));
       }
     }
-    if (snapshotId !== null && seq !== null) {
-      pipeline.set(
-        buildSnapshotMetaKey("global", snapshotId),
-        {
-          snapshotId,
-          seq,
-          scope: "global",
-          shardCount: 0,
-          marketCount: patches.length,
-          createdAt,
-          hasMore: null,
-        } satisfies UpstashSnapshotMeta,
-        { ex: upstashSnapshotTtlSec }
-      );
-    }
+    // NOTE: Snapshot meta is intentionally NOT written here.  The meta key is
+    // only meaningful for sharded snapshots (writeUpstashSnapshotShards).
+    // Writing it on every 2-second flush wasted 1 SET command per cycle with
+    // shardCount=0 data that nothing reads.
     await pipeline.exec();
   } catch (err) {
     console.error('[upstash] live patches write failed', { count: patches.length, err });
