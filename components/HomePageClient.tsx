@@ -5,7 +5,7 @@ import type { Route } from "next";
 import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import MarketCard from "@/components/MarketCard";
+// MarketCard is used by CatalogView and FeedView components
 import ClientErrorBoundary from "@/components/ClientErrorBoundary";
 import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
 import LimitlessCredentialsModal from "@/components/LimitlessCredentialsModal";
@@ -26,8 +26,12 @@ import type {
   LiveActivityTick,
 } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
-import { Search, Filter, Info, X } from "lucide-react";
+// lucide-react icons now used in extracted CatalogView/FeedView/modal components
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
+import CatalogView from "@/components/CatalogView";
+import FeedView from "@/components/FeedView";
+import CatalogFiltersModal from "@/components/CatalogFiltersModal";
+import LeaderboardSortModal from "@/components/LeaderboardSortModal";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
@@ -4849,310 +4853,75 @@ export default function HomePage({
 
                 {/* CATALOG */}
                 <div className={currentView === "CATALOG" ? "w-full" : "hidden"}>
-                  <div>
-                    {/* Mobile search (desktop search is in Header) */}
-                    <div className="px-4 pt-2 pb-3 md:hidden">
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={searchQuery}
-                          onChange={(e) => handleCatalogSearchChange(e.target.value)}
-                          placeholder={lang === "RU" ? "Поиск..." : "Search..."}
-                          className="h-11 w-full rounded-[20px] border border-zinc-800 bg-zinc-950/80 px-4 pl-11 text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-700"
-                        />
-                        <Search size={16} className="absolute left-4 top-3.5 text-zinc-600" />
-                      </div>
-                    </div>
-
-                    {/* Categories */}
-                    <div className="px-4 pb-3 border-b border-zinc-900">
-                      <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            transitionCatalogState(() => {
-                              setCatalogPage(1);
-                              setActiveCategoryId("all");
-                            });
-                          }}
-                            className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
-                              activeCategoryId === "all"
-                                ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
-                                : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
-                            }`}
-                        >
-                          {lang === "RU" ? "Все" : "All"}
-                        </button>
-                        {marketCategories.map((c) => {
-                          const label = lang === "RU" ? c.labelRu : c.labelEn;
-                          const selected = activeCategoryId === c.id;
-                          return (
-                            <button
-                              key={c.id}
-                              type="button"
-                              onClick={() => {
-                                transitionCatalogState(() => {
-                                  setCatalogPage(1);
-                                  setActiveCategoryId(c.id);
-                                });
-                              }}
-                              className={`shrink-0 min-h-[40px] rounded-full border px-4 text-xs font-semibold uppercase tracking-wider transition ${
-                                selected
-                                  ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,1)] text-white shadow-[0_10px_30px_rgba(245,68,166,0.12)] hover:opacity-90"
-                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
-                              }`}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="px-4 pt-3 border-b border-zinc-900">
-                      <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
-                        {providerOptions.map((provider) => {
-                          const selected = activeProviderFilter === provider.id;
-                          const label = lang === "RU" ? provider.labelRu : provider.labelEn;
-                          return (
-                            <button
-                              key={provider.id}
-                              type="button"
-                              aria-label={provider.ariaLabel ?? label}
-                              title={provider.ariaLabel ?? label}
-                              onClick={() => {
-                                transitionCatalogState(() => {
-                                  setCatalogPage(1);
-                                  setActiveProviderFilter(provider.id);
-                                });
-                                if (typeof window !== "undefined" && currentView === "CATALOG") {
-                                  const nextPath = getCatalogPathForProvider(provider.id);
-                                  router.push(`${nextPath}${window.location.search}` as Route, { scroll: false });
-                                }
-                              }}
-                              className={`shrink-0 rounded-full border text-xs font-semibold uppercase tracking-wider transition ${
-                                provider.id === "all"
-                                  ? "min-h-[40px] px-4"
-                                  : "inline-flex h-10 w-10 items-center justify-center p-0"
-                              } ${
-                                selected
-                                  ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,1)] text-black shadow-[0_10px_30px_rgba(190,255,29,0.15)]"
-                                  : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
-                              }`}
-                            >
-                              {provider.id === "all" || !provider.logoSrc ? (
-                                label
-                              ) : (
-                                <img
-                                  src={provider.logoSrc}
-                                  alt={provider.ariaLabel ?? label}
-                                  className="h-5 w-5 rounded-md object-contain"
-                                />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Sort / filter */}
-                    <div className="px-4 pt-3" data-swipe-ignore="true">
-                      {semanticSearchLoading && searchQuery.trim().length >= 2 ? (
-                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                          {lang === "RU" ? "AI-поиск ранжирует рынки..." : "AI ranking markets..."}
-                        </div>
-                      ) : null}
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                          {lang === "RU" ? "Фильтры" : "Filters"}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setShowEligibilityDisclaimer(true)}
-                            className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-zinc-900 bg-zinc-950/50 text-zinc-300 transition-colors hover:bg-zinc-950/80 hover:text-white"
-                            aria-label={lang === "RU" ? "Важное уведомление" : "Important notice"}
-                            title={lang === "RU" ? "Важное уведомление" : "Important notice"}
-                          >
-                            <Info size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setCatalogFiltersOpen(true)}
-                            className="inline-flex h-10 items-center gap-2 rounded-2xl border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-950/80 hover:text-white"
-                          >
-                            <Filter size={14} className="text-zinc-300" />
-                            <span>{lang === "RU" ? "Фильтр" : "Filter"}</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="px-4 pt-3">
-                      {catalogMarkets.length > 0 ? (
-                        <>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
-                            {catalogMarkets.map((market) => (
-                              <div
-                                key={market.id}
-                                data-market-card-id={market.id}
-                                style={{ contentVisibility: "auto", containIntrinsicSize: "252px" }}
-                              >
-                                <MarketCard
-                                  market={market}
-                                  highlightState={marketHighlightById[market.id]?.kind ?? null}
-                                  bookmarked={bookmarkedMarketIds.has(market.id)}
-                                  onClick={() => {
-                                    setMarketBetIntent(null);
-                                    void openMarketWithAuthCheck(market);
-                                  }}
-                                  onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                                  lang={lang}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                          <div className="pb-8">
-                            <div ref={catalogLoadMoreSentinelRef} className="h-4 w-full" aria-hidden="true" />
-                            <div className="flex items-center justify-center gap-3">
-                              <div className="text-xs text-zinc-500">
-                                {(lang === "RU" ? "Загружено страниц" : "Loaded pages") + ` ${catalogPage}`}
-                              </div>
-                              {loadingMarkets && catalogPage > 1 ? (
-                                <div className="text-xs text-zinc-400">
-                                  {lang === "RU" ? "Подгружаем еще рынки..." : "Loading more markets..."}
-                                </div>
-                              ) : null}
-                              {!loadingMarkets && hasNextCatalogPage ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    transitionCatalogState(() => {
-                                      setCatalogPage((prev) => prev + 1);
-                                    })
-                                  }
-                                  className="h-10 rounded-full border border-zinc-900 bg-zinc-950/50 px-4 text-xs font-semibold text-zinc-200 hover:bg-zinc-950/80"
-                                >
-                                  {lang === "RU" ? "Загрузить еще" : "Load more"}
-                                </button>
-                              ) : null}
-                            </div>
-                          </div>
-                        </>
-                      ) : marketsError ? (
-                        <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-sm">{marketsError}</p>
-                        </div>
-                      ) : !hasLoadedActiveCatalogKey ? (
-                        <div className="pb-8">
-                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 sm:gap-4">
-                            {Array.from({ length: 8 }).map((_, idx) => (
-                              <div
-                                key={`catalog-skeleton-${idx}`}
-                                className="h-[252px] rounded-2xl border border-zinc-900 bg-zinc-950/50 animate-pulse"
-                                aria-hidden="true"
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-lg mb-2">{lang === "RU" ? "Ничего не найдено" : "Nothing found"}</p>
-                          <p className="text-sm">{lang === "RU" ? "Попробуйте другой запрос" : "Try a different search"}</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <CatalogView
+                    lang={lang}
+                    searchQuery={searchQuery}
+                    onSearchChange={handleCatalogSearchChange}
+                    semanticSearchLoading={semanticSearchLoading}
+                    activeCategoryId={activeCategoryId}
+                    onCategoryChange={(id) => {
+                      transitionCatalogState(() => {
+                        setCatalogPage(1);
+                        setActiveCategoryId(id);
+                      });
+                    }}
+                    activeProviderFilter={activeProviderFilter}
+                    onProviderFilterChange={(provider) => {
+                      transitionCatalogState(() => {
+                        setCatalogPage(1);
+                        setActiveProviderFilter(provider);
+                      });
+                      if (typeof window !== "undefined" && currentView === "CATALOG") {
+                        const nextPath = getCatalogPathForProvider(provider);
+                        router.push(`${nextPath}${window.location.search}` as Route, { scroll: false });
+                      }
+                    }}
+                    providerOptions={providerOptions}
+                    marketCategories={marketCategories}
+                    catalogMarkets={catalogMarkets}
+                    marketHighlightById={marketHighlightById}
+                    bookmarkedMarketIds={bookmarkedMarketIds}
+                    onMarketClick={(market) => {
+                      setMarketBetIntent(null);
+                      void openMarketWithAuthCheck(market);
+                    }}
+                    onQuickBet={(market, side) => handleOpenMarketBet(market, side)}
+                    onInfoClick={() => setShowEligibilityDisclaimer(true)}
+                    onFiltersClick={() => setCatalogFiltersOpen(true)}
+                    loadingMarkets={loadingMarkets}
+                    marketsError={marketsError}
+                    hasLoadedActiveCatalogKey={hasLoadedActiveCatalogKey}
+                    catalogPage={catalogPage}
+                    hasNextCatalogPage={hasNextCatalogPage}
+                    onLoadMore={() =>
+                      transitionCatalogState(() => {
+                        setCatalogPage((prev) => prev + 1);
+                      })
+                    }
+                    marketsLoadingMessage={marketsLoadingMessage}
+                    catalogLoadMoreSentinelRef={catalogLoadMoreSentinelRef}
+                  />
                 </div>
 
                 {/* FEED */}
                 <div className={currentView === "FEED" ? "w-full" : "hidden"}>
-                  <div>
-                    <MarketPulseBoard
-                      markets={marketPulseRows}
-                      loading={topMarketPreviewLoading && marketPulseRows.length === 0}
-                      lang={lang}
-                      onMarketClick={(market) => {
-                        setMarketBetIntent(null);
-                        void openMarketWithAuthCheck(market);
-                      }}
-                    />
-
-                    {user && bookmarkedMarkets.length > 0 && (
-                      <>
-                        <div className="px-4 pt-3 pb-2">
-                          <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                            {lang === "RU" ? "Закладки" : "Bookmarks"}
-                          </div>
-                        </div>
-                        <div className="px-4 pt-2">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
-                            {bookmarkedMarkets.map((market) => (
-                              <MarketCard
-                                key={`bm-${market.id}`}
-                                market={market}
-                                bookmarked
-                                onClick={() => {
-                                  setMarketBetIntent(null);
-                                  void openMarketWithAuthCheck(market);
-                                }}
-                                onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                                lang={lang}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      </>
-                    )}
-
-                    <div className="px-4 pt-3 pb-2">
-                      <div className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                        {lang === "RU" ? "Ваши ставки" : "Your bets"}
-                      </div>
-                    </div>
-
-                    <div className="px-4 pt-2">
-                      {loadingMarkets ? (
-                        <div className="text-center py-10 text-zinc-500">
-                          {marketsLoadingMessage || (lang === "RU" ? "Загрузка рынков..." : "Loading markets...")}
-                        </div>
-                      ) : !user ? (
-                        <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-lg mb-2">{lang === "RU" ? "Войдите, чтобы увидеть ваши ставки" : "Log in to see your bets"}</p>
-                          <p className="text-sm">
-                            {lang === "RU" ? "Каталог доступен без входа." : "The catalog is available without logging in."}
-                          </p>
-                        </div>
-                      ) : feedMarkets.length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-8">
-                          {feedMarkets.map((market) => (
-                            <MarketCard
-                              key={market.id}
-                              market={market}
-                              bookmarked={bookmarkedMarketIds.has(market.id)}
-                              onClick={() => {
-                                setMarketBetIntent(null);
-                                void openMarketWithAuthCheck(market);
-                              }}
-                              onQuickBet={(side) => handleOpenMarketBet(market, side)}
-                              lang={lang}
-                            />
-                          ))}
-                        </div>
-                      ) : marketsError ? (
-                        <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-sm">{marketsError}</p>
-                        </div>
-                      ) : (
-                        <div className="text-center py-20 text-zinc-500 px-4">
-                          <p className="text-lg mb-2">{lang === "RU" ? "У вас пока нет ставок" : "No bets yet"}</p>
-                          <p className="text-sm">
-                            {lang === "RU" ? "Откройте рынок в каталоге, чтобы сделать ставку." : "Open a market in the catalog to place a bet."}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <FeedView
+                    lang={lang}
+                    user={user}
+                    marketPulseRows={marketPulseRows}
+                    topMarketPreviewLoading={topMarketPreviewLoading}
+                    bookmarkedMarkets={bookmarkedMarkets}
+                    bookmarkedMarketIds={bookmarkedMarketIds}
+                    feedMarkets={feedMarkets}
+                    loadingMarkets={loadingMarkets}
+                    marketsLoadingMessage={marketsLoadingMessage}
+                    marketsError={marketsError}
+                    onMarketClick={(market) => {
+                      setMarketBetIntent(null);
+                      void openMarketWithAuthCheck(market);
+                    }}
+                    onQuickBet={(market, side) => handleOpenMarketBet(market, side)}
+                  />
                 </div>
 
                 {/* PROFILE */}
@@ -5210,215 +4979,53 @@ export default function HomePage({
         </>
       )}
 
-      {/* Catalog filters modal (rendered outside swipe/transform container) */}
+      {/* Catalog filters modal */}
       {catalogFiltersOpen && currentView === "CATALOG" && (
-        <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-4" data-swipe-ignore="true">
-          <div
-            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-            onClick={() => setCatalogFiltersOpen(false)}
-          />
-          <div className="relative w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl border border-zinc-900 bg-black p-5 shadow-2xl">
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div className="text-sm font-semibold text-zinc-100">
-                {lang === "RU" ? "Фильтры каталога" : "Catalog filters"}
-              </div>
-              <button
-                type="button"
-                onClick={() => setCatalogFiltersOpen(false)}
-                className="h-9 w-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
-                aria-label={lang === "RU" ? "Закрыть" : "Close"}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
-              {lang === "RU" ? "Статус" : "Status"}
-            </div>
-            <div role="radiogroup" className="space-y-2 mb-4">
-              {([
-                { id: "ALL" as const, labelRu: "Все", labelEn: "All" },
-                { id: "ONGOING" as const, labelRu: "Текущие", labelEn: "Ongoing" },
-                { id: "ENDED" as const, labelRu: "Завершённые", labelEn: "Ended" },
-              ]).map((opt) => {
-                const selected = catalogStatus === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() =>
-                      transitionCatalogState(() => {
-                        setCatalogPage(1);
-                        setCatalogStatus(opt.id);
-                      })
-                    }
-                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                      selected
-                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
-                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
-                    }`}
-                  >
-                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
-              {lang === "RU" ? "Время" : "Time"}
-            </div>
-            <div role="radiogroup" className="space-y-2 mb-4">
-              {([
-                { id: "ANY" as const, labelRu: "Любое", labelEn: "Any" },
-                { id: "HOUR" as const, labelRu: "Закончится за 1 час", labelEn: "Ends in 1 hour" },
-                { id: "DAY" as const, labelRu: "Закончится за 24 часа", labelEn: "Ends in 24 hours" },
-                { id: "WEEK" as const, labelRu: "Закончится за 7 дней", labelEn: "Ends in 7 days" },
-              ]).map((opt) => {
-                const selected = catalogTimeFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() =>
-                      transitionCatalogState(() => {
-                        setCatalogPage(1);
-                        setCatalogTimeFilter(opt.id);
-                      })
-                    }
-                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                      selected
-                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
-                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
-                    }`}
-                  >
-                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
-              {lang === "RU" ? "Сортировка" : "Sort"}
-            </div>
-
-            <div role="radiogroup" className="space-y-2">
-              {([
-                { id: "CREATED_DESC" as const, labelRu: "Новые события", labelEn: "New events first" },
-                { id: "CREATED_ASC" as const, labelRu: "Старые события", labelEn: "Old events first" },
-                { id: "ENDING_SOON" as const, labelRu: "Скоро закончится", labelEn: "Will end soon" },
-                { id: "VOLUME_DESC" as const, labelRu: "Объём: по убыванию", labelEn: "Volume: descending" },
-                { id: "VOLUME_ASC" as const, labelRu: "Объём: по возрастанию", labelEn: "Volume: ascending" },
-                { id: "CATEGORY_ASC" as const, labelRu: "Категория: A → Z", labelEn: "Category: A → Z" },
-                { id: "CATEGORY_DESC" as const, labelRu: "Категория: Z → A", labelEn: "Category: Z → A" },
-              ]).map((opt) => {
-                const selected = catalogSort === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => {
-                      transitionCatalogState(() => {
-                        setCatalogPage(1);
-                        setCatalogSort(opt.id);
-                      });
-                    }}
-                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                      selected
-                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
-                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
-                    }`}
-                  >
-                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                transitionCatalogState(() => {
-                  setCatalogStatus("ALL");
-                  setCatalogTimeFilter("ANY");
-                  setCatalogSort(DEFAULT_CATALOG_SORT);
-                  setCatalogPage(1);
-                });
-              }}
-              className="mt-3 w-full h-10 rounded-full border border-zinc-800 bg-zinc-950/40 hover:bg-zinc-950/60 text-zinc-200 text-sm font-semibold transition-colors"
-            >
-              {lang === "RU" ? "Сбросить фильтры" : "Reset filters"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCatalogFiltersOpen(false)}
-              className="mt-4 w-full h-11 rounded-full bg-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.90)] text-white font-semibold transition-colors"
-            >
-              {lang === "RU" ? "Готово" : "Done"}
-            </button>
-          </div>
-        </div>
+        <CatalogFiltersModal
+          lang={lang}
+          catalogStatus={catalogStatus}
+          catalogTimeFilter={catalogTimeFilter}
+          catalogSort={catalogSort}
+          onStatusChange={(status) =>
+            transitionCatalogState(() => {
+              setCatalogPage(1);
+              setCatalogStatus(status);
+            })
+          }
+          onTimeFilterChange={(filter) =>
+            transitionCatalogState(() => {
+              setCatalogPage(1);
+              setCatalogTimeFilter(filter);
+            })
+          }
+          onSortChange={(sort) =>
+            transitionCatalogState(() => {
+              setCatalogPage(1);
+              setCatalogSort(sort);
+            })
+          }
+          onReset={() =>
+            transitionCatalogState(() => {
+              setCatalogStatus("ALL");
+              setCatalogTimeFilter("ANY");
+              setCatalogSort(DEFAULT_CATALOG_SORT);
+              setCatalogPage(1);
+            })
+          }
+          onClose={() => setCatalogFiltersOpen(false)}
+        />
       )}
 
       {leaderboardSortOpen && currentView === "FRIENDS" && (
-        <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-4" data-swipe-ignore="true">
-          <div
-            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-            onClick={() => setLeaderboardSortOpen(false)}
-          />
-          <div className="relative w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl border border-zinc-900 bg-black p-5 shadow-2xl">
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div className="text-sm font-semibold text-zinc-100">
-                {lang === "RU" ? "Сортировка" : "Sort"}
-              </div>
-              <button
-                type="button"
-                onClick={() => setLeaderboardSortOpen(false)}
-                className="h-9 w-9 rounded-full border border-zinc-900 bg-zinc-950/40 hover:bg-zinc-950/60 flex items-center justify-center text-zinc-300"
-                aria-label={lang === "RU" ? "Закрыть" : "Close"}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">
-              {lang === "RU" ? "Сортировка" : "Sort"}
-            </div>
-            <div role="radiogroup" className="space-y-2">
-              {([
-                { id: "PNL" as const, labelRu: "PnL", labelEn: "PnL" },
-                { id: "BETS" as const, labelRu: "Ставки", labelEn: "Bets" },
-              ]).map((opt) => {
-                const selected = leaderboardSort === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => {
-                      setLeaderboardSort(opt.id);
-                      setLeaderboardSortOpen(false);
-                      void loadLeaderboard(opt.id);
-                    }}
-                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                      selected
-                        ? "border-[rgba(245,68,166,1)] bg-[rgba(245,68,166,0.10)] text-white"
-                        : "border-zinc-900 bg-zinc-950/30 text-zinc-300 hover:bg-zinc-950/50"
-                    }`}
-                  >
-                    <div className="text-sm font-semibold">{lang === "RU" ? opt.labelRu : opt.labelEn}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        <LeaderboardSortModal
+          lang={lang}
+          leaderboardSort={leaderboardSort}
+          onSortChange={(sort) => {
+            setLeaderboardSort(sort);
+            void loadLeaderboard(sort);
+          }}
+          onClose={() => setLeaderboardSortOpen(false)}
+        />
       )}
 
       <ProfileSetupModal

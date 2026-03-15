@@ -70,8 +70,8 @@ export const buildCsrfCookieValue = (): string => {
     crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   }
-  // Last-resort fallback
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  // No crypto available — this should never happen in modern runtimes.
+  throw new Error("CSRF token generation requires crypto.randomUUID or crypto.getRandomValues");
 };
 
 export const csrfCookie = (token: string): string => {

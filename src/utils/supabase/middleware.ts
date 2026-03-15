@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { buildCsrfCookieValue, getCsrfCookieName } from "@/src/server/security/csrf";
+import { verifyAuthToken, signAuthToken, authCookie, shouldRefreshToken } from "@/src/server/auth/jwt";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
@@ -63,6 +64,26 @@ export async function updateSession(request: NextRequest) {
     await supabase.auth.getUser();
   } catch (err) {
     console.warn("Supabase middleware session update failed", err);
+  }
+
+  // Sliding session renewal: if the auth JWT is close to expiry, reissue it silently.
+  try {
+    const authToken = request.cookies.get("auth_token")?.value;
+    if (authToken) {
+      const payload = await verifyAuthToken(authToken);
+      if (shouldRefreshToken(payload)) {
+        const freshToken = await signAuthToken({
+          sub: payload.sub,
+          email: payload.email,
+          username: payload.username,
+          isAdmin: payload.isAdmin,
+        });
+        const cookie = authCookie(freshToken);
+        response.headers.append("set-cookie", cookie);
+      }
+    }
+  } catch {
+    // Token invalid or expired — let the tRPC context handle auth failure.
   }
 
   return ensureCsrfCookie(response);

@@ -1,4 +1,30 @@
+const FALLBACK_MAX_ENTRIES = 5_000;
+const FALLBACK_PRUNE_BATCH = 500;
+
 const inMemoryFallback = new Map<string, { count: number; resetAt: number }>();
+
+const pruneExpiredEntries = () => {
+  if (inMemoryFallback.size <= FALLBACK_MAX_ENTRIES) return;
+  const now = Date.now();
+  let pruned = 0;
+  for (const [k, v] of inMemoryFallback) {
+    if (v.resetAt <= now) {
+      inMemoryFallback.delete(k);
+      pruned++;
+      if (pruned >= FALLBACK_PRUNE_BATCH) break;
+    }
+  }
+  // If we couldn't free enough expired entries, drop oldest entries
+  if (inMemoryFallback.size > FALLBACK_MAX_ENTRIES) {
+    const excess = inMemoryFallback.size - FALLBACK_MAX_ENTRIES;
+    let dropped = 0;
+    for (const k of inMemoryFallback.keys()) {
+      inMemoryFallback.delete(k);
+      dropped++;
+      if (dropped >= excess) break;
+    }
+  }
+};
 
 type DurableRateLimitResult = {
   allowed: boolean;
@@ -11,6 +37,7 @@ const applyInMemoryFallback = (
   limit: number,
   windowSeconds: number
 ): DurableRateLimitResult => {
+  pruneExpiredEntries();
   const now = Date.now();
   const windowMs = Math.max(1, Math.floor(windowSeconds * 1000));
   const existing = inMemoryFallback.get(key);

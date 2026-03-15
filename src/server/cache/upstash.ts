@@ -102,7 +102,8 @@ export const readUpstashCache = async <T>(
     if (directParsed.success) return directParsed.data;
 
     return null;
-  } catch {
+  } catch (err) {
+    console.error('[upstash] cache read failed', { key, err });
     return null;
   }
 };
@@ -126,8 +127,8 @@ export const writeUpstashCache = async <T>(
       },
       { ex: Math.max(1, ttlSec) }
     );
-  } catch {
-    // Best-effort cache write only.
+  } catch (err) {
+    console.error('[upstash] cache write failed', { key, ttlSec, err });
   }
 };
 
@@ -476,7 +477,8 @@ export const readUpstashSnapshotCursor = async (scope = "global"): Promise<numbe
   try {
     const raw = await redis.get(buildSnapshotCursorKey(scope));
     return toFiniteOrNull(maybeJson(raw));
-  } catch {
+  } catch (err) {
+    console.error('[upstash] snapshot cursor read failed', { scope, err });
     return null;
   }
 };
@@ -488,7 +490,8 @@ export const advanceUpstashSnapshotCursor = async (scope = "global"): Promise<nu
   try {
     const next = await redis.incr(buildSnapshotCursorKey(scope));
     return typeof next === "number" && Number.isFinite(next) ? next : toFiniteOrNull(next);
-  } catch {
+  } catch (err) {
+    console.error('[upstash] snapshot cursor advance failed', { scope, err });
     return null;
   }
 };
@@ -538,8 +541,8 @@ export const writeUpstashMarketLivePatches = async (
       );
     }
     await pipeline.exec();
-  } catch {
-    // Best-effort realtime cache write only.
+  } catch (err) {
+    console.error('[upstash] live patches write failed', { count: patches.length, err });
   }
 };
 
@@ -562,7 +565,8 @@ export const readUpstashMarketLivePatches = async (
       if (normalized) out.push(normalized);
     }
     return out;
-  } catch {
+  } catch (err) {
+    console.error('[upstash] live patches read failed', { count: uniqueIds.length, err });
     return [];
   }
 };
@@ -610,7 +614,8 @@ export const writeUpstashSnapshotShards = async <T>(
     });
     await pipeline.exec();
     return meta;
-  } catch {
+  } catch (err) {
+    console.error('[upstash] snapshot shards write failed', { scope, rowCount: rows.length, err });
     return null;
   }
 };
@@ -625,7 +630,8 @@ export const readUpstashSnapshotMeta = async (
   try {
     const raw = await redis.get(buildSnapshotMetaKey(scope, snapshotId));
     return normalizeSnapshotMeta(maybeJson(raw));
-  } catch {
+  } catch (err) {
+    console.error('[upstash] snapshot meta read failed', { scope, snapshotId, err });
     return null;
   }
 };
@@ -653,7 +659,8 @@ export const readUpstashSnapshotShard = async <T = unknown>(
       shardIndex: shard,
       rows,
     };
-  } catch {
+  } catch (err) {
+    console.error('[upstash] snapshot shard read failed', { scope, snapshotId, shardIndex, err });
     return null;
   }
 };
@@ -714,8 +721,8 @@ export const writeUpstashActivityTicks = async (
       pipeline.expire(key, upstashActivityListTtlSec);
     }
     await pipeline.exec();
-  } catch {
-    // Best-effort realtime cache write only.
+  } catch (err) {
+    console.error('[upstash] activity ticks write failed', { count: ticks.length, err });
   }
 };
 
@@ -739,7 +746,8 @@ export const readUpstashActivityTicks = async (
       if (normalized) out.push(normalized);
     }
     return out;
-  } catch {
+  } catch (err) {
+    console.error('[upstash] activity ticks read failed', { marketId: cleanMarketId, err });
     return [];
   }
 };
@@ -771,8 +779,8 @@ export const writeUpstashMarketOrderbooks = async (
       }
     }
     await pipeline.exec();
-  } catch {
-    // Best-effort orderbook cache write only.
+  } catch (err) {
+    console.error('[upstash] orderbooks write failed', { count: orderbooks.length, err });
   }
 };
 
@@ -800,7 +808,8 @@ export const readUpstashMarketOrderbook = async (
       };
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.error('[upstash] orderbook read failed', { marketId: cleanMarketId, depth, err });
     return null;
   }
 };

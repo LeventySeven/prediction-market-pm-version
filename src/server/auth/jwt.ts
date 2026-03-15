@@ -3,7 +3,8 @@ import { SignJWT, jwtVerify } from "jose";
 const JWT_SECRET = process.env.AUTH_JWT_SECRET;
 const JWT_ISSUER = "pravda-app";
 const JWT_AUDIENCE = "pravda-users";
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const TOKEN_TTL_SECONDS = 60 * 60 * 2; // 2 hours
+const TOKEN_REFRESH_WINDOW_SECONDS = 60 * 30; // refresh when <30 min remaining
 const IS_PROD = process.env.NODE_ENV === "production";
 const COOKIE_SAME_SITE = IS_PROD ? "None" : "Lax";
 const COOKIE_SECURE_PART = IS_PROD ? " Secure;" : "";
@@ -49,5 +50,15 @@ export function authCookie(token: string) {
 
 export function clearAuthCookie() {
   return `auth_token=; HttpOnly; Path=/; SameSite=${COOKIE_SAME_SITE}; Max-Age=0;${COOKIE_SECURE_PART}`;
+}
+
+/**
+ * Returns true when the token's remaining lifetime is within the refresh window,
+ * meaning the middleware should silently reissue a fresh token.
+ */
+export function shouldRefreshToken(payload: { exp?: number }): boolean {
+  if (typeof payload.exp !== "number") return false;
+  const remaining = payload.exp - Math.floor(Date.now() / 1000);
+  return remaining > 0 && remaining < TOKEN_REFRESH_WINDOW_SECONDS;
 }
 
