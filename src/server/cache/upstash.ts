@@ -33,7 +33,9 @@ export const upstashStreamEnabled =
 
 export const upstashMarketListTtlSec = clampInt(process.env.UPSTASH_MARKETS_LIST_TTL_SEC, 3, 1, 30);
 export const upstashMarketDetailTtlSec = clampInt(process.env.UPSTASH_MARKET_DETAIL_TTL_SEC, 7, 1, 60);
-export const upstashMarketCandlesTtlSec = clampInt(process.env.UPSTASH_MARKET_CANDLES_TTL_SEC, 15, 3, 120);
+// Candle history is mostly immutable (only the leading bucket changes).
+// A longer TTL reduces DB queries without meaningful staleness.
+export const upstashMarketCandlesTtlSec = clampInt(process.env.UPSTASH_MARKET_CANDLES_TTL_SEC, 60, 10, 300);
 export const upstashMarketTradesTtlSec = clampInt(process.env.UPSTASH_MARKET_TRADES_TTL_SEC, 3, 1, 30);
 
 const upstashLiveStateTtlSec = clampInt(process.env.UPSTASH_LIVE_STATE_TTL_SEC, 60, 10, 900);

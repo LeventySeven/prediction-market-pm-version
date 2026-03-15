@@ -1957,13 +1957,15 @@ export const getCanonicalPriceCandles = async (params: {
   const cachedCandles = await readUpstashCache(candlesCacheKey, priceCandleOutputArray);
   if (cachedCandles) return cachedCandles;
 
+  // Fetch a modest buffer over the display limit to allow for aggregation gaps.
+  // Previous multiplier of 90x was excessive (fetching 15K rows for 168 display).
   const rawLimit = range === "Y"
     ? 20_000
     : Math.min(
         20_000,
         Math.max(
-          interval === "1h" ? limit * 90 : limit * 4,
-          interval === "1h" ? 8_000 : 4_000
+          interval === "1h" ? limit * 4 : limit * 4,
+          interval === "1h" ? 2_000 : 1_000
         )
       );
 
@@ -2003,7 +2005,12 @@ export const getCanonicalPriceCandles = async (params: {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    console.error('[readService] candle venue API fallback failed', {
+      marketId: params.marketId,
+      provider: ref.provider,
+      err: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 
