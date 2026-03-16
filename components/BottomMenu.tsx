@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Home, LayoutGrid, Plus, User as UserIcon, Users } from 'lucide-react';
+import { Home, LayoutGrid, User as UserIcon, Users } from 'lucide-react';
 import { User } from '../types';
 
 export type ViewType = 'FRIENDS' | 'FEED' | 'CATALOG' | 'PROFILE';
@@ -8,14 +8,13 @@ export type ViewType = 'FRIENDS' | 'FEED' | 'CATALOG' | 'PROFILE';
 interface BottomMenuProps {
   currentView: ViewType;
   onChange: (view: ViewType) => void;
-  onCreateMarket: () => void;
   lang: 'RU' | 'EN';
   user: User | null;
   onLoginRequest: () => void;
 }
 
-const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, onCreateMarket, lang, user, onLoginRequest }) => {
-  
+const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, user, onLoginRequest }) => {
+
   const handleProtectedClick = (view: ViewType) => {
     if (!user && view === 'PROFILE') {
         onLoginRequest();
@@ -44,19 +43,6 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, onCreate
       >
         <LayoutGrid size={20} />
         <span className="text-[11px] font-medium">{lang === 'RU' ? 'Каталог' : 'Catalog'}</span>
-      </button>
-
-      <button
-        type="button"
-        onClick={onCreateMarket}
-        className="flex flex-col items-center justify-center gap-1.5 w-20 text-zinc-200 hover:text-white"
-        aria-label={lang === 'RU' ? 'Создать рынок' : 'Create market'}
-        title={lang === 'RU' ? 'Создать рынок' : 'Create market'}
-      >
-        <div className="h-11 w-11 rounded-full border-2 border-[rgba(245,68,166,1)] bg-black text-[rgba(245,68,166,1)] hover:bg-[rgba(245,68,166,0.10)] transition-all shadow-lg flex items-center justify-center">
-          <Plus size={22} />
-        </div>
-        <span className="sr-only">{lang === 'RU' ? 'Создать рынок' : 'Create market'}</span>
       </button>
 
       <button

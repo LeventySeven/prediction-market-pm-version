@@ -149,14 +149,21 @@ export const resolveReliableBinaryPrice = (params: {
   const lastTradePrice = toPrice01(params.lastTradePrice ?? null);
   const fallbackPrice = toPrice01(params.fallbackPrice ?? null) ?? 0.5;
 
+  // Trust the mid value from the platform/collector when it is a clear
+  // non-boundary price — it already reflects the price shown on the source.
+  if (mid !== null && mid > 0 && mid < 1) return mid;
+
+  // Prefer lastTradePrice over a computed book midpoint because platforms
+  // typically display the last traded price as the headline probability.
+  if (lastTradePrice !== null && lastTradePrice > 0 && lastTradePrice < 1) return lastTradePrice;
+
   const bookMid =
     bestBid !== null && bestAsk !== null && bestBid > 0 && bestAsk > 0
       ? clamp01((bestBid + bestAsk) / 2)
       : null;
-
-  if (mid !== null && mid > 0 && mid < 1) return mid;
   if (bookMid !== null) return bookMid;
-  if (lastTradePrice !== null && lastTradePrice > 0 && lastTradePrice < 1) return lastTradePrice;
+
+  // Boundary mid (0 or 1) accepted only when no better data exists.
   if (mid !== null) return mid;
   if (lastTradePrice !== null) return lastTradePrice;
   return fallbackPrice;

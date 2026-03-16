@@ -218,29 +218,19 @@ const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
     typeof binaryOutcomes.yes?.price === "number" && Number.isFinite(binaryOutcomes.yes.price)
       ? binaryOutcomes.yes.price
       : Number(m.priceYes);
-  const derivedYesPrice = isBinary
-    ? resolveReliableBinaryPrice({
-        mid: m.mid ?? null,
-        bestBid: m.bestBid ?? null,
-        bestAsk: m.bestAsk ?? null,
-        lastTradePrice: m.lastTradePrice ?? null,
-        fallbackPrice: fallbackYesPrice,
-      })
-    : fallbackYesPrice;
+  const derivedYesPrice = resolveReliableBinaryPrice({
+    mid: m.mid ?? null,
+    bestBid: m.bestBid ?? null,
+    bestAsk: m.bestAsk ?? null,
+    lastTradePrice: m.lastTradePrice ?? null,
+    fallbackPrice: fallbackYesPrice,
+  });
   const derivedNoPrice = isBinary
     ? Math.max(0, Math.min(1, 1 - derivedYesPrice))
     : typeof binaryOutcomes.no?.price === "number" && Number.isFinite(binaryOutcomes.no.price)
       ? binaryOutcomes.no.price
       : Number(m.priceNo);
-  const chanceSource =
-    isBinary
-      ? derivedYesPrice
-      : typeof binaryOutcomes.yes?.probability === "number" && Number.isFinite(binaryOutcomes.yes.probability)
-        ? binaryOutcomes.yes.probability
-        : typeof m.chance === "number"
-          ? m.chance
-          : derivedYesPrice;
-  const chance = roundPercentValue(chanceSource);
+  const chance = roundPercentValue(derivedYesPrice);
   const volume24hRaw =
     typeof m.rolling24hVolume === "number" && Number.isFinite(m.rolling24hVolume)
       ? Math.max(0, m.rolling24hVolume)
@@ -365,17 +355,15 @@ const mergeMarketLivePatch = (
 const applyLivePatchToMarket = (market: Market, patch?: MarketLivePatch): Market => {
   if (!patch) return market;
   const isBinary = (market.marketType ?? "binary") === "binary";
-  const yesPrice = isBinary
-    ? resolveReliableBinaryPrice({
-        mid: patch.mid,
-        bestBid: patch.bestBid,
-        bestAsk: patch.bestAsk,
-        lastTradePrice: patch.lastTradePrice,
-        fallbackPrice: market.yesPrice,
-      })
-    : market.yesPrice;
+  const yesPrice = resolveReliableBinaryPrice({
+    mid: patch.mid,
+    bestBid: patch.bestBid,
+    bestAsk: patch.bestAsk,
+    lastTradePrice: patch.lastTradePrice,
+    fallbackPrice: market.yesPrice,
+  });
   const noPrice = isBinary ? Math.max(0, Math.min(1, 1 - yesPrice)) : market.noPrice;
-  const chance = isBinary ? roundPercentValue(yesPrice) : market.chance;
+  const chance = roundPercentValue(yesPrice);
   const nextRolling24h =
     typeof patch.rolling24hVolume === "number" && Number.isFinite(patch.rolling24hVolume)
       ? Math.max(0, patch.rolling24hVolume)
@@ -4428,10 +4416,6 @@ export default function HomePage({
     window.open(target, "_blank", "noopener,noreferrer");
   }, []);
 
-  const handleOpenCreateMarket = useCallback(() => {
-    const target = process.env.NEXT_PUBLIC_POLYMARKET_CREATE_URL || "https://polymarket.com";
-    openExternalWindow(target);
-  }, [openExternalWindow]);
 
   const handleSetBookmarked = useCallback(
     async (marketId: string, bookmarked: boolean) => {
@@ -4797,7 +4781,7 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-            onCreateMarket={handleOpenCreateMarket}
+
             onChange={(view) => {
               // Bottom nav always navigates back to the main shell
               setMarketBetIntent(null);
@@ -4970,7 +4954,7 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-            onCreateMarket={handleOpenCreateMarket}
+
             onChange={(view) => {
               setMarketBetIntent(null);
               goToView(view);
