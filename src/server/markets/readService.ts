@@ -1993,11 +1993,6 @@ export const getCanonicalPriceCandles = async (params: {
   const interval = params.interval ?? "1h";
   const limit = Math.max(1, Math.min(params.limit ?? 200, 20_000));
   const range = params.range ?? null;
-  const market = await getCanonicalMarket({
-    supabaseService,
-    marketId: params.marketId,
-    provider: params.provider ?? null,
-  });
   const candlesCacheKey = buildMarketCandlesCacheKey({
     provider: ref.provider,
     providerMarketId: ref.providerMarketId,
@@ -2008,27 +2003,34 @@ export const getCanonicalPriceCandles = async (params: {
   const cachedCandles = await readUpstashCache(candlesCacheKey, priceCandleOutputArray);
   if (cachedCandles) return cachedCandles;
 
-  // Fetch a modest buffer over the display limit to allow for aggregation gaps.
-  // Previous multiplier of 90x was excessive (fetching 15K rows for 168 display).
+  // Resolve market ref ID and type with a lightweight catalog query instead of
+  // full getCanonicalMarket (avoids outcomes + live + compare group joins).
+  const { data: catalogRef } = await (supabaseService as any)
+    .from("market_catalog")
+    .select("id, market_type")
+    .eq("provider", ref.provider)
+    .eq("provider_market_id", ref.providerMarketId)
+    .limit(1)
+    .maybeSingle();
+  const marketRefId: string | null = catalogRef?.id ?? null;
+  const isMultiChoice = catalogRef?.market_type === "multi_choice";
+
   const rawLimit = range === "Y"
     ? 20_000
     : Math.min(
         20_000,
-        Math.max(
-          interval === "1h" ? limit * 4 : limit * 4,
-          interval === "1h" ? 2_000 : 1_000
-        )
+        Math.max(limit * 4, interval === "1h" ? 2_000 : 1_000)
       );
 
   let rows: PriceCandleOutput[] = [];
-  if (market?.marketRefId) {
-    if (market.marketType === "multi_choice" && Array.isArray(market.outcomes) && market.outcomes.length > 2) {
-      rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, null);
+  if (marketRefId) {
+    if (isMultiChoice) {
+      rows = await listCanonicalCandles(supabaseService, marketRefId, rawLimit, null);
       if (!rows.some((row) => Boolean(row.outcomeId))) {
-        rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, "__market__");
+        rows = await listCanonicalCandles(supabaseService, marketRefId, rawLimit, "__market__");
       }
     } else {
-      rows = await listCanonicalCandles(supabaseService, market.marketRefId, rawLimit, "__market__");
+      rows = await listCanonicalCandles(supabaseService, marketRefId, rawLimit, "__market__");
     }
   }
 

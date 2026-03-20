@@ -154,6 +154,15 @@ const inferProviderFilterFromMarketId = (marketId: string): ProviderFilter => {
   return "all";
 };
 
+/** Race a promise against a timeout; returns fallback on timeout. */
+const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+
+const MARKET_DETAIL_TIMEOUT_MS = 3_000;
+
 const getMarketDetailData = async (
   market: MarketApiRow,
   lang: "RU" | "EN"
@@ -165,38 +174,53 @@ const getMarketDetailData = async (
 }> => {
   const chartRequest = getChartRangeRequest("1M");
   const caller = await createPublicCaller();
-  const [candlesResult, publicTradesResult, liveActivityResult, commentsResult] = await Promise.allSettled([
-    getCanonicalPriceCandles({
-      marketId: market.id,
-      provider: market.provider,
-      interval: chartRequest.interval,
-      limit: chartRequest.limit,
-      range: "1M",
-    }) as Promise<PriceCandle[]>,
-    caller.market.getPublicTrades({
-      marketId: market.id,
-      provider: market.provider,
-      limit: 50,
-    }) as Promise<PublicTrade[]>,
-    caller.market.getLiveActivity({
-      marketId: market.id,
-      provider: market.provider,
-      limit: 80,
-    }) as Promise<LiveActivityTick[]>,
-    caller.market.getMarketComments({
-      marketId: market.id,
-      limit: 50,
-    }),
+
+  // All fetches run in parallel with a hard timeout so the page never blocks.
+  const [candles, publicTrades, liveActivity, comments] = await Promise.all([
+    withTimeout(
+      getCanonicalPriceCandles({
+        marketId: market.id,
+        provider: market.provider,
+        interval: chartRequest.interval,
+        limit: chartRequest.limit,
+        range: "1M",
+      }).catch(() => [] as PriceCandle[]),
+      MARKET_DETAIL_TIMEOUT_MS,
+      [] as PriceCandle[]
+    ),
+    withTimeout(
+      caller.market.getPublicTrades({
+        marketId: market.id,
+        provider: market.provider,
+        limit: 50,
+      }).catch(() => [] as PublicTrade[]),
+      MARKET_DETAIL_TIMEOUT_MS,
+      [] as PublicTrade[]
+    ),
+    withTimeout(
+      caller.market.getLiveActivity({
+        marketId: market.id,
+        provider: market.provider,
+        limit: 80,
+      }).catch(() => [] as LiveActivityTick[]),
+      MARKET_DETAIL_TIMEOUT_MS,
+      [] as LiveActivityTick[]
+    ),
+    withTimeout(
+      caller.market.getMarketComments({
+        marketId: market.id,
+        limit: 50,
+      }).catch(() => []),
+      MARKET_DETAIL_TIMEOUT_MS,
+      []
+    ),
   ]);
 
   return {
-    initialMarketCandles: candlesResult.status === "fulfilled" ? candlesResult.value : [],
-    initialMarketPublicTrades: publicTradesResult.status === "fulfilled" ? publicTradesResult.value : [],
-    initialMarketLiveActivityTicks: liveActivityResult.status === "fulfilled" ? liveActivityResult.value : [],
-    initialMarketComments:
-      commentsResult.status === "fulfilled"
-        ? commentsResult.value.map((comment) => mapCommentToUi(comment, lang))
-        : [],
+    initialMarketCandles: candles as PriceCandle[],
+    initialMarketPublicTrades: publicTrades as PublicTrade[],
+    initialMarketLiveActivityTicks: liveActivity as LiveActivityTick[],
+    initialMarketComments: (comments as any[]).map((comment) => mapCommentToUi(comment, lang)),
   };
 };
 

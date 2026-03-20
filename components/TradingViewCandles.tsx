@@ -285,19 +285,19 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
 
     if (!areaSeriesRef.current) {
       areaSeriesRef.current = chart.addSeries(AreaSeries, {
-        lineWidth: 3,
+        lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: true,
         lineColor: props.color ?? 'rgba(190,255,29,1)',
-        topColor: 'rgba(190,255,29,0.28)',
-        bottomColor: 'rgba(190,255,29,0.02)',
+        topColor: 'rgba(0,0,0,0)',
+        bottomColor: 'rgba(0,0,0,0)',
         crosshairMarkerVisible: true,
       });
     }
     areaSeriesRef.current.applyOptions({
       lineColor: props.color ?? 'rgba(190,255,29,1)',
-      topColor: 'rgba(190,255,29,0.28)',
-      bottomColor: 'rgba(190,255,29,0.02)',
+      topColor: 'transparent',
+      bottomColor: 'transparent',
     });
     areaSeriesRef.current.setData(normalizedArea.area);
 
@@ -378,14 +378,8 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   }, [normalizedLines, props.mode]);
 
   return (
-    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-[26px] bg-black p-px"
-      style={{
-        background: 'linear-gradient(180deg, rgba(163,230,53,0.25) 0%, rgba(39,39,42,0.4) 40%, rgba(39,39,42,0.4) 60%, rgba(244,63,164,0.25) 100%)',
-      }}
-    >
-      <div className="relative h-full w-full overflow-hidden rounded-[25px] bg-black">
-        <div ref={containerRef} className="h-full w-full" />
-      </div>
+    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-2xl border border-zinc-800/60 bg-black">
+      <div ref={containerRef} className="h-full w-full" />
     </div>
   );
 };
