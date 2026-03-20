@@ -42,8 +42,8 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
   const volumeBase = market.volume;
   const categoryLabel =
     lang === "RU"
-      ? market.categoryLabelRu ?? market.categoryLabelEn
-      : market.categoryLabelEn ?? market.categoryLabelRu;
+      ? (market.primaryTagLabelRu ?? market.categoryLabelRu ?? market.categoryLabelEn)
+      : (market.primaryTagLabelEn ?? market.categoryLabelEn ?? market.categoryLabelRu);
   const providerAlt = market.provider === "limitless" ? "Limitless" : "Polymarket";
   const providerLogoSrc = market.provider === "limitless" ? "/venues/limitless.svg" : "/venues/polymarket.svg";
   const highlightClass =

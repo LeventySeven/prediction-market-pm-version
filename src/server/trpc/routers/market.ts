@@ -30,6 +30,8 @@ import {
   type PublicTradeOutput,
   enabledProvidersOutput,
   generateMarketContextInput,
+  listTagFacetsInput,
+  tagFacetOutputArray,
   getLiveActivityInput,
   getMarketCommentsInput,
   getMarketInput,
@@ -66,6 +68,7 @@ import {
   toggleMarketCommentLikeOutput,
 } from "@/src/lib/validations/market";
 import { generateMarketContext } from "../../ai/marketContextAgent";
+import { TAXONOMY_BY_ID, isValidTaxonomyTag, type TaxonomyTagId } from "@/src/lib/taxonomy";
 import {
   type PolymarketMarket,
   getPolymarketMarketById,
@@ -131,6 +134,11 @@ const ENABLE_CATALOG_SYNC_ON_READ =
   (process.env.ENABLE_CATALOG_SYNC_ON_READ || "").trim().toLowerCase() === "true";
 
 const CATEGORY_ROWS_CACHE_TTL_MS = Math.max(10_000, Number(process.env.MARKET_CATEGORIES_CACHE_TTL_MS ?? 60_000));
+const TAG_FACETS_CACHE_TTL_MS = Math.max(10_000, Number(process.env.TAG_FACETS_CACHE_TTL_MS ?? 120_000));
+const cachedTagFacetsByProvider = new Map<
+  string,
+  { expiresAt: number; rows: Array<{ tagId: string; labelRu: string; labelEn: string; count: number }> }
+>();
 const cachedCategoryRowsByProviderKey = new Map<
   string,
   { expiresAt: number; rows: MarketCategoryOutput[] }
@@ -2042,6 +2050,63 @@ export const marketRouter = router({
       return rows;
     }),
 
+  listTagFacets: publicProcedure
+    .input(listTagFacetsInput)
+    .output(tagFacetOutputArray)
+    .query(async ({ ctx, input }) => {
+      const providerFilter = input?.providerFilter ?? "all";
+
+      // Check cache first
+      const now = Date.now();
+      const cached = cachedTagFacetsByProvider.get(providerFilter);
+      if (cached && cached.expiresAt > now) return cached.rows;
+
+      // Query market_ai_classifications joined with market_catalog
+      // to get counts of primary_tag for open markets, scoped by provider.
+      let query = (ctx.supabaseService as any)
+        .from("market_ai_classifications")
+        .select("primary_tag, market_catalog!inner(state, provider)")
+        .eq("market_catalog.state", "open");
+
+      if (providerFilter !== "all") {
+        query = query.eq("market_catalog.provider", providerFilter);
+      }
+
+      const { data, error } = await query.limit(5000);
+
+      if (error) {
+        console.warn("[listTagFacets] query error:", error.message);
+        return cached?.rows ?? [];
+      }
+
+      // Count by tag
+      const counts = new Map<string, number>();
+      for (const row of (data ?? []) as Array<{ primary_tag: string }>) {
+        const tag = row.primary_tag;
+        if (!isValidTaxonomyTag(tag)) continue;
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+
+      // Build facets from taxonomy, filtering to non-empty
+      const facets: Array<{ tagId: string; labelRu: string; labelEn: string; count: number }> = [];
+      for (const [tagId, count] of counts.entries()) {
+        const meta = TAXONOMY_BY_ID.get(tagId as TaxonomyTagId);
+        if (!meta) continue;
+        facets.push({ tagId: meta.id, labelRu: meta.labelRu, labelEn: meta.labelEn, count });
+      }
+
+      // Sort by count descending, then by taxonomy order
+      facets.sort((a, b) => {
+        const countDiff = b.count - a.count;
+        if (countDiff !== 0) return countDiff;
+        return (TAXONOMY_BY_ID.get(a.tagId as TaxonomyTagId)?.order ?? 99) -
+               (TAXONOMY_BY_ID.get(b.tagId as TaxonomyTagId)?.order ?? 99);
+      });
+
+      cachedTagFacetsByProvider.set(providerFilter, { rows: facets, expiresAt: now + TAG_FACETS_CACHE_TTL_MS });
+      return facets;
+    }),
+
   listEnabledProviders: publicProcedure
     .output(enabledProvidersOutput)
     .query(() => {
@@ -2064,22 +2129,50 @@ export const marketRouter = router({
         Math.min(MAX_MARKET_LIST_PAGE_SIZE, Number(input?.pageSize ?? DEFAULT_MARKET_LIST_PAGE_SIZE))
       );
       const sortBy = input?.sortBy ?? "newest";
+      const tagId = input?.tagId?.trim() || null;
       const selectedProviders = parseProviderSelection({
         providers: input?.providers,
         providerFilter: input?.providerFilter,
       });
+
+      // If tagId is provided, pre-fetch matching market IDs from market_ai_tags
+      // so we can filter server-side before pagination.
+      let tagMarketIds: Set<string> | null = null;
+      if (tagId && isValidTaxonomyTag(tagId)) {
+        const { data: tagRows } = await (ctx.supabaseService as any)
+          .from("market_ai_tags")
+          .select("market_id")
+          .eq("tag", tagId)
+          .limit(5000);
+        tagMarketIds = new Set(
+          ((tagRows ?? []) as Array<{ market_id: string }>).map((r) => String(r.market_id).trim()).filter(Boolean)
+        );
+      }
+
       try {
         try {
           const result = await listCanonicalMarkets({
             supabaseService: ctx.supabaseService,
             onlyOpen,
-            page,
-            pageSize,
+            page: tagMarketIds ? 1 : page,
+            pageSize: tagMarketIds ? Math.max(pageSize * 3, 200) : pageSize,
             sortBy,
             catalogBucket: input?.catalogBucket ?? "main",
             providers: input?.providers,
             providerFilter: input?.providerFilter,
           });
+
+          // Apply tag filter if requested
+          if (tagMarketIds && tagMarketIds.size > 0) {
+            const filtered = result.items.filter((m) => tagMarketIds!.has(m.id));
+            const offset = (page - 1) * pageSize;
+            return {
+              ...result,
+              items: filtered.slice(offset, offset + pageSize),
+              hasMore: filtered.length > offset + pageSize,
+            };
+          }
+
           // Live provider fallback is disabled by default; only enabled via
           // ENABLE_CATALOG_SYNC_ON_READ for ops/debug recovery scenarios.
           if (ENABLE_CATALOG_SYNC_ON_READ) {

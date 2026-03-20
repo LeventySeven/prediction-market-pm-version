@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiVersionV1Schema } from "./common";
+import { taxonomyTagIdSchema } from "../taxonomy";
 
 export const communityOutput = z.object({
   id: z.string(),
@@ -40,7 +41,7 @@ export const createCommunityInput = z.object({
   description: z.string().max(500).nullable().optional(),
   avatarUrl: z.string().url().nullable().optional(),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Must be hex color").optional(),
-  tags: z.array(z.string().min(1).max(32)).min(1).max(10),
+  tags: z.array(taxonomyTagIdSchema).min(1).max(10),
 });
 
 export const updateCommunityInput = z.object({
@@ -49,7 +50,7 @@ export const updateCommunityInput = z.object({
   description: z.string().max(500).nullable().optional(),
   avatarUrl: z.string().url().nullable().optional(),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  tags: z.array(z.string().min(1).max(32)).min(1).max(10).optional(),
+  tags: z.array(taxonomyTagIdSchema).min(1).max(10).optional(),
 });
 
 export const getCommunityInput = z.object({

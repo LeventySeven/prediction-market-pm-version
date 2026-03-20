@@ -2462,38 +2462,55 @@ export default function HomePage({
     showMarketPulseBoard,
   ]);
 
+  // Fetch tag facets from server for catalog chips
   useEffect(() => {
-    const byId = new Map<string, MarketCategoryStrict>();
-    for (const market of mergedMarkets) {
-      const provider = market.provider ?? "polymarket";
-      if (activeProviderFilter !== "all" && provider !== activeProviderFilter) continue;
-      const categoryId = String(market.categoryId ?? "").trim();
-      if (!categoryId) continue;
-      const labelRu = String(market.categoryLabelRu ?? market.categoryLabelEn ?? categoryId).trim();
-      const labelEn = String(market.categoryLabelEn ?? market.categoryLabelRu ?? categoryId).trim();
-      if (byId.has(categoryId)) continue;
-      byId.set(categoryId, {
-        id: categoryId,
-        labelRu: labelRu || categoryId,
-        labelEn: labelEn || labelRu || categoryId,
-      });
-    }
-    const nextRows = Array.from(byId.values()).sort((a, b) =>
-      a.labelEn.localeCompare(b.labelEn, "en", { sensitivity: "base" })
-    );
-    setMarketCategories((prev) => {
-      if (prev.length === nextRows.length && prev.every((row, idx) => {
-        const next = nextRows[idx];
-        return next && row.id === next.id && row.labelRu === next.labelRu && row.labelEn === next.labelEn;
-      })) {
-        return prev;
+    let cancelled = false;
+    (async () => {
+      try {
+        const facets = await trpcClient.market.listTagFacets.query({
+          providerFilter: activeProviderFilter === "all" ? undefined : activeProviderFilter,
+        });
+        if (cancelled) return;
+        const nextRows: MarketCategoryStrict[] = (facets as Array<{ tagId: string; labelRu: string; labelEn: string; count: number }>).map((f) => ({
+          id: f.tagId,
+          labelRu: f.labelRu,
+          labelEn: f.labelEn,
+        }));
+        setMarketCategories((prev) => {
+          if (prev.length === nextRows.length && prev.every((row, idx) => {
+            const next = nextRows[idx];
+            return next && row.id === next.id && row.labelRu === next.labelRu && row.labelEn === next.labelEn;
+          })) {
+            return prev;
+          }
+          return nextRows;
+        });
+        setActiveCategoryId((prev) => {
+          if (prev === "all") return prev;
+          const ids = new Set(nextRows.map((r) => r.id));
+          return ids.has(prev) ? prev : "all";
+        });
+      } catch (err) {
+        // Fallback: derive categories from loaded markets (legacy behavior)
+        if (cancelled) return;
+        const byId = new Map<string, MarketCategoryStrict>();
+        for (const market of mergedMarkets) {
+          const provider = market.provider ?? "polymarket";
+          if (activeProviderFilter !== "all" && provider !== activeProviderFilter) continue;
+          const tagId = String(market.primaryTagId ?? market.categoryId ?? "").trim();
+          if (!tagId) continue;
+          const labelRu = String(market.primaryTagLabelRu ?? market.categoryLabelRu ?? market.categoryLabelEn ?? tagId).trim();
+          const labelEn = String(market.primaryTagLabelEn ?? market.categoryLabelEn ?? market.categoryLabelRu ?? tagId).trim();
+          if (byId.has(tagId)) continue;
+          byId.set(tagId, { id: tagId, labelRu, labelEn });
+        }
+        const nextRows = Array.from(byId.values()).sort((a, b) =>
+          a.labelEn.localeCompare(b.labelEn, "en", { sensitivity: "base" })
+        );
+        setMarketCategories(nextRows);
       }
-      return nextRows;
-    });
-    setActiveCategoryId((prev) => {
-      if (prev === "all") return prev;
-      return byId.has(prev) ? prev : "all";
-    });
+    })();
+    return () => { cancelled = true; };
   }, [activeProviderFilter, mergedMarkets]);
 
   useEffect(() => {
@@ -3231,7 +3248,9 @@ export default function HomePage({
         const matchesProvider =
           activeProviderFilter === "all" || (market.provider ?? "polymarket") === activeProviderFilter;
         const matchesCategory =
-          activeCategoryId === "all" || (market.categoryId ?? "") === activeCategoryId;
+          activeCategoryId === "all" ||
+          (market.primaryTagId ?? market.categoryId ?? "") === activeCategoryId ||
+          (market.aiTags ?? []).some((t) => t.tag === activeCategoryId);
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
         const semanticMatch = Boolean(semanticSearchScores[market.id]);
         const normalizedSearch = deferredSearchQuery.trim().toLowerCase();

@@ -39,6 +39,10 @@ export type MarketApiRow = {
   categoryId?: string | null;
   categoryLabelRu?: string | null;
   categoryLabelEn?: string | null;
+  primaryTagId?: string | null;
+  primaryTagLabelRu?: string | null;
+  primaryTagLabelEn?: string | null;
+  aiTags?: Array<{ tag: string; confidence: number }>;
   settlementAsset?: string | null;
   feeBps?: number | null;
   liquidityB?: number | null;

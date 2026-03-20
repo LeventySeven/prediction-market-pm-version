@@ -1,5 +1,5 @@
-
-export type Category = 'ALL' | 'POLITICS' | 'CRYPTO' | 'CELEBS' | 'SCIENCE' | 'SOCIAL' | 'MUSIC' | 'ELECTIONS' | 'WORLD';
+/** @deprecated Use taxonomy tag ids from src/lib/taxonomy.ts instead */
+export type Category = string;
 
 export interface HistoryPoint {
   date: string;
@@ -93,6 +93,10 @@ export interface Market {
   categoryId: string | null;
   categoryLabelRu: string | null;
   categoryLabelEn: string | null;
+  primaryTagId?: string | null;
+  primaryTagLabelRu?: string | null;
+  primaryTagLabelEn?: string | null;
+  aiTags?: Array<{ tag: string; confidence: number }>;
   imageUrl: string;
   volume: string;
   volumeRaw?: number | null;

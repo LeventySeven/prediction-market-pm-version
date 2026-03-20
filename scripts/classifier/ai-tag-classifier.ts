@@ -2,6 +2,12 @@ import { createClient } from "@supabase/supabase-js";
 import { createServer } from "node:http";
 import OpenAI from "openai";
 import type { Database } from "../../src/types/database";
+import {
+  TAXONOMY_TAG_IDS,
+  CLASSIFIER_OUTPUT_SCHEMA,
+  classifierOutputSchema,
+  type TaxonomyTagId,
+} from "../../src/lib/taxonomy";
 
 // ---------------------------------------------------------------------------
 // Environment & configuration
@@ -22,77 +28,22 @@ if (!OPENAI_API_KEY) {
 const BATCH_SIZE = Math.max(1, Math.min(200, Number(process.env.CLASSIFIER_BATCH_SIZE ?? 50)));
 const POLL_INTERVAL_MS = Math.max(5_000, Number(process.env.CLASSIFIER_POLL_INTERVAL_MS ?? 30_000));
 const HEALTH_PORT = Math.max(0, Number(process.env.CLASSIFIER_HEALTH_PORT ?? 8082));
-const CONFIDENCE_THRESHOLD = Math.max(0, Math.min(1, Number(process.env.CLASSIFIER_CONFIDENCE_THRESHOLD ?? 0.5)));
-const MODEL_NAME = (process.env.CLASSIFIER_MODEL ?? "gpt-5-nano").trim();
-const PROMPT_VERSION = (process.env.CLASSIFIER_PROMPT_VERSION ?? "v2").trim();
-const CLASSIFIER_VERSION = "ai-tag-classifier-v2026-03-15b";
+const MODEL_NAME = (process.env.CLASSIFIER_MODEL ?? "gpt-4.1-mini").trim();
+const PROMPT_VERSION = (process.env.CLASSIFIER_PROMPT_VERSION ?? "v3").trim();
+const CLASSIFIER_VERSION = "ai-tag-classifier-v2026-03-20";
 
 // ---------------------------------------------------------------------------
 // Clients
 // ---------------------------------------------------------------------------
 
 const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
+  auth: { autoRefreshToken: false, persistSession: false },
 });
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ---------------------------------------------------------------------------
-// Taxonomy
-// ---------------------------------------------------------------------------
-
-const TAXONOMY = [
-  "crypto",
-  "technology",
-  "ai",
-  "macroeconomics",
-  "business",
-  "finance",
-  "stocks",
-  "politics",
-  "geopolitics",
-  "elections",
-  "regulation",
-  "science",
-  "weather",
-  "sports",
-  "entertainment",
-  "culture",
-  "health",
-  "energy",
-  "legal",
-  "world",
-] as const;
-
-type TaxonomyTag = (typeof TAXONOMY)[number];
-
-// ---------------------------------------------------------------------------
-// Fingerprint helper – builds a lightweight fingerprint from catalog fields
-// so we can detect when market data has changed since last classification.
-// ---------------------------------------------------------------------------
-
-const buildClassifierFingerprint = (market: CatalogRow, outcomes: OutcomeRow[]): string => {
-  const outcomesPart = outcomes
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .map((o) => `${o.outcome_key}|${o.title}|${o.sort_order}`)
-    .join(";");
-
-  return [
-    market.title,
-    market.description ?? "",
-    market.category ?? "",
-    market.source_url ?? "",
-    market.provider,
-    market.state,
-    outcomesPart,
-  ].join("||");
-};
-
-// ---------------------------------------------------------------------------
-// Types for DB rows
+// Fingerprint – detect when market data has changed since last classification
 // ---------------------------------------------------------------------------
 
 type CatalogRow = {
@@ -112,47 +63,44 @@ type OutcomeRow = {
   sort_order: number;
 };
 
-type ExistingTag = {
-  market_id: string;
-  snapshot_fingerprint: string;
+const buildFingerprint = (market: CatalogRow, outcomes: OutcomeRow[]): string => {
+  const outcomesPart = outcomes
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map((o) => `${o.outcome_key}|${o.title}|${o.sort_order}`)
+    .join(";");
+  return [
+    market.title,
+    market.description ?? "",
+    market.category ?? "",
+    market.source_url ?? "",
+    market.provider,
+    market.state,
+    outcomesPart,
+  ].join("||");
 };
 
 // ---------------------------------------------------------------------------
 // Classification prompt
 // ---------------------------------------------------------------------------
 
-const buildClassificationPrompt = (
-  market: CatalogRow,
-  outcomes: OutcomeRow[]
-): string => {
+const buildPrompt = (market: CatalogRow, outcomes: OutcomeRow[]): string => {
   const outcomesList = outcomes.map((o) => o.title).join(", ");
-  return `You are a prediction-market classifier. Given the market details below, assign confidence scores (0.0–1.0) for each category in the taxonomy.
+  return `You are a prediction-market classifier. Given the market details below, assign a primary tag and up to 4 tags with confidence scores (0.0–1.0).
 
-Taxonomy: ${TAXONOMY.join(", ")}
+Taxonomy: ${TAXONOMY_TAG_IDS.join(", ")}
 
 Market:
 - Title: ${market.title}
 - Description: ${market.description ?? "(none)"}
 - Native category: ${market.category ?? "(none)"}
 - Outcomes: ${outcomesList || "(none)"}
-- Source URL: ${market.source_url ?? "(none)"}
 - Provider: ${market.provider}
 
-Return a JSON object mapping each taxonomy tag to a confidence score between 0.0 and 1.0. Only include tags where the confidence is meaningfully above zero.`;
-};
-
-const RESPONSE_SCHEMA = {
-  type: "json_schema" as const,
-  name: "market_tags",
-  strict: true,
-  schema: {
-    type: "object",
-    properties: Object.fromEntries(
-      TAXONOMY.map((tag) => [tag, { type: "number" }])
-    ),
-    required: [...TAXONOMY],
-    additionalProperties: false,
-  },
+Rules:
+- primaryTag must be the single best-fit tag for this market.
+- tags array: 1 to 4 entries, each with a tag and confidence (0.0-1.0).
+- The primaryTag MUST appear in the tags array with the highest confidence.
+- Only include tags where confidence is meaningfully above zero.`;
 };
 
 // ---------------------------------------------------------------------------
@@ -170,7 +118,7 @@ let lastError: string | null = null;
 // ---------------------------------------------------------------------------
 
 const classifyBatch = async (): Promise<number> => {
-  // 1. Fetch a batch of markets from market_catalog
+  // 1. Fetch batch of open markets
   const { data: markets, error: marketsError } = await supabase
     .from("market_catalog" as any)
     .select("id, title, description, category, source_url, provider, state")
@@ -178,145 +126,125 @@ const classifyBatch = async (): Promise<number> => {
     .order("market_created_at", { ascending: false })
     .limit(BATCH_SIZE);
 
-  if (marketsError) {
-    throw new Error(`Failed to fetch markets: ${marketsError.message}`);
-  }
+  if (marketsError) throw new Error(`Failed to fetch markets: ${marketsError.message}`);
 
   const catalogRows = (markets ?? []) as unknown as CatalogRow[];
   if (catalogRows.length === 0) {
-    console.log("[ai-tag-classifier] no markets to classify");
+    console.log("[classifier] no markets to classify");
     return 0;
   }
 
   const marketIds = catalogRows.map((m) => m.id);
 
-  // 2. Fetch outcomes for these markets
-  const { data: outcomesRaw, error: outcomesError } = await supabase
-    .from("market_outcomes" as any)
-    .select("market_id, outcome_key, title, sort_order")
-    .in("market_id", marketIds);
+  // 2+3. Fetch outcomes and existing classifications in parallel
+  const [outcomesRes, existingRes] = await Promise.all([
+    supabase
+      .from("market_outcomes" as any)
+      .select("market_id, outcome_key, title, sort_order")
+      .in("market_id", marketIds),
+    (supabase as any)
+      .from("market_ai_classifications")
+      .select("market_id, snapshot_fingerprint")
+      .in("market_id", marketIds)
+      .eq("prompt_version", PROMPT_VERSION),
+  ]);
 
-  if (outcomesError) {
-    throw new Error(`Failed to fetch outcomes: ${outcomesError.message}`);
-  }
+  if (outcomesRes.error) throw new Error(`Failed to fetch outcomes: ${outcomesRes.error.message}`);
+  if (existingRes.error) throw new Error(`Failed to fetch classifications: ${existingRes.error.message}`);
 
   const outcomesByMarket = new Map<string, OutcomeRow[]>();
-  for (const row of (outcomesRaw ?? []) as unknown as OutcomeRow[]) {
-    const existing = outcomesByMarket.get(row.market_id) ?? [];
-    existing.push(row);
-    outcomesByMarket.set(row.market_id, existing);
+  for (const row of (outcomesRes.data ?? []) as unknown as OutcomeRow[]) {
+    const arr = outcomesByMarket.get(row.market_id) ?? [];
+    arr.push(row);
+    outcomesByMarket.set(row.market_id, arr);
   }
 
-  // 3. Fetch existing tags for these markets to check fingerprints
-  const { data: existingTagsRaw, error: existingTagsError } = await supabase
-    .from("market_ai_tags")
-    .select("market_id, snapshot_fingerprint")
-    .in("market_id", marketIds)
-    .eq("prompt_version", PROMPT_VERSION);
-
-  if (existingTagsError) {
-    throw new Error(`Failed to fetch existing tags: ${existingTagsError.message}`);
+  const existingFp = new Map<string, string>();
+  for (const row of (existingRes.data ?? []) as Array<{ market_id: string; snapshot_fingerprint: string }>) {
+    existingFp.set(row.market_id, row.snapshot_fingerprint);
   }
 
-  const existingFingerprintsByMarket = new Map<string, string>();
-  for (const row of (existingTagsRaw ?? []) as ExistingTag[]) {
-    existingFingerprintsByMarket.set(row.market_id, row.snapshot_fingerprint);
-  }
-
-  // 4. Filter to markets that need (re-)classification
-  const marketsToClassify: Array<{
-    market: CatalogRow;
-    outcomes: OutcomeRow[];
-    fingerprint: string;
-  }> = [];
-
+  // 4. Filter to markets needing (re-)classification
+  const toClassify: Array<{ market: CatalogRow; outcomes: OutcomeRow[]; fingerprint: string }> = [];
   for (const market of catalogRows) {
     const outcomes = outcomesByMarket.get(market.id) ?? [];
-    const fingerprint = buildClassifierFingerprint(market, outcomes);
-    const existingFp = existingFingerprintsByMarket.get(market.id);
-
-    if (existingFp === fingerprint) {
-      continue; // already classified with same data
-    }
-
-    marketsToClassify.push({ market, outcomes, fingerprint });
+    const fp = buildFingerprint(market, outcomes);
+    if (existingFp.get(market.id) === fp) continue;
+    toClassify.push({ market, outcomes, fingerprint: fp });
   }
 
-  if (marketsToClassify.length === 0) {
-    console.log("[ai-tag-classifier] all markets in batch already up-to-date");
+  if (toClassify.length === 0) {
+    console.log("[classifier] all markets up-to-date");
     return 0;
   }
 
-  console.log(
-    `[ai-tag-classifier] classifying ${marketsToClassify.length} markets out of ${catalogRows.length} fetched`
-  );
+  console.log(`[classifier] classifying ${toClassify.length}/${catalogRows.length} markets`);
 
-  // 5. Classify each market via OpenAI
+  // 5. Classify each market
   let classified = 0;
 
-  for (const { market, outcomes, fingerprint } of marketsToClassify) {
+  for (const { market, outcomes, fingerprint } of toClassify) {
     try {
-      const prompt = buildClassificationPrompt(market, outcomes);
-
       const response = await openai.responses.create({
         model: MODEL_NAME,
-        input: [{ role: "user", content: prompt }],
-        text: {
-          format: RESPONSE_SCHEMA,
-        },
+        input: [{ role: "user", content: buildPrompt(market, outcomes) }],
+        text: { format: CLASSIFIER_OUTPUT_SCHEMA },
       });
 
       const outputText = response.output_text;
       if (!outputText) {
-        console.warn(`[ai-tag-classifier] empty response for market ${market.id}`);
+        console.warn(`[classifier] empty response for ${market.id}`);
         continue;
       }
 
-      const scores: Record<string, number> = JSON.parse(outputText);
-
-      // 6. Filter by confidence threshold and build insert rows
-      const tagRows: Array<
-        Database["public"]["Tables"]["market_ai_tags"]["Insert"]
-      > = [];
-
-      for (const tag of TAXONOMY) {
-        const confidence = scores[tag];
-        if (typeof confidence !== "number" || !Number.isFinite(confidence)) continue;
-        if (confidence < CONFIDENCE_THRESHOLD) continue;
-
-        tagRows.push({
-          market_id: market.id,
-          tag,
-          confidence,
-          model: MODEL_NAME,
-          prompt_version: PROMPT_VERSION,
-          snapshot_fingerprint: fingerprint,
-        });
-      }
-
-      if (tagRows.length === 0) {
-        console.log(
-          `[ai-tag-classifier] no tags above threshold for market ${market.id}`
-        );
+      const raw = JSON.parse(outputText);
+      // Clamp tags to 1..4 since strict mode doesn't guarantee minItems/maxItems
+      if (Array.isArray(raw.tags)) raw.tags = raw.tags.slice(0, 4);
+      const parsed = classifierOutputSchema.safeParse(raw);
+      if (!parsed.success) {
+        console.warn(`[classifier] invalid output for ${market.id}: ${parsed.error.message}`);
         continue;
       }
 
-      // 7. Delete old tags for this market+prompt_version, then insert new
-      await supabase
-        .from("market_ai_tags")
-        .delete()
-        .eq("market_id", market.id)
-        .eq("prompt_version", PROMPT_VERSION);
+      let { primaryTag, tags } = parsed.data;
+      // Ensure primaryTag is in tags array with highest confidence
+      if (!tags.some((t) => t.tag === primaryTag)) {
+        tags = [{ tag: primaryTag, confidence: 1.0 }, ...tags].slice(0, 4);
+      }
+      const now = new Date().toISOString();
 
-      const { error: insertError } = await supabase
-        .from("market_ai_tags")
-        .insert(tagRows);
+      // 6. Upsert classification + replace tags in parallel
+      // Delete old tags first, then upsert classification + insert new tags together
+      await supabase.from("market_ai_tags").delete().eq("market_id", market.id);
+
+      const tagRows: Array<Database["public"]["Tables"]["market_ai_tags"]["Insert"]> = tags.map((t) => ({
+        market_id: market.id,
+        tag: t.tag,
+        confidence: t.confidence,
+        model: MODEL_NAME,
+        prompt_version: PROMPT_VERSION,
+        snapshot_fingerprint: fingerprint,
+      }));
+
+      const [classResult, { error: insertError }] = await Promise.all([
+        (supabase as any)
+          .from("market_ai_classifications")
+          .upsert(
+            {
+              market_id: market.id,
+              primary_tag: primaryTag,
+              model: MODEL_NAME,
+              prompt_version: PROMPT_VERSION,
+              snapshot_fingerprint: fingerprint,
+              classified_at: now,
+            },
+            { onConflict: "market_id" }
+          ),
+        supabase.from("market_ai_tags").insert(tagRows),
+      ]);
 
       if (insertError) {
-        console.error(
-          `[ai-tag-classifier] failed to insert tags for market ${market.id}:`,
-          insertError.message
-        );
+        console.error(`[classifier] insert tags failed for ${market.id}: ${insertError.message}`);
         totalErrors += 1;
         lastError = insertError.message;
         continue;
@@ -327,16 +255,13 @@ const classifyBatch = async (): Promise<number> => {
       lastClassifiedAt = Date.now();
 
       console.log(
-        `[ai-tag-classifier] classified market ${market.id}: ${tagRows.map((r) => `${r.tag}(${(r.confidence as number).toFixed(2)})`).join(", ")}`
+        `[classifier] ${market.id}: primary=${primaryTag} tags=${tags.map((t) => `${t.tag}(${t.confidence.toFixed(2)})`).join(", ")}`
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[ai-tag-classifier] error classifying market ${market.id}:`,
-        message
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[classifier] error ${market.id}: ${msg}`);
       totalErrors += 1;
-      lastError = message;
+      lastError = msg;
     }
   }
 
@@ -351,23 +276,20 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
 
 const runLoop = async () => {
   console.log(
-    `[ai-tag-classifier] starting ${CLASSIFIER_VERSION} model=${MODEL_NAME} prompt=${PROMPT_VERSION} batch=${BATCH_SIZE} interval=${POLL_INTERVAL_MS}ms threshold=${CONFIDENCE_THRESHOLD}`
+    `[classifier] starting ${CLASSIFIER_VERSION} model=${MODEL_NAME} prompt=${PROMPT_VERSION} batch=${BATCH_SIZE} interval=${POLL_INTERVAL_MS}ms`
   );
 
   while (true) {
     lastPollAt = Date.now();
     try {
       const count = await classifyBatch();
-      if (count > 0) {
-        console.log(`[ai-tag-classifier] batch done: ${count} markets classified`);
-      }
+      if (count > 0) console.log(`[classifier] batch done: ${count} classified`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("[ai-tag-classifier] batch error:", message);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[classifier] batch error:", msg);
       totalErrors += 1;
-      lastError = message;
+      lastError = msg;
     }
-
     await wait(POLL_INTERVAL_MS);
   }
 };
@@ -390,7 +312,6 @@ const startHealthServer = () => {
 
     const now = Date.now();
     const ready = now - lastPollAt <= Math.max(POLL_INTERVAL_MS * 3, 120_000);
-
     const payload = {
       version: CLASSIFIER_VERSION,
       ready,
@@ -400,8 +321,7 @@ const startHealthServer = () => {
       totalErrors,
       lastError,
       lastPollAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
-      lastClassifiedAt:
-        lastClassifiedAt > 0 ? new Date(lastClassifiedAt).toISOString() : null,
+      lastClassifiedAt: lastClassifiedAt > 0 ? new Date(lastClassifiedAt).toISOString() : null,
     };
 
     res.statusCode = path === "/ready" && !ready ? 503 : 200;
@@ -410,9 +330,7 @@ const startHealthServer = () => {
   });
 
   server.listen(HEALTH_PORT, () => {
-    console.log(
-      `[ai-tag-classifier] health probe listening on :${HEALTH_PORT}`
-    );
+    console.log(`[classifier] health probe on :${HEALTH_PORT}`);
   });
 };
 
@@ -422,6 +340,6 @@ const startHealthServer = () => {
 
 startHealthServer();
 runLoop().catch((err) => {
-  console.error("[ai-tag-classifier] fatal error:", err);
+  console.error("[classifier] fatal:", err);
   process.exit(1);
 });

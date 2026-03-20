@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Calendar, CheckCircle, Plus, Trash2, List, ToggleLeft } from 'lucide-react';
 import Button from './Button';
-import { User, Category } from '../types';
+import { User } from '../types';
 import { CATEGORIES } from '../constants';
 
 interface SuggestMarketModalProps {
@@ -9,12 +9,12 @@ interface SuggestMarketModalProps {
   onClose: () => void;
   user: User | null;
   lang: 'RU' | 'EN';
-  onSubmit: (title: string, category: Category, endDate: string) => void;
+  onSubmit: (title: string, category: string, endDate: string) => void;
 }
 
 const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose, user, lang, onSubmit }) => {
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<Category>('SOCIAL');
+  const [category, setCategory] = useState('crypto');
   const [endDate, setEndDate] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
   
@@ -119,7 +119,7 @@ const SuggestMarketModal: React.FC<SuggestMarketModalProps> = ({ isOpen, onClose
                             {lang === 'RU' ? 'Категория' : 'Category'}
                         </label>
                         <div className="flex flex-wrap gap-2">
-                            {CATEGORIES.filter(c => c.id !== 'ALL').map(cat => (
+                            {CATEGORIES.map(cat => (
                                 <button
                                     key={cat.id}
                                     onClick={() => setCategory(cat.id)}

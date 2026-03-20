@@ -4,6 +4,7 @@ import type { Database } from "../../../types/database";
 import { listEnabledProviders } from "../../venues/registry";
 import { API_VERSION_V1, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from "@/src/lib/constants";
 import { feedOutput, getFeedInput } from "@/src/lib/validations/feed";
+import { encodeCursor, decodeCursor } from "@/src/lib/cursor";
 import type { VenueProvider } from "../../venues/types";
 
 type FeedEventType = Database["public"]["Tables"]["user_events"]["Row"]["event_type"];
@@ -11,26 +12,11 @@ type FeedEventRow = Pick<Database["public"]["Tables"]["user_events"]["Row"], "ma
 
 type FeedMarketCandidate = {
   marketId: string;
-  category: string;
+  primaryTag: string;
   fallbackVolume: number;
 };
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
-
-const encodeCursor = (offset: number): string =>
-  Buffer.from(String(Math.max(0, Math.floor(offset))), "utf8").toString("base64url");
-
-const decodeCursor = (cursor?: string | null): number => {
-  if (!cursor) return 0;
-  try {
-    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-    const parsed = Number(decoded);
-    if (!Number.isFinite(parsed) || parsed < 0) return 0;
-    return Math.floor(parsed);
-  } catch {
-    return 0;
-  }
-};
 
 const eventWeight: Record<FeedEventType, number> = {
   view: 1,
@@ -52,29 +38,28 @@ export const feedRouter = router({
       const enabledProviders = new Set(listEnabledProviders());
       const providerList = Array.from(enabledProviders) as VenueProvider[];
 
-      // Fetch all open markets from canonical market_catalog for all enabled providers
+      // Fetch all open markets from canonical market_catalog for all enabled providers (parallel)
       const candidates: FeedMarketCandidate[] = [];
       const freshnessByMarket = new Map<string, { sourceTs: number }>();
 
       const CATALOG_CHUNK_SIZE = 700;
-      for (const provider of providerList) {
-        const { data: catalogRows } = await (ctx.supabaseService as any)
+      const catalogPromises = providerList.map((provider) =>
+        (ctx.supabaseService as any)
           .from("market_catalog")
-          .select("id, provider, provider_market_id, category, total_volume_usd, source_updated_at")
+          .select("id, total_volume_usd, source_updated_at")
           .eq("provider", provider)
           .eq("state", "open")
-          .limit(CATALOG_CHUNK_SIZE);
-
-        const rows = Array.isArray(catalogRows)
-          ? (catalogRows as Array<Record<string, unknown>>)
-          : [];
-        for (const row of rows) {
+          .limit(CATALOG_CHUNK_SIZE)
+      );
+      const catalogResults = await Promise.all(catalogPromises);
+      for (const { data: catalogRows } of catalogResults) {
+        for (const row of (catalogRows ?? []) as Array<Record<string, unknown>>) {
           const marketId = String(row.id ?? "").trim();
           if (!marketId) continue;
           const totalVolumeUsd = Number(row.total_volume_usd ?? 0);
           candidates.push({
             marketId,
-            category: String(row.category ?? "general"),
+            primaryTag: "general",
             fallbackVolume: Number.isFinite(totalVolumeUsd) ? totalVolumeUsd : 0,
           });
           const sourceTs = Date.parse(String(row.source_updated_at ?? ""));
@@ -84,34 +69,42 @@ export const feedRouter = router({
         }
       }
 
-      // Enrich freshness from canonical market_live for all candidates
-      if (candidates.length > 0) {
-        const marketIds = candidates.map((c) => c.marketId);
-        const LIVE_CHUNK_SIZE = 400;
-        for (let i = 0; i < marketIds.length; i += LIVE_CHUNK_SIZE) {
-          const chunk = marketIds.slice(i, i + LIVE_CHUNK_SIZE);
-          const { data: liveRows } = await (ctx.supabaseService as any)
-            .from("market_live")
-            .select("market_id, source_ts")
-            .in("market_id", chunk);
+      if (candidates.length === 0) {
+        return { apiVersion: API_VERSION_V1, items: [], nextCursor: null };
+      }
 
-          for (const row of (liveRows ?? []) as Array<{ market_id: string; source_ts: string | null }>) {
-            const mid = String(row.market_id ?? "").trim();
-            if (!mid) continue;
-            const ts = Date.parse(row.source_ts ?? "");
-            if (Number.isFinite(ts)) {
-              const existing = freshnessByMarket.get(mid);
-              // Prefer the more recent timestamp between catalog and live
-              if (!existing || ts > existing.sourceTs) {
-                freshnessByMarket.set(mid, { sourceTs: ts });
-              }
-            }
+      // Enrich live freshness + AI classifications in parallel
+      const marketIds = candidates.map((c) => c.marketId);
+      const [liveRes, classRes] = await Promise.all([
+        (ctx.supabaseService as any)
+          .from("market_live")
+          .select("market_id, source_ts")
+          .in("market_id", marketIds.slice(0, 500)),
+        (ctx.supabaseService as any)
+          .from("market_ai_classifications")
+          .select("market_id, primary_tag")
+          .in("market_id", marketIds.slice(0, 500)),
+      ]);
+
+      for (const row of ((liveRes.data ?? []) as Array<{ market_id: string; source_ts: string | null }>)) {
+        const mid = String(row.market_id ?? "").trim();
+        if (!mid) continue;
+        const ts = Date.parse(row.source_ts ?? "");
+        if (Number.isFinite(ts)) {
+          const existing = freshnessByMarket.get(mid);
+          if (!existing || ts > existing.sourceTs) {
+            freshnessByMarket.set(mid, { sourceTs: ts });
           }
         }
       }
 
-      if (candidates.length === 0) {
-        return { apiVersion: API_VERSION_V1, items: [], nextCursor: null };
+      const tagMap = new Map<string, string>();
+      for (const row of ((classRes.data ?? []) as Array<{ market_id: string; primary_tag: string }>)) {
+        tagMap.set(row.market_id, row.primary_tag);
+      }
+      for (const c of candidates) {
+        const tag = tagMap.get(c.marketId);
+        if (tag) c.primaryTag = tag;
       }
 
       const affinityByMarket = new Map<string, number>();
@@ -163,17 +156,17 @@ export const feedRouter = router({
             marketId: market.marketId,
             score,
             reason,
-            category: market.category ?? "general",
+            primaryTag: market.primaryTag ?? "general",
           };
         })
         .sort((a, b) => b.score - a.score);
 
-      // Lightweight diversity pass: repeated categories gradually lose score.
-      const categorySeen = new Map<string, number>();
+      // Lightweight diversity pass: repeated primary tags gradually lose score.
+      const tagSeen = new Map<string, number>();
       const diversified = scored
         .map((item) => {
-          const seen = categorySeen.get(item.category) ?? 0;
-          categorySeen.set(item.category, seen + 1);
+          const seen = tagSeen.get(item.primaryTag) ?? 0;
+          tagSeen.set(item.primaryTag, seen + 1);
           const penalty = Math.min(0.2, seen * 0.04);
           return {
             marketId: item.marketId,

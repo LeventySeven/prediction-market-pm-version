@@ -48,6 +48,7 @@ import {
   type VenueMarket,
   type VenueProvider,
 } from "../venues/types";
+import { TAXONOMY_BY_ID, type TaxonomyTagId } from "../../lib/taxonomy";
 
 type SupabaseServiceClient = SupabaseClient<Database, "public">;
 type MarketOutput = z.infer<typeof marketOutput>;
@@ -1110,6 +1111,29 @@ export const resolveMarketCatalogRefId = async (
   return id || null;
 };
 
+const enrichWithAiTags = (
+  rows: MarketOutput[],
+  classificationsByMarketId: Map<string, { primary_tag: string }>,
+  aiTagsByMarketId: Map<string, Array<{ tag: string; confidence: number }>>
+): MarketOutput[] =>
+  rows.map((row) => {
+    const marketRefId = row.marketRefId ?? row.id;
+    const classification = classificationsByMarketId.get(marketRefId);
+    const tags = aiTagsByMarketId.get(marketRefId);
+    if (!classification && !tags) return row;
+
+    const primaryTag = classification?.primary_tag;
+    const meta = primaryTag ? TAXONOMY_BY_ID.get(primaryTag as TaxonomyTagId) : null;
+
+    return {
+      ...row,
+      primaryTagId: primaryTag ?? null,
+      primaryTagLabelRu: meta?.labelRu ?? primaryTag ?? null,
+      primaryTagLabelEn: meta?.labelEn ?? primaryTag ?? null,
+      aiTags: tags ?? [],
+    };
+  });
+
 const mapCanonicalRows = (
   marketRows: CanonicalCatalogRow[],
   outcomesByMarketId: Map<string, CanonicalOutcomeRow[]>,
@@ -1324,7 +1348,8 @@ const fetchCanonicalMarketRows = async (
     .map((row) => String((row as Record<string, unknown>).id ?? "").trim())
     .filter(Boolean);
 
-  const [outcomesRes, liveRes] = await Promise.all([
+  // Fetch outcomes, live data, AI classifications, and AI tags all in parallel
+  const [outcomesRes, liveRes, aiClassRes, aiTagsRes] = await Promise.all([
     (supabaseService as any)
       .from("market_outcomes")
       .select("market_id, provider_outcome_id, provider_token_id, outcome_key, title, sort_order, probability, price, is_active")
@@ -1333,6 +1358,15 @@ const fetchCanonicalMarketRows = async (
       .from("market_live")
       .select("market_id, best_bid, best_ask, mid, last_trade_price, last_trade_size, rolling_24h_volume, open_interest, source_seq, source_ts")
       .in("market_id", marketIds),
+    (supabaseService as any)
+      .from("market_ai_classifications")
+      .select("market_id, primary_tag")
+      .in("market_id", marketIds),
+    (supabaseService as any)
+      .from("market_ai_tags")
+      .select("market_id, tag, confidence")
+      .in("market_id", marketIds)
+      .order("confidence", { ascending: false }),
   ]);
   if (outcomesRes.error) {
     throw new CatalogReadError(
@@ -1368,6 +1402,20 @@ const fetchCanonicalMarketRows = async (
     liveByMarketId.set(marketId, row);
   }
 
+  // AI tag enrichment data (best-effort, non-blocking on error)
+  const classificationsByMarketId = new Map<string, { primary_tag: string }>();
+  const aiTagsByMarketId = new Map<string, Array<{ tag: string; confidence: number }>>();
+
+  for (const row of ((aiClassRes.data ?? []) as Array<{ market_id: string; primary_tag: string }>)) {
+    classificationsByMarketId.set(row.market_id, { primary_tag: row.primary_tag });
+  }
+  for (const row of ((aiTagsRes.data ?? []) as Array<{ market_id: string; tag: string; confidence: number }>)) {
+    const mid = row.market_id;
+    const arr = aiTagsByMarketId.get(mid) ?? [];
+    arr.push({ tag: row.tag, confidence: row.confidence });
+    aiTagsByMarketId.set(mid, arr);
+  }
+
   const compareGroupsById = await fetchCompareGroupAggregates(
     supabaseService,
     marketRows
@@ -1376,13 +1424,16 @@ const fetchCanonicalMarketRows = async (
     errorContextBase
   );
 
-  return mapCanonicalRows(
+  const rows = mapCanonicalRows(
     marketRows as CanonicalCatalogRow[],
     outcomesByMarketId,
     liveByMarketId,
     compareGroupsById,
     params.snapshotId
   );
+
+  // Enrich with AI tag data
+  return enrichWithAiTags(rows, classificationsByMarketId, aiTagsByMarketId);
 };
 
 export const listCanonicalProviderMarkets = async (

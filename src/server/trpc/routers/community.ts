@@ -2,6 +2,7 @@ import "server-only";
 import { TRPCError } from "@trpc/server";
 import { authenticatedProcedure, publicProcedure, router } from "../trpc";
 import { API_VERSION_V1 } from "@/src/lib/constants";
+import { encodeCursor, decodeCursor } from "@/src/lib/cursor";
 import {
   communityListOutput,
   communityOutput,
@@ -17,21 +18,6 @@ const DEFAULT_COMMUNITY_LIMIT = 20;
 const DEFAULT_COMMUNITY_FEED_LIMIT = 20;
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
-
-const encodeCursor = (offset: number): string =>
-  Buffer.from(String(Math.max(0, Math.floor(offset))), "utf8").toString("base64url");
-
-const decodeCursor = (cursor?: string | null): number => {
-  if (!cursor) return 0;
-  try {
-    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-    const parsed = Number(decoded);
-    if (!Number.isFinite(parsed) || parsed < 0) return 0;
-    return Math.floor(parsed);
-  } catch {
-    return 0;
-  }
-};
 
 type CommunityRow = {
   id: string;
@@ -115,9 +101,9 @@ export const communityRouter = router({
         });
       }
 
-      // Insert owner membership
+      // Insert owner membership (into community_memberships, not community_members)
       await (ctx.supabaseService as any)
-        .from("community_members")
+        .from("community_memberships")
         .insert({
           community_id: community.id,
           user_id: userId,

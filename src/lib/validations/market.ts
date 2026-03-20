@@ -115,6 +115,21 @@ export const marketAiTagOutput = z.object({
   confidence: z.number(),
 });
 
+export const tagFacetOutput = z.object({
+  tagId: z.string(),
+  labelRu: z.string(),
+  labelEn: z.string(),
+  count: z.number().int().nonnegative(),
+});
+
+export const tagFacetOutputArray = z.array(tagFacetOutput);
+
+export const listTagFacetsInput = z
+  .object({
+    providerFilter: venueProviderFilterSchema.optional(),
+  })
+  .optional();
+
 export const marketOutput = z.object({
   id: z.string(),
   slug: z.string().nullable().optional(),
@@ -139,6 +154,9 @@ export const marketOutput = z.object({
   categoryId: z.string().nullable().optional(),
   categoryLabelRu: z.string().nullable().optional(),
   categoryLabelEn: z.string().nullable().optional(),
+  primaryTagId: z.string().nullable().optional(),
+  primaryTagLabelRu: z.string().nullable().optional(),
+  primaryTagLabelEn: z.string().nullable().optional(),
   settlementAsset: z.string().nullable().optional(),
   feeBps: z.number().nullable().optional(),
   liquidityB: z.number().nullable().optional(),
@@ -302,6 +320,7 @@ export const listMarketsInput = z
     catalogBucket: marketCatalogBucketSchema.optional(),
     providers: z.array(venueProviderSchema).optional(),
     providerFilter: venueProviderFilterSchema.optional(),
+    tagId: z.string().max(32).optional(),
   })
   .optional();
 
@@ -482,3 +501,4 @@ export type PriceCandleOutput = z.infer<typeof priceCandleOutput>;
 export type PublicTradeOutput = z.output<typeof publicTradeOutput>;
 export type LiveActivityTickOutput = z.output<typeof liveActivityTickOutput>;
 export type MarketAiTagOutput = z.infer<typeof marketAiTagOutput>;
+export type TagFacetOutput = z.infer<typeof tagFacetOutput>;
