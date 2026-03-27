@@ -69,6 +69,7 @@ import {
 } from "@/src/lib/validations/market";
 import { generateMarketContext } from "../../ai/marketContextAgent";
 import { TAXONOMY_BY_ID, isValidTaxonomyTag, type TaxonomyTagId } from "@/src/lib/taxonomy";
+import { matchTaxonomyTag } from "@/src/lib/taxonomyMatcher";
 import {
   type PolymarketMarket,
   getPolymarketMarketById,
@@ -2061,33 +2062,47 @@ export const marketRouter = router({
       const cached = cachedTagFacetsByProvider.get(providerFilter);
       if (cached && cached.expiresAt > now) return cached.rows;
 
-      // Query market_ai_classifications joined with market_catalog
-      // to get counts of primary_tag for open markets, scoped by provider.
-      let query = (ctx.supabaseService as any)
-        .from("market_ai_classifications")
-        .select("primary_tag, market_catalog!inner(state, provider)")
-        .eq("market_catalog.state", "open");
-
+      // Fetch open markets and their AI classifications in parallel.
+      // For markets without AI classification, use keyword matcher.
+      let catalogQuery = (ctx.supabaseService as any)
+        .from("market_catalog")
+        .select("id, title, description")
+        .eq("state", "open")
+        .limit(5000);
       if (providerFilter !== "all") {
-        query = query.eq("market_catalog.provider", providerFilter);
+        catalogQuery = catalogQuery.eq("provider", providerFilter);
       }
 
-      const { data, error } = await query.limit(5000);
+      const [catalogRes, classRes] = await Promise.all([
+        catalogQuery,
+        (async () => {
+          let q = (ctx.supabaseService as any)
+            .from("market_ai_classifications")
+            .select("market_id, primary_tag")
+            .limit(5000);
+          return q;
+        })(),
+      ]);
 
-      if (error) {
-        console.warn("[listTagFacets] query error:", error.message);
+      if (catalogRes.error) {
+        console.warn("[listTagFacets] catalog query error:", catalogRes.error.message);
         return cached?.rows ?? [];
       }
 
-      // Count by tag
+      const aiTagByMarketId = new Map<string, string>();
+      for (const row of ((classRes.data ?? []) as Array<{ market_id: string; primary_tag: string }>)) {
+        aiTagByMarketId.set(row.market_id, row.primary_tag);
+      }
+
+      // Count tags: AI classification preferred, keyword matcher as fallback
       const counts = new Map<string, number>();
-      for (const row of (data ?? []) as Array<{ primary_tag: string }>) {
-        const tag = row.primary_tag;
+      for (const row of ((catalogRes.data ?? []) as Array<{ id: string; title: string; description: string | null }>)) {
+        const tag = aiTagByMarketId.get(row.id) ?? matchTaxonomyTag(row.title, row.description);
         if (!isValidTaxonomyTag(tag)) continue;
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
       }
 
-      // Build facets from taxonomy, filtering to non-empty
+      // Build facets from counts
       const facets: Array<{ tagId: string; labelRu: string; labelEn: string; count: number }> = [];
       for (const [tagId, count] of counts.entries()) {
         const meta = TAXONOMY_BY_ID.get(tagId as TaxonomyTagId);
@@ -2095,7 +2110,6 @@ export const marketRouter = router({
         facets.push({ tagId: meta.id, labelRu: meta.labelRu, labelEn: meta.labelEn, count });
       }
 
-      // Sort by count descending, then by taxonomy order
       facets.sort((a, b) => {
         const countDiff = b.count - a.count;
         if (countDiff !== 0) return countDiff;

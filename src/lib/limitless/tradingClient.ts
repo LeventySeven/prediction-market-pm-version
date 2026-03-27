@@ -207,6 +207,7 @@ export async function buildSignedBuyOrder(
       side: order.side,
       signatureType: order.signatureType,
       signature,
+      price: priceUsed,
     },
     orderType: input.orderType ?? "FOK",
     priceUsed,

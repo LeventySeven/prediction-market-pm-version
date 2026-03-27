@@ -49,6 +49,7 @@ import {
   type VenueProvider,
 } from "../venues/types";
 import { TAXONOMY_BY_ID, type TaxonomyTagId } from "../../lib/taxonomy";
+import { matchTaxonomyTag } from "../../lib/taxonomyMatcher";
 
 type SupabaseServiceClient = SupabaseClient<Database, "public">;
 type MarketOutput = z.infer<typeof marketOutput>;
@@ -1120,17 +1121,28 @@ const enrichWithAiTags = (
     const marketRefId = row.marketRefId ?? row.id;
     const classification = classificationsByMarketId.get(marketRefId);
     const tags = aiTagsByMarketId.get(marketRefId);
-    if (!classification && !tags) return row;
 
-    const primaryTag = classification?.primary_tag;
-    const meta = primaryTag ? TAXONOMY_BY_ID.get(primaryTag as TaxonomyTagId) : null;
+    // AI classification exists — use it
+    if (classification) {
+      const meta = TAXONOMY_BY_ID.get(classification.primary_tag as TaxonomyTagId);
+      return {
+        ...row,
+        primaryTagId: classification.primary_tag,
+        primaryTagLabelRu: meta?.labelRu ?? classification.primary_tag,
+        primaryTagLabelEn: meta?.labelEn ?? classification.primary_tag,
+        aiTags: tags ?? [],
+      };
+    }
 
+    // No AI classification — use fast keyword matcher so every market gets a tag
+    const matched = matchTaxonomyTag(row.titleEn || row.titleRu, row.description);
+    const meta = TAXONOMY_BY_ID.get(matched);
     return {
       ...row,
-      primaryTagId: primaryTag ?? null,
-      primaryTagLabelRu: meta?.labelRu ?? primaryTag ?? null,
-      primaryTagLabelEn: meta?.labelEn ?? primaryTag ?? null,
-      aiTags: tags ?? [],
+      primaryTagId: matched,
+      primaryTagLabelRu: meta?.labelRu ?? matched,
+      primaryTagLabelEn: meta?.labelEn ?? matched,
+      aiTags: tags ?? [{ tag: matched, confidence: 0.5 }],
     };
   });
 

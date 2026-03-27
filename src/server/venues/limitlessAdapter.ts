@@ -861,7 +861,11 @@ const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelay
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          Authorization: `Bearer ${bearerToken}`,
+          // Support both auth modes: lmts_ API keys use X-API-Key header,
+          // legacy bearer tokens use Authorization header.
+          ...(bearerToken.startsWith("lmts_")
+            ? { "X-API-Key": bearerToken }
+            : { Authorization: `Bearer ${bearerToken}` }),
           "x-account": makerAddress,
           ...(input.requestIp
             ? {

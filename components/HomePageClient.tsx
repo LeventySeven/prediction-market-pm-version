@@ -63,6 +63,7 @@ import {
   sanitizeAvatarPalette,
 } from "@/src/lib/avatarPalette";
 import { applyStableCatalogOrder } from "@/src/lib/catalogStableOrder";
+import { matchTaxonomyTag } from "@/src/lib/taxonomyMatcher";
 import { getExternalMarketUrl, normalizeExternalMarketUrl } from "@/src/lib/marketExternalUrl";
 import {
   formatCompactUsd,
@@ -2462,7 +2463,8 @@ export default function HomePage({
     showMarketPulseBoard,
   ]);
 
-  // Fetch tag facets from server for catalog chips
+  // Fetch our taxonomy tag facets for catalog chips.
+  // Every market gets a tag (AI classifier or keyword matcher), so this always returns data.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2490,24 +2492,8 @@ export default function HomePage({
           const ids = new Set(nextRows.map((r) => r.id));
           return ids.has(prev) ? prev : "all";
         });
-      } catch (err) {
-        // Fallback: derive categories from loaded markets (legacy behavior)
-        if (cancelled) return;
-        const byId = new Map<string, MarketCategoryStrict>();
-        for (const market of mergedMarkets) {
-          const provider = market.provider ?? "polymarket";
-          if (activeProviderFilter !== "all" && provider !== activeProviderFilter) continue;
-          const tagId = String(market.primaryTagId ?? market.categoryId ?? "").trim();
-          if (!tagId) continue;
-          const labelRu = String(market.primaryTagLabelRu ?? market.categoryLabelRu ?? market.categoryLabelEn ?? tagId).trim();
-          const labelEn = String(market.primaryTagLabelEn ?? market.categoryLabelEn ?? market.categoryLabelRu ?? tagId).trim();
-          if (byId.has(tagId)) continue;
-          byId.set(tagId, { id: tagId, labelRu, labelEn });
-        }
-        const nextRows = Array.from(byId.values()).sort((a, b) =>
-          a.labelEn.localeCompare(b.labelEn, "en", { sensitivity: "base" })
-        );
-        setMarketCategories(nextRows);
+      } catch {
+        // API failed — keep current chips, don't blank them out
       }
     })();
     return () => { cancelled = true; };
@@ -3247,9 +3233,11 @@ export default function HomePage({
       mergedMarkets.filter((market) => {
         const matchesProvider =
           activeProviderFilter === "all" || (market.provider ?? "polymarket") === activeProviderFilter;
+        const marketTag = market.primaryTagId
+          ?? matchTaxonomyTag(market.titleEn ?? market.title, market.description);
         const matchesCategory =
           activeCategoryId === "all" ||
-          (market.primaryTagId ?? market.categoryId ?? "") === activeCategoryId ||
+          marketTag === activeCategoryId ||
           (market.aiTags ?? []).some((t) => t.tag === activeCategoryId);
         const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
         const semanticMatch = Boolean(semanticSearchScores[market.id]);

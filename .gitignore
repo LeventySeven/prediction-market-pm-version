@@ -171,3 +171,4 @@ seed.txt
 # Playwright artifacts
 playwright-report/
 test-results/
+.gstack/
