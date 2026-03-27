@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, type RefObject } from "react";
+import { useState, useRef, type RefObject } from "react";
 import MarketCard from "@/components/MarketCard";
 import { Search, Info, Filter } from "lucide-react";
 import type { Market } from "@/types";
@@ -88,21 +88,39 @@ export default function CatalogView({
   marketsLoadingMessage,
   catalogLoadMoreSentinelRef,
 }: CatalogViewProps) {
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const mobileSearchInputRef = useRef<HTMLInputElement>(null);
+
   return (
     <div>
-      {/* Mobile search (desktop search is in Header) */}
-      <div className="px-4 pt-2 pb-3 md:hidden">
-        <div className="relative">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={lang === "RU" ? "Поиск..." : "Search..."}
-            className="h-11 w-full rounded-[20px] border border-zinc-800 bg-zinc-950/80 px-4 pl-11 text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-700"
-          />
-          <Search size={16} className="absolute left-4 top-3.5 text-zinc-600" />
+      {/* Mobile expanded search (desktop search is in Header) */}
+      {mobileSearchOpen && (
+        <div className="px-4 pt-2 pb-3 md:hidden">
+          <div className="relative">
+            <input
+              ref={mobileSearchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder={lang === "RU" ? "Поиск..." : "Search..."}
+              autoFocus
+              className="h-11 w-full rounded-[20px] border border-zinc-800 bg-zinc-950/80 px-4 pl-11 pr-10 text-sm text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-700"
+            />
+            <Search size={16} className="absolute left-4 top-3.5 text-zinc-600" />
+            <button
+              type="button"
+              onClick={() => {
+                setMobileSearchOpen(false);
+                onSearchChange("");
+              }}
+              className="absolute right-3 top-2.5 text-zinc-500 hover:text-zinc-300"
+              aria-label={lang === "RU" ? "Закрыть поиск" : "Close search"}
+            >
+              ✕
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Categories */}
       <div className="px-4 pb-3 border-b border-zinc-900">
@@ -142,6 +160,7 @@ export default function CatalogView({
       <div className="px-4 pt-3 border-b border-zinc-900">
         <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1" data-swipe-ignore="true">
           {providerOptions.map((provider) => {
+
             const selected = activeProviderFilter === provider.id;
             const label = lang === "RU" ? provider.labelRu : provider.labelEn;
             return (
@@ -173,6 +192,26 @@ export default function CatalogView({
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => {
+              setMobileSearchOpen((v) => !v);
+              if (!mobileSearchOpen) {
+                setTimeout(() => mobileSearchInputRef.current?.focus(), 50);
+              } else {
+                onSearchChange("");
+              }
+            }}
+            className={`ml-auto shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full border transition md:hidden ${
+              mobileSearchOpen || searchQuery
+                ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,0.1)] text-[rgba(190,255,29,1)]"
+                : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"
+            }`}
+            aria-label={lang === "RU" ? "Поиск" : "Search"}
+            title={lang === "RU" ? "Поиск" : "Search"}
+          >
+            <Search size={16} />
+          </button>
         </div>
       </div>
 
