@@ -33,7 +33,7 @@ export const trpcClient = createTRPCProxyClient<AppRouter>({
   links: (() => {
     const disableBatch = process.env.NEXT_PUBLIC_DISABLE_TRPC_BATCH === "true";
     const endpoint = `${getBaseUrl()}/api/trpc`;
-    const withCredentialsFetch = (url: string | URL, options: RequestInit = {}) => {
+    const withCredentialsFetch = (url: string | URL | RequestInfo, options: RequestInit = {}) => {
       const headers: HeadersInit = {
         ...options.headers,
       };

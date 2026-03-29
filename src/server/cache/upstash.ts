@@ -98,7 +98,7 @@ export const readUpstashCache = async <T>(
     const normalized = maybeJson(raw);
 
     const envelopeParsed = cacheEnvelopeSchema(schema).safeParse(normalized);
-    if (envelopeParsed.success) return envelopeParsed.data.data;
+    if (envelopeParsed.success) return envelopeParsed.data.data ?? null;
 
     const directParsed = schema.safeParse(normalized);
     if (directParsed.success) return directParsed.data;

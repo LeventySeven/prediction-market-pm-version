@@ -187,7 +187,7 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
         horzLine: { color: 'rgba(244,63,164,0.28)' },
       },
       localization: {
-        priceFormatter: (value) => `${value.toFixed(1)}%`,
+        priceFormatter: (value: number) => `${value.toFixed(1)}%`,
       },
       rightPriceScale: {
         borderColor: '#18181b',

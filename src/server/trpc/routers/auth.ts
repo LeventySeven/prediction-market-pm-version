@@ -1,12 +1,11 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
 import { randomBytes } from "node:crypto";
-import { publicProcedure, router } from "../trpc";
+import { csrfPublicMutation, publicProcedure, router } from "../trpc";
 import { authCookie, clearAuthCookie, signAuthToken, verifyAuthToken } from "../../auth/jwt";
 import type { PublicUser } from "../../auth/types";
 import type { Database } from "../../../types/database";
 import { verifyPrivyAccessToken } from "../../auth/privy";
-import { assertCsrfForMutation } from "../../security/csrf";
 import { consumeDurableRateLimit } from "../../security/rateLimit";
 import { getTrustedClientIpFromRequest } from "../../http/ip";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
@@ -287,19 +286,10 @@ const upsertPrivyUser = async (
 };
 
 export const authRouter = router({
-  privyLogin: publicProcedure
+  privyLogin: csrfPublicMutation
     .input(privyLoginInput)
     .mutation(async ({ ctx, input }) => {
       try {
-        try {
-          assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
-        } catch (error) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
-          });
-        }
-
         const ip = getTrustedClientIpFromRequest(ctx.req) ?? "unknown";
         const loginRate = await consumeDurableRateLimit(ctx.supabaseService, {
           key: `login:${ip}`,
@@ -327,15 +317,7 @@ export const authRouter = router({
       }
     }),
 
-  privyLogout: publicProcedure.mutation(async ({ ctx }) => {
-    try {
-      assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
-    } catch (error) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
-      });
-    }
+  privyLogout: csrfPublicMutation.mutation(async ({ ctx }) => {
     ctx.setCookie(clearAuthCookie());
     return { success: true };
   }),
@@ -359,15 +341,7 @@ export const authRouter = router({
   }),
 
   // Backward compatible alias for any stale clients still calling auth.logout.
-  logout: publicProcedure.mutation(async ({ ctx }) => {
-    try {
-      assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
-    } catch (error) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
-      });
-    }
+  logout: csrfPublicMutation.mutation(async ({ ctx }) => {
     ctx.setCookie(clearAuthCookie());
     return { success: true };
   }),

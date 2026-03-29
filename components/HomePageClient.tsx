@@ -21,7 +21,6 @@ import type {
   Trade,
   PriceCandle,
   PublicTrade,
-  LeaderboardUser,
   Comment as MarketComment,
   LiveActivityTick,
 } from "@/types";
@@ -32,11 +31,16 @@ import CatalogView from "@/components/CatalogView";
 import FeedView from "@/components/FeedView";
 import CatalogFiltersModal from "@/components/CatalogFiltersModal";
 import LeaderboardSortModal from "@/components/LeaderboardSortModal";
-import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
 import { marketCommentsSchema } from "@/src/schemas/comments";
 import { myCommentsSchema } from "@/src/schemas/myComments";
 import { marketBookmarksSchema } from "@/src/schemas/bookmarks";
+import { useLeaderboard } from "@/components/hooks/useLeaderboard";
+import { usePublicProfile } from "@/components/hooks/usePublicProfile";
+import { useBookmarks } from "@/components/hooks/useBookmarks";
+import { useMarketComments } from "@/components/hooks/useMarketComments";
+import { useMarketContext } from "@/components/hooks/useMarketContext";
+import { useLimitlessAuth } from "@/components/hooks/useLimitlessAuth";
 import {
   CATALOG_REALTIME_FLUSH_MS,
   CATALOG_VISIBLE_MARKETS_REALTIME_LIMIT,
@@ -103,7 +107,6 @@ const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
-const LIMITLESS_AUTH_STORAGE_KEY = "limitlessTradingAuth_v3";
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -128,11 +131,6 @@ const isTransientCatalogFetchError = (error: unknown): boolean => {
     normalized.includes("load failed") ||
     normalized.includes("network request failed")
   );
-};
-
-type LimitlessStoredAuth = {
-  bearerToken: string;
-  ownerId: number;
 };
 
 type CanonicalMarketLiveRow = {
@@ -175,41 +173,6 @@ type TelegramWindow = Window & {
 
 const isCsrfTokenInvalidErrorMessage = (msg?: string) =>
   String(msg ?? "").toUpperCase().includes("CSRF_TOKEN_INVALID");
-
-const normalizeLimitlessStoredAuth = (value: unknown): LimitlessStoredAuth | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const rec = value as { bearerToken?: unknown; ownerId?: unknown };
-  const bearerToken = typeof rec.bearerToken === "string" ? rec.bearerToken.trim() : "";
-  const ownerId =
-    typeof rec.ownerId === "number"
-      ? rec.ownerId
-      : typeof rec.ownerId === "string"
-        ? Number.parseInt(rec.ownerId, 10)
-        : Number.NaN;
-  if (!bearerToken || !Number.isInteger(ownerId) || ownerId <= 0) return null;
-  return { bearerToken, ownerId };
-};
-
-const readStoredLimitlessAuth = (): LimitlessStoredAuth | null => {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(LIMITLESS_AUTH_STORAGE_KEY);
-    if (!raw) return null;
-    return normalizeLimitlessStoredAuth(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-};
-
-const writeStoredLimitlessAuth = (value: LimitlessStoredAuth) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(LIMITLESS_AUTH_STORAGE_KEY, JSON.stringify(value));
-};
-
-const clearStoredLimitlessAuth = () => {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(LIMITLESS_AUTH_STORAGE_KEY);
-};
 
 const mapMarketApiToMarket = (m: MarketApiRow, lang: "RU" | "EN"): Market => {
   const title = lang === "RU" ? m.titleRu : m.titleEn;
@@ -856,9 +819,6 @@ export default function HomePage({
     );
   });
   const [catalogFiltersOpen, setCatalogFiltersOpen] = useState(false);
-  type LeaderboardSort = "PNL" | "BETS";
-  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>("PNL");
-  const [leaderboardSortOpen, setLeaderboardSortOpen] = useState(false);
   type PostAuthAction =
     | { type: "PLACE_BET"; marketId: string; side?: "YES" | "NO"; outcomeId?: string; amount: number; marketTitle: string }
     | { type: "OPEN_MARKET_BET"; marketId: string; side: "YES" | "NO" }
@@ -873,11 +833,16 @@ export default function HomePage({
       return "EN";
     }
   });
+  // Extracted hooks (no dependencies on component state beyond lang)
+  const leaderboard = useLeaderboard({ lang });
+  const publicProfile = usePublicProfile({ lang });
+  const limitlessAuth = useLimitlessAuth();
+  const marketContext = useMarketContext();
+
   const [user, setUser] = useState<User | null>(null);
   const { ready: privyReady, authenticated: privyAuthenticated, login: privyLogin, logout: privyLogout } = usePrivySession();
   const { wallets: privyWallets } = usePrivyWalletList();
   const clobApiCredsRef = useRef<EphemeralApiCreds | null>(null);
-  const limitlessAuthPromptResolverRef = useRef<((value: LimitlessStoredAuth | null) => void) | null>(null);
   const sessionIdRef = useRef<string>(createSessionId());
   const ensuredMarketIdsRef = useRef<Set<string>>(new Set());
   const semanticHydratedMarketIdsRef = useRef<Set<string>>(new Set());
@@ -886,11 +851,6 @@ export default function HomePage({
   const chartFirstPaintRecordedForMarketRef = useRef<string | null>(null);
   const marketCandlesCacheRef = useRef<Map<string, { candles: PriceCandle[]; cachedAt: number }>>(new Map());
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(initialSelectedMarketId);
-  const [limitlessStoredAuth, setLimitlessStoredAuth] = useState<LimitlessStoredAuth | null>(() =>
-    readStoredLimitlessAuth()
-  );
-  const [limitlessCredentialsOpen, setLimitlessCredentialsOpen] = useState(false);
-  const [limitlessCredentialsError, setLimitlessCredentialsError] = useState<string | null>(null);
   const pendingDeepLinkMarketIdRef = useRef<string | null>(null);
   const lastHistoryMutationRef = useRef<{ url: string; at: number; mode: "push" | "replace" } | null>(null);
   const bootstrapRef = useRef<InitialCatalogBootstrap | null>(bootstrappedCatalog);
@@ -1202,8 +1162,6 @@ export default function HomePage({
   const [myCommentsLoading, setMyCommentsLoading] = useState(false);
   const [myCommentsError, setMyCommentsError] = useState<string | null>(null);
   const [profilePnlMajor, setProfilePnlMajor] = useState<number | null>(null);
-  type MarketBookmark = { marketId: string; createdAt: string };
-  const [myBookmarks, setMyBookmarks] = useState<MarketBookmark[]>([]);
   const [marketsLoadingMessage, setMarketsLoadingMessage] = useState<string | null>(null);
   const [marketsError, setMarketsError] = useState<string | null>(
     initialCatalogError === "CATALOG_READ_FAILED"
@@ -1231,50 +1189,12 @@ export default function HomePage({
   const [marketLiveActivityTicks, setMarketLiveActivityTicks] = useState<LiveActivityTick[]>(
     initialMarketLiveActivityTicks
   );
-  type MarketContextPayload = { context: string; sources: string[]; updatedAt: string };
-  const [marketContextById, setMarketContextById] = useState<Record<string, MarketContextPayload>>({});
-  const [marketContextLoadingId, setMarketContextLoadingId] = useState<string | null>(null);
-  const [marketContextErrorById, setMarketContextErrorById] = useState<Record<string, string | null>>({});
   const [walletBalanceMajor, setWalletBalanceMajor] = useState<number | null>(null);
   type MyMarket = Market & { hasBets: boolean };
   const [myCreatedMarkets, setMyCreatedMarkets] = useState<MyMarket[]>([]);
-  const [marketComments, setMarketComments] = useState<MarketComment[]>(initialMarketComments);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
   const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
-  const [marketCommentsError, setMarketCommentsError] = useState<string | null>(null);
   const [marketActivityError, setMarketActivityError] = useState<string | null>(null);
-  const [leaderboardUsers, setLeaderboardUsers] = useState<LeaderboardUser[]>([]);
-  const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
-  const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
-  type PublicProfileUser = {
-    id: string;
-    username: string;
-    displayName: string | null;
-    avatarUrl: string | null;
-    telegramPhotoUrl: string | null;
-  };
-  type PublicProfileBet = {
-    marketId: string;
-    outcome: "YES" | "NO" | null;
-    lastBetAt: string;
-    isActive: boolean;
-  };
-  type PublicProfileComment = {
-    id: string;
-    marketId: string;
-    parentId: string | null;
-    body: string;
-    createdAt: string;
-    likesCount: number;
-  };
-  const [publicProfileOpen, setPublicProfileOpen] = useState(false);
-  const [publicProfileLoading, setPublicProfileLoading] = useState(false);
-  const [publicProfileError, setPublicProfileError] = useState<string | null>(null);
-  const [publicProfileUser, setPublicProfileUser] = useState<PublicProfileUser | null>(null);
-  const [publicProfilePnl, setPublicProfilePnl] = useState(0);
-  const [publicProfileComments, setPublicProfileComments] = useState<PublicProfileComment[]>([]);
-  const [publicProfileBets, setPublicProfileBets] = useState<PublicProfileBet[]>([]);
-  const publicProfileRequestIdRef = useRef(0);
   type MarketCategoryStrict = { id: string; labelRu: string; labelEn: string };
   const [marketCategories, setMarketCategories] = useState<MarketCategoryStrict[]>([]);
   const [myComments, setMyComments] = useState<Array<{
@@ -1352,27 +1272,6 @@ export default function HomePage({
     marketsRef.current = markets;
   }, [markets]);
 
-  const loadLeaderboard = useCallback(async (sortBy: LeaderboardSort = leaderboardSort) => {
-    setLoadingLeaderboard(true);
-    setLeaderboardError(null);
-    try {
-      const usersRaw = await trpcClient.user.leaderboard.query({
-        limit: 100,
-        sortBy: sortBy === "PNL" ? "pnl" : "bets",
-      });
-      const users: LeaderboardUser[] = leaderboardUsersSchema.parse(usersRaw);
-      setLeaderboardUsers(users);
-    } catch (err) {
-      console.error("Failed to load leaderboard", err);
-      const base = lang === "RU" ? "Не удалось загрузить лидерборд" : "Failed to load leaderboard";
-      setLeaderboardError(`${base}: ${getErrorMessage(err)}`);
-      // Keep the previous list if we have one; avoid flashing "No data yet" on transient errors.
-      setLeaderboardUsers((prev) => prev);
-    } finally {
-      setLoadingLeaderboard(false);
-    }
-  }, [lang, leaderboardSort]);
-
   useEffect(() => {
     if (isAutomatedBrowser()) {
       setEligibilityDisclaimerGate("done");
@@ -1447,6 +1346,14 @@ export default function HomePage({
       void privyLogin();
     }
   }, [privyLogin, privyReady]);
+
+  // Extracted hooks (depend on user, mergedMarkets, openAuth)
+  const bookmarks = useBookmarks({
+    user,
+    mergedMarkets,
+    sessionIdRef,
+    openAuth,
+  });
 
   const applyPublicUser = useCallback((me: {
     id: string;
@@ -1626,60 +1533,12 @@ export default function HomePage({
     })();
   }, [selectedMarketId, user, reloginRequired, refreshUser, attemptSilentRefresh]);
 
-  const resolveLimitlessCredentialsPrompt = useCallback((value: LimitlessStoredAuth | null) => {
-    const resolver = limitlessAuthPromptResolverRef.current;
-    limitlessAuthPromptResolverRef.current = null;
-    if (resolver) resolver(value);
-  }, []);
-
-  const closeLimitlessCredentialsModal = useCallback(() => {
-    setLimitlessCredentialsOpen(false);
-    setLimitlessCredentialsError(null);
-    resolveLimitlessCredentialsPrompt(null);
-  }, [resolveLimitlessCredentialsPrompt]);
-
-  const promptForLimitlessCredentials = useCallback(async () => {
-    const stored = readStoredLimitlessAuth();
-    if (stored) {
-      setLimitlessStoredAuth(stored);
-      return stored;
-    }
-    setLimitlessCredentialsError(null);
-    setLimitlessCredentialsOpen(true);
-    return await new Promise<LimitlessStoredAuth | null>((resolve) => {
-      limitlessAuthPromptResolverRef.current = resolve;
-    });
-  }, []);
-
-  const handleSaveLimitlessCredentials = useCallback(
-    async (payload: { bearerToken: string; ownerId: number }) => {
-      const nextValue: LimitlessStoredAuth = {
-        bearerToken: payload.bearerToken.trim(),
-        ownerId: payload.ownerId,
-      };
-      writeStoredLimitlessAuth(nextValue);
-      setLimitlessStoredAuth(nextValue);
-      setLimitlessCredentialsError(null);
-      setLimitlessCredentialsOpen(false);
-      resolveLimitlessCredentialsPrompt(nextValue);
-    },
-    [resolveLimitlessCredentialsPrompt]
-  );
-
-  const handleClearLimitlessCredentials = useCallback(() => {
-    clearStoredLimitlessAuth();
-    setLimitlessStoredAuth(null);
-    setLimitlessCredentialsError(null);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (limitlessAuthPromptResolverRef.current) {
-        limitlessAuthPromptResolverRef.current(null);
-        limitlessAuthPromptResolverRef.current = null;
-      }
-    };
-  }, []);
+  // Extracted hook (depends on maybeRequireRelogin)
+  const comments = useMarketComments({
+    lang,
+    initialMarketComments,
+    maybeRequireRelogin: maybeRequireRelogin as (err: unknown) => boolean,
+  });
 
   const handleUpdateProfileIdentity = useCallback(
     async (params: { username: string; displayName: string }) => {
@@ -1786,8 +1645,8 @@ export default function HomePage({
         let updated: Awaited<ReturnType<typeof submitProfileSetup>>;
         try {
           updated = await submitProfileSetup();
-        } catch (err) {
-          if (!isCsrfTokenInvalidErrorMessage(getErrorMessage(err))) throw err;
+        } catch (err: unknown) {
+          if (!isCsrfTokenInvalidErrorMessage(getErrorMessage(err as ErrorLike))) throw err;
           await fetch("/api/auth/csrf", {
             method: "POST",
             credentials: "include",
@@ -1817,7 +1676,7 @@ export default function HomePage({
         });
         setProfileSetupError(null);
       } catch (err) {
-        const msg = String(getErrorMessage(err) ?? "").toUpperCase();
+        const msg = String(getErrorMessage(err as ErrorLike) ?? "").toUpperCase();
         const recoveredUser = await refreshUser().catch(() => null);
         if (recoveredUser && !recoveredUser.needsProfileSetup) {
           setProfileSetupError(null);
@@ -1878,7 +1737,7 @@ export default function HomePage({
         : prev
     );
 
-    return { referralCode, referralCommissionRate, referralEnabled };
+    return { referralCode, referralCommissionRate: referralCommissionRate ?? 0, referralEnabled: referralEnabled ?? false };
   }, []);
 
   const handleLogout = useCallback(async () => {
@@ -1971,7 +1830,7 @@ export default function HomePage({
       // Wrapper mode: portfolio/trades are executed on Polymarket, not stored locally.
       setMyPositions([]);
       setMyTrades([]);
-      setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
+      bookmarks.setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
       setMyCreatedMarkets([]);
       setWalletBalanceMajor(null);
       try {
@@ -1983,7 +1842,7 @@ export default function HomePage({
         console.warn("Failed to refresh profile pnl", err);
       }
     } catch (err) {
-      const errorMsg = getErrorMessage(err);
+      const errorMsg = getErrorMessage(err as ErrorLike);
       console.error("Failed to load positions/trades", { error: errorMsg, err, userId: user?.id });
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
@@ -2389,7 +2248,7 @@ export default function HomePage({
         setMarketsError(null);
         return;
       }
-      const message = getErrorMessage(err)?.toUpperCase() ?? "";
+      const message = getErrorMessage(err as ErrorLike)?.toUpperCase() ?? "";
       setMarketsError(
         message.includes("CATALOG_READ_FAILED")
           ? lang === "RU"
@@ -2524,7 +2383,7 @@ export default function HomePage({
     } catch (err) {
       console.error("Failed to load my comments", err);
       setMyComments([]);
-      const errorMsg = getErrorMessage(err);
+      const errorMsg = getErrorMessage(err as ErrorLike);
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
         const refreshed = await attemptSilentRefresh();
@@ -2546,7 +2405,7 @@ export default function HomePage({
       lastProfileBootstrapUserIdRef.current = null;
       setMyPositions([]);
       setMyTrades([]);
-      setMyBookmarks([]);
+      bookmarks.setMyBookmarks([]);
       setMyCreatedMarkets([]);
       setWalletBalanceMajor(null);
       setProfilePnlMajor(null);
@@ -3188,8 +3047,7 @@ export default function HomePage({
         )
       );
       if (cancelled) return;
-      const additions = rows
-        .filter((v): v is MarketApiRow => Boolean(v))
+      const additions = (rows.filter(Boolean) as MarketApiRow[])
         .map((m) => mapMarketApiToMarket(m, lang));
       if (additions.length === 0) return;
       setMarkets((prev) => {
@@ -3239,7 +3097,7 @@ export default function HomePage({
           activeCategoryId === "all" ||
           marketTag === activeCategoryId ||
           (market.aiTags ?? []).some((t) => t.tag === activeCategoryId);
-        const targetTitle = lang === "RU" ? market.titleRu : market.titleEn;
+        const targetTitle = (lang === "RU" ? market.titleRu : market.titleEn) ?? market.titleEn;
         const semanticMatch = Boolean(semanticSearchScores[market.id]);
         const normalizedSearch = deferredSearchQuery.trim().toLowerCase();
         const matchesSearch =
@@ -3471,14 +3329,9 @@ export default function HomePage({
     });
   }, [catalogMarkets, mergedMarkets, marketLivePatchById, topMarketPreviewRows]);
 
-  const bookmarkedMarketIds = useMemo(() => new Set(myBookmarks.map((b) => b.marketId)), [myBookmarks]);
-  const bookmarkedMarkets = useMemo(() => {
-    return mergedMarkets.filter((m) => bookmarkedMarketIds.has(m.id));
-  }, [mergedMarkets, bookmarkedMarketIds]);
-
   useEffect(() => {
     const knownIds = new Set(mergedMarkets.map((market) => market.id));
-    const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarkedMarketIds)]))
+    const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarks.bookmarkedMarketIds)]))
       .filter((marketId) => !knownIds.has(marketId))
       .filter((marketId) => !ensuredMarketIdsRef.current.has(marketId))
       .slice(0, 40);
@@ -3491,8 +3344,7 @@ export default function HomePage({
         missing.map((marketId) => trpcClient.market.getMarket.query({ marketId }).catch(() => null))
       );
       if (cancelled) return;
-      const additions = rows
-        .filter((value): value is MarketApiRow => Boolean(value))
+      const additions = (rows.filter(Boolean) as MarketApiRow[])
         .map((row) => mapMarketApiToMarket(row, lang));
       if (additions.length === 0) return;
       setMarkets((prev) => {
@@ -3507,7 +3359,7 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [bookmarkedMarketIds, lang, mergedMarkets, myBetMarketIds]);
+  }, [bookmarks.bookmarkedMarketIds, lang, mergedMarkets, myBetMarketIds]);
 
   const selectedMarket = useMemo(
     () => mergedMarkets.find((market) => market.id === selectedMarketId),
@@ -3595,7 +3447,7 @@ export default function HomePage({
             liveSeq: asNumber((row as { liveSeq?: number | null }).liveSeq),
             liveUpdatedAt:
               typeof (row as { liveUpdatedAt?: string | null }).liveUpdatedAt === "string"
-                ? (row as { liveUpdatedAt?: string | null }).liveUpdatedAt
+                ? (row as { liveUpdatedAt?: string | null }).liveUpdatedAt ?? null
                 : null,
           });
         } catch {
@@ -3772,13 +3624,13 @@ export default function HomePage({
       setCurrentView(view);
       navigateToViewUrl(view);
       if (view === "FRIENDS") {
-        void loadLeaderboard();
+        void leaderboard.loadLeaderboard();
       } else if (view === "FEED" || view === "CATALOG") {
         // Refresh markets when returning to feed or catalog to show updated percentages
         void loadMarkets();
       }
     },
-    [loadLeaderboard, loadMarkets, navigateToViewUrl]
+    [leaderboard.loadLeaderboard, loadMarkets, navigateToViewUrl]
   );
 
   useEffect(() => {
@@ -3786,10 +3638,10 @@ export default function HomePage({
       setMarketCandles([]);
       setMarketPublicTrades([]);
       setMarketLiveActivityTicks([]);
-      setMarketComments([]);
+      comments.setMarketComments([]);
       setMarketInsightsLoading(false);
       setMarketInsightsError(null);
-      setMarketCommentsError(null);
+      comments.setMarketCommentsError(null);
       setMarketActivityError(null);
       return;
     }
@@ -3882,11 +3734,11 @@ export default function HomePage({
       } catch (err) {
         console.error("Failed to load price candles", err);
         if (!cancelled && requestId === candleRequestSeq) {
-          maybeRequireRelogin(err);
+          maybeRequireRelogin(err as ErrorLike);
           if (!hasFreshCachedCandles) {
             setMarketCandles([]);
           }
-          setMarketInsightsError(getErrorMessage(err));
+          setMarketInsightsError(getErrorMessage(err as ErrorLike) ?? null);
         }
       } finally {
         if (!cancelled && requestId === candleRequestSeq) {
@@ -3940,18 +3792,18 @@ export default function HomePage({
         } else {
           console.error("Failed to load public trades", tradesRes.reason);
           maybeRequireRelogin(tradesRes.reason);
-          setMarketActivityError(getErrorMessage(tradesRes.reason));
+          setMarketActivityError(getErrorMessage(tradesRes.reason) ?? null);
         }
       } catch (err) {
         if (!cancelled) {
-          maybeRequireRelogin(err);
-          setMarketActivityError(getErrorMessage(err));
+          maybeRequireRelogin(err as ErrorLike);
+          setMarketActivityError(getErrorMessage(err as ErrorLike) ?? null);
         }
       }
     }
 
     async function fetchComments() {
-      setMarketCommentsError(null);
+      comments.setMarketCommentsError(null);
       try {
         const commentsRaw = await trpcClient.market.getMarketComments.query({ marketId: activeMarketId, limit: 50 });
         if (cancelled) return;
@@ -3979,11 +3831,11 @@ export default function HomePage({
             parentId: c.parentId ?? null,
           };
         });
-        setMarketComments(uiComments);
+        comments.setMarketComments(uiComments);
       } catch (err) {
         if (!cancelled) {
-          maybeRequireRelogin(err);
-          setMarketCommentsError(getErrorMessage(err));
+          maybeRequireRelogin(err as ErrorLike);
+          comments.setMarketCommentsError(getErrorMessage(err as ErrorLike) ?? null);
         }
       }
     }
@@ -4215,7 +4067,7 @@ export default function HomePage({
               if (!tradeMeta) {
                 throw new Error("LIMITLESS_TRADE_META_MISSING");
               }
-              const auth = limitlessStoredAuth ?? (await promptForLimitlessCredentials());
+              const auth = limitlessAuth.limitlessStoredAuth ?? (await limitlessAuth.promptForLimitlessCredentials());
               if (!auth) {
                 setBetConfirm((prev) => ({ ...prev, open: false, isLoading: false, errorMessage: null }));
                 return null;
@@ -4253,8 +4105,7 @@ export default function HomePage({
                 relayError.includes("TOKEN") ||
                 relayError.includes("BEARER")
               ) {
-                clearStoredLimitlessAuth();
-                setLimitlessStoredAuth(null);
+                limitlessAuth.handleClearLimitlessCredentials();
               }
 
               return result;
@@ -4262,7 +4113,7 @@ export default function HomePage({
           : await (async () => {
               const built = await buildPolymarketSignedBuyOrder({
                 wallet: wallet as PrivyWalletLike,
-                tokenId,
+                tokenId: tokenId!,
                 amountUsd: amount,
                 limitPrice: price,
                 chainId: Number.isFinite(POLYMARKET_CHAIN_ID) ? POLYMARKET_CHAIN_ID : 137,
@@ -4299,7 +4150,7 @@ export default function HomePage({
         isLoading: false,
       });
     } catch (err) {
-      const message = getErrorMessage(err);
+      const message = getErrorMessage(err as ErrorLike) ?? "";
       const mapped = (() => {
         const upper = message.toUpperCase();
         if (upper.includes("ORDER_RELAY_TIMEOUT")) {
@@ -4423,117 +4274,6 @@ export default function HomePage({
     window.open(target, "_blank", "noopener,noreferrer");
   }, []);
 
-
-  const handleSetBookmarked = useCallback(
-    async (marketId: string, bookmarked: boolean) => {
-      if (!user) {
-        openAuth("SIGN_UP");
-        return;
-      }
-
-      let previous: { marketId: string; createdAt: string }[] | null = null;
-      const nowIso = new Date().toISOString();
-      setMyBookmarks((curr) => {
-        previous = curr;
-        if (bookmarked) {
-          if (curr.some((b) => b.marketId === marketId)) return curr;
-          return [{ marketId, createdAt: nowIso }, ...curr];
-        }
-        return curr.filter((b) => b.marketId !== marketId);
-      });
-
-      try {
-        const marketProvider =
-          mergedMarkets.find((market) => market.id === marketId)?.provider ??
-          (marketId.startsWith("limitless:") ? "limitless" : undefined);
-        await trpcClient.market.setBookmark.mutate({
-          marketId,
-          provider: marketProvider,
-          bookmarked,
-        });
-        void trpcClient.events.track
-          .mutate({
-            sessionId: sessionIdRef.current,
-            marketId,
-            provider: marketProvider,
-            eventType: "bookmark",
-            value: bookmarked ? 1 : 0,
-          })
-          .catch(() => {
-            // best effort analytics event
-          });
-      } catch (err) {
-        console.error("setBookmark failed", err);
-        if (previous) setMyBookmarks(previous);
-        throw err;
-      }
-    },
-    [mergedMarkets, openAuth, user]
-  );
-
-  const openPublicProfile = useCallback(
-    async (userId: string) => {
-      setPublicProfileOpen(true);
-      setPublicProfileLoading(true);
-      setPublicProfileError(null);
-      setPublicProfileUser(null);
-      setPublicProfilePnl(0);
-      setPublicProfileComments([]);
-      setPublicProfileBets([]);
-      publicProfileRequestIdRef.current += 1;
-      const requestId = publicProfileRequestIdRef.current;
-
-      try {
-        const [u, stats, comments, bets] = await Promise.all([
-          trpcClient.user.publicUser.query({ userId }),
-          trpcClient.user.publicUserStats.query({ userId }),
-          trpcClient.user.publicUserComments.query({ userId, limit: 50 }),
-          trpcClient.user.publicUserVotes.query({ userId, limit: 200 }),
-        ]);
-        if (requestId !== publicProfileRequestIdRef.current) return;
-
-        setPublicProfileUser({
-          id: requireValue(u.id, "PUBLIC_USER_ID_MISSING"),
-          username: requireValue(u.username, "PUBLIC_USER_USERNAME_MISSING"),
-          displayName: u.displayName ?? null,
-          avatarUrl: u.avatarUrl ?? null,
-          telegramPhotoUrl: u.telegramPhotoUrl ?? null,
-        });
-        setPublicProfilePnl(Number(stats.pnlMajor ?? 0));
-        setPublicProfileComments(
-          (comments ?? []).map((c) => ({
-            id: requireValue(c.id, "PUBLIC_COMMENT_ID_MISSING"),
-            marketId: requireValue(c.marketId, "PUBLIC_COMMENT_MARKET_ID_MISSING"),
-            parentId: c.parentId ?? null,
-            body: requireValue(c.body, "PUBLIC_COMMENT_BODY_MISSING"),
-            createdAt: requireValue(c.createdAt, "PUBLIC_COMMENT_CREATED_MISSING"),
-            likesCount: Number(c.likesCount ?? 0),
-          }))
-        );
-        setPublicProfileBets(
-          (bets ?? []).map((b) => ({
-            marketId: requireValue(b.marketId, "PUBLIC_BET_MARKET_ID_MISSING"),
-            outcome: b.outcome ?? null,
-            lastBetAt: requireValue(b.lastBetAt, "PUBLIC_BET_LAST_BET_AT_MISSING"),
-            isActive: Boolean(b.isActive),
-          }))
-        );
-      } catch (err) {
-        if (requestId !== publicProfileRequestIdRef.current) return;
-        console.error("openPublicProfile failed", err);
-        setPublicProfileError(lang === "RU" ? "Не удалось загрузить профиль" : "Failed to load profile");
-      } finally {
-        if (requestId !== publicProfileRequestIdRef.current) return;
-        setPublicProfileLoading(false);
-      }
-    },
-    [lang]
-  );
-
-  const closePublicProfile = useCallback(() => {
-    setPublicProfileOpen(false);
-  }, []);
-
   // Post-auth actions (run only after user becomes available).
   useEffect(() => {
     if (!user || !postAuthAction) return;
@@ -4597,105 +4337,6 @@ export default function HomePage({
     openExternalWindow(target);
   };
 
-  const handlePostMarketComment = useCallback(
-    async (params: {
-      marketId: string;
-      provider?: "polymarket" | "limitless";
-      text: string;
-      parentId?: string | null;
-    }) => {
-      let created: Awaited<ReturnType<typeof trpcClient.market.postMarketComment.mutate>>;
-      try {
-        created = await trpcClient.market.postMarketComment.mutate({
-          marketId: params.marketId,
-          provider: params.provider,
-          body: params.text,
-          parentId: params.parentId ?? null,
-        });
-      } catch (err) {
-        maybeRequireRelogin(err);
-        throw err;
-      }
-      const parsed = marketCommentsSchema.parse([created])[0];
-      const userLabel = parsed.authorUsername ? `${parsed.authorName} (@${parsed.authorUsername})` : parsed.authorName;
-      const avatar = parsed.authorAvatarUrl || buildInitialsAvatarDataUrl(parsed.authorName, { bg: "#333333", fg: "#ffffff" });
-      const timestamp = new Date(parsed.createdAt).toLocaleString(lang === "RU" ? "ru-RU" : "en-US", {
-        day: "2-digit",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      const ui: MarketComment = {
-        id: parsed.id,
-        userId: parsed.userId,
-        username: parsed.authorUsername ?? null,
-        user: userLabel,
-        avatar,
-        text: parsed.body,
-        createdAt: parsed.createdAt,
-        timestamp,
-        likes: parsed.likesCount ?? 0,
-        likedByMe: parsed.likedByMe ?? false,
-        parentId: parsed.parentId ?? null,
-      };
-      setMarketComments((prev) => [ui, ...prev]);
-    },
-    [lang, maybeRequireRelogin]
-  );
-
-  const handleToggleMarketCommentLike = useCallback(async (commentId: string) => {
-    // Optimistic UI update for instant feedback.
-    let previous: { likes: number; likedByMe: boolean } | null = null;
-    setMarketComments((prev) =>
-      prev.map((c) => {
-        if (c.id !== commentId) return c;
-        const likedByMe = Boolean(c.likedByMe);
-        previous = { likes: c.likes, likedByMe };
-        const nextLiked = !likedByMe;
-        const delta = nextLiked ? 1 : -1;
-        return { ...c, likedByMe: nextLiked, likes: Math.max(0, c.likes + delta) };
-      })
-    );
-
-    try {
-      const res = await trpcClient.market.toggleMarketCommentLike.mutate({ commentId });
-      setMarketComments((prev) =>
-        prev.map((c) => (c.id === res.commentId ? { ...c, likes: res.likesCount, likedByMe: res.liked } : c))
-      );
-    } catch (err) {
-      console.error("toggleMarketCommentLike failed", err);
-      maybeRequireRelogin(err);
-      if (previous) {
-        setMarketComments((prev) =>
-          prev.map((c) => (c.id === commentId ? { ...c, likes: previous.likes, likedByMe: previous.likedByMe } : c))
-        );
-      }
-      throw err;
-    }
-  }, [maybeRequireRelogin]);
-
-  const handleFetchMarketContext = useCallback(async (marketId: string) => {
-    if (!marketId || marketContextLoadingId === marketId) return;
-    setMarketContextErrorById((prev) => ({ ...prev, [marketId]: null }));
-    setMarketContextLoadingId(marketId);
-    try {
-      const result = await trpcClient.market.generateMarketContext.mutate({ marketId });
-      setMarketContextById((prev) => ({
-        ...prev,
-        [marketId]: {
-          context: result.context,
-          sources: result.sources,
-          updatedAt: result.updatedAt,
-        },
-      }));
-    } catch (err) {
-      console.error("generateMarketContext failed", err);
-      setMarketContextErrorById((prev) => ({ ...prev, [marketId]: getErrorMessage(err) }));
-    } finally {
-      setMarketContextLoadingId((prev) => (prev === marketId ? null : prev));
-    }
-  }, [marketContextLoadingId]);
-
   return (
     <ClientErrorBoundary
       lang={lang}
@@ -4729,8 +4370,8 @@ export default function HomePage({
             <MarketPage
               market={selectedMarket}
               user={user}
-              bookmarked={bookmarkedMarketIds.has(selectedMarket.id)}
-              onToggleBookmark={({ marketId, bookmarked }) => void handleSetBookmarked(marketId, bookmarked)}
+              bookmarked={bookmarks.bookmarkedMarketIds.has(selectedMarket.id)}
+              onToggleBookmark={({ marketId, bookmarked }) => void bookmarks.handleSetBookmarked(marketId, bookmarked)}
               onBack={() => {
                 setMarketBetIntent(null);
                 setSelectedMarketId(null);
@@ -4756,10 +4397,10 @@ export default function HomePage({
               onPlaceBet={handlePlaceBet}
               onSellPosition={handleSellPosition}
               onClaimWinnings={handleClaimWinnings}
-              comments={marketComments}
-                onOpenUserProfile={(userId) => void openPublicProfile(userId)}
-              onPostComment={handlePostMarketComment}
-              onToggleCommentLike={handleToggleMarketCommentLike}
+              comments={comments.marketComments}
+                onOpenUserProfile={(userId) => void publicProfile.openPublicProfile(userId)}
+              onPostComment={comments.handlePostMarketComment}
+              onToggleCommentLike={comments.handleToggleMarketCommentLike}
               userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
               priceCandles={marketCandles}
               chartRange={marketChartRange}
@@ -4768,13 +4409,13 @@ export default function HomePage({
               liveActivityTicks={marketLiveActivityTicks}
               insightsLoading={marketInsightsLoading}
               insightsError={marketInsightsError}
-              commentsError={marketCommentsError}
+              commentsError={comments.marketCommentsError}
               activityError={marketActivityError}
-              marketContext={marketContextById[selectedMarket.id]?.context ?? null}
-              marketContextSources={marketContextById[selectedMarket.id]?.sources ?? []}
-              marketContextLoading={marketContextLoadingId === selectedMarket.id}
-              marketContextError={marketContextErrorById[selectedMarket.id] ?? null}
-              onFetchMarketContext={handleFetchMarketContext}
+              marketContext={marketContext.marketContextById[selectedMarket.id]?.context ?? null}
+              marketContextSources={marketContext.marketContextById[selectedMarket.id]?.sources ?? []}
+              marketContextLoading={marketContext.marketContextLoadingId === selectedMarket.id}
+              marketContextError={marketContext.marketContextErrorById[selectedMarket.id] ?? null}
+              onFetchMarketContext={marketContext.handleFetchMarketContext}
               creatorHasBets={creatorHasBets}
               onOpenExternalTrade={(marketId) => {
                 const market = mergedMarkets.find((m) => m.id === marketId) ?? null;
@@ -4827,18 +4468,18 @@ export default function HomePage({
                   <FriendsPage
                     lang={lang}
                     user={user}
-                    leaderboardUsers={leaderboardUsers}
-                    leaderboardLoading={loadingLeaderboard}
-                    leaderboardError={leaderboardError}
+                    leaderboardUsers={leaderboard.leaderboardUsers}
+                    leaderboardLoading={leaderboard.loadingLeaderboard}
+                    leaderboardError={leaderboard.leaderboardError}
                     onLogin={() => openAuth("SIGN_IN")}
-                    onUserClick={(u) => void openPublicProfile(u.id)}
+                    onUserClick={(u) => void publicProfile.openPublicProfile(u.id)}
                     onCreateReferralLink={handleCreateReferralLink}
-                    leaderboardSort={leaderboardSort}
+                    leaderboardSort={leaderboard.leaderboardSort}
                     onLeaderboardSortChange={(next) => {
-                      setLeaderboardSort(next);
-                      void loadLeaderboard(next);
+                      leaderboard.setLeaderboardSort(next);
+                      void leaderboard.loadLeaderboard(next);
                     }}
-                    onOpenLeaderboardSort={() => setLeaderboardSortOpen(true)}
+                    onOpenLeaderboardSort={() => leaderboard.setLeaderboardSortOpen(true)}
                   />
                 </div>
 
@@ -4871,7 +4512,7 @@ export default function HomePage({
                     marketCategories={marketCategories}
                     catalogMarkets={catalogMarkets}
                     marketHighlightById={marketHighlightById}
-                    bookmarkedMarketIds={bookmarkedMarketIds}
+                    bookmarkedMarketIds={bookmarks.bookmarkedMarketIds}
                     onMarketClick={(market) => {
                       setMarketBetIntent(null);
                       void openMarketWithAuthCheck(market);
@@ -4901,8 +4542,8 @@ export default function HomePage({
                     user={user}
                     marketPulseRows={marketPulseRows}
                     topMarketPreviewLoading={topMarketPreviewLoading}
-                    bookmarkedMarkets={bookmarkedMarkets}
-                    bookmarkedMarketIds={bookmarkedMarketIds}
+                    bookmarkedMarkets={bookmarks.bookmarkedMarkets}
+                    bookmarkedMarketIds={bookmarks.bookmarkedMarketIds}
                     feedMarkets={feedMarkets}
                     loadingMarkets={loadingMarkets}
                     marketsLoadingMessage={marketsLoadingMessage}
@@ -4934,7 +4575,7 @@ export default function HomePage({
                     comments={myComments}
                     commentsLoading={myCommentsLoading}
                     commentsError={myCommentsError}
-                    bookmarks={bookmarkedMarkets}
+                    bookmarks={bookmarks.bookmarkedMarkets}
                     myMarkets={myCreatedMarkets}
                     onSellPosition={handleSellPosition}
                     onLoadBets={() => void loadMyBets()}
@@ -5007,15 +4648,15 @@ export default function HomePage({
         />
       )}
 
-      {leaderboardSortOpen && currentView === "FRIENDS" && (
+      {leaderboard.leaderboardSortOpen && currentView === "FRIENDS" && (
         <LeaderboardSortModal
           lang={lang}
-          leaderboardSort={leaderboardSort}
+          leaderboardSort={leaderboard.leaderboardSort}
           onSortChange={(sort) => {
-            setLeaderboardSort(sort);
-            void loadLeaderboard(sort);
+            leaderboard.setLeaderboardSort(sort);
+            void leaderboard.loadLeaderboard(sort);
           }}
-          onClose={() => setLeaderboardSortOpen(false)}
+          onClose={() => leaderboard.setLeaderboardSortOpen(false)}
         />
       )}
 
@@ -5039,14 +4680,14 @@ export default function HomePage({
         lang={lang}
       />
       <LimitlessCredentialsModal
-        isOpen={limitlessCredentialsOpen}
+        isOpen={limitlessAuth.limitlessCredentialsOpen}
         lang={lang}
-        initialBearerToken={limitlessStoredAuth?.bearerToken ?? ""}
-        initialOwnerId={limitlessStoredAuth?.ownerId ?? null}
-        error={limitlessCredentialsError}
-        onClose={closeLimitlessCredentialsModal}
-        onSubmit={handleSaveLimitlessCredentials}
-        onClear={handleClearLimitlessCredentials}
+        initialBearerToken={limitlessAuth.limitlessStoredAuth?.bearerToken ?? ""}
+        initialOwnerId={limitlessAuth.limitlessStoredAuth?.ownerId ?? null}
+        error={limitlessAuth.limitlessCredentialsError}
+        onClose={limitlessAuth.closeLimitlessCredentialsModal}
+        onSubmit={limitlessAuth.handleSaveLimitlessCredentials}
+        onClear={limitlessAuth.handleClearLimitlessCredentials}
       />
       <BetConfirmModal
         isOpen={betConfirm.open}
@@ -5059,18 +4700,18 @@ export default function HomePage({
         isLoading={Boolean(betConfirm.isLoading)}
       />
       <PublicUserProfileModal
-        isOpen={publicProfileOpen}
-        onClose={closePublicProfile}
+        isOpen={publicProfile.publicProfileOpen}
+        onClose={publicProfile.closePublicProfile}
         lang={lang}
-        loading={publicProfileLoading}
-        error={publicProfileError}
-        user={publicProfileUser}
-        pnlMajor={publicProfilePnl}
-        bets={publicProfileBets}
-        comments={publicProfileComments}
+        loading={publicProfile.publicProfileLoading}
+        error={publicProfile.publicProfileError}
+        user={publicProfile.publicProfileUser}
+        pnlMajor={publicProfile.publicProfilePnl}
+        bets={publicProfile.publicProfileBets}
+        comments={publicProfile.publicProfileComments}
         markets={mergedMarkets}
         onMarketClick={(marketId) => {
-          closePublicProfile();
+          publicProfile.closePublicProfile();
           setMarketBetIntent(null);
           const market = mergedMarkets.find((m) => m.id === marketId);
           if (market) {

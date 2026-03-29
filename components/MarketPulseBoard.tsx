@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo } from 'react';
+import Image from 'next/image';
 import { Activity, ArrowUpRight, Clock3, Waves } from 'lucide-react';
 import type { Market } from '../types';
 import { formatTimeRemaining } from '../lib/time';
@@ -232,9 +233,12 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                           className="grid w-full cursor-pointer grid-cols-[minmax(0,2.8fr)_1fr_1fr_1fr_0.9fr] gap-4 border-b border-zinc-900 px-4 py-4 text-left transition-colors hover:bg-zinc-950/70"
                         >
                           <div className="flex min-w-0 items-center gap-3">
-                            <img
+                            <Image
                               src={market.imageUrl}
                               alt={market.title}
+                              width={48}
+                              height={48}
+                              unoptimized
                               className="h-12 w-12 rounded-2xl border border-zinc-900 object-cover"
                             />
                             <div className="min-w-0">
@@ -243,9 +247,11 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                               </div>
                               <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
                                 <span className="inline-flex items-center gap-1 rounded-full border border-zinc-900 bg-zinc-950/60 px-2 py-1">
-                                  <img
+                                  <Image
                                     src={getProviderLogo(market)}
                                     alt={getProviderName(market)}
+                                    width={14}
+                                    height={14}
                                     className="h-3.5 w-3.5 object-contain"
                                   />
                                   {getProviderName(market)}
@@ -311,9 +317,12 @@ const MarketPulseBoard: React.FC<MarketPulseBoardProps> = ({
                         className="w-full cursor-pointer rounded-3xl border border-zinc-900 bg-zinc-950/55 p-4 text-left transition-colors hover:bg-zinc-950/80"
                       >
                         <div className="flex items-start gap-3">
-                          <img
+                          <Image
                             src={market.imageUrl}
                             alt={market.title}
+                            width={48}
+                            height={48}
+                            unoptimized
                             className="h-12 w-12 rounded-2xl border border-zinc-900 object-cover"
                           />
                           <div className="min-w-0 flex-1">

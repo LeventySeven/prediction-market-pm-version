@@ -1,9 +1,7 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
 import { randomBytes } from "node:crypto";
-import { authenticatedProcedure, publicProcedure, router } from "../trpc";
-import { consumeDurableRateLimit } from "../../security/rateLimit";
-import { getTrustedClientIpFromRequest } from "../../http/ip";
+import { csrfAuthenticatedMutation, publicProcedure, rateLimitMiddleware, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
 import { DEFAULT_LEADERBOARD_LIMIT } from "@/src/lib/constants";
@@ -212,19 +210,14 @@ export const userRouter = router({
       }
     }),
 
-  updateDisplayName: authenticatedProcedure
+  updateDisplayName: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "user:write", limit: 20, windowSeconds: 60 }))
     .input(updateDisplayNameInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 20,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const displayName = normalizeDisplayName(input.displayName);
       const updated = await (supabaseService as any)
         .from("users")
@@ -236,19 +229,14 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  updateProfileIdentity: authenticatedProcedure
+  updateProfileIdentity: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "user:write", limit: 20, windowSeconds: 60 }))
     .input(updateProfileIdentityInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 20,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
 
       const normalizedUsername = normalizeHandleInput(input.username);
       const displayName = normalizeDisplayName(input.displayName);
@@ -292,19 +280,14 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  updateAvatarUrl: authenticatedProcedure
+  updateAvatarUrl: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "user:write", limit: 20, windowSeconds: 60 }))
     .input(updateAvatarUrlInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 20,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const updatePayload: Record<string, unknown> = {
         avatar_url: input.avatarUrl,
       };
@@ -323,19 +306,14 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  completeProfileSetup: authenticatedProcedure
+  completeProfileSetup: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "user:write", limit: 20, windowSeconds: 60 }))
     .input(completeProfileSetupInput)
     .output(userShape)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 20,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
 
       const normalizedUsername = normalizeHandleInput(input.username);
       const displayName = normalizeDisplayName(input.displayName);
@@ -415,18 +393,13 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  createReferralLink: authenticatedProcedure
+  createReferralLink: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "user:write", limit: 10, windowSeconds: 60 }))
     .output(createReferralLinkOutput)
     .mutation(async ({ ctx }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `user:write:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 10,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
       const user = await (supabaseService as any)
         .from("users")
         .select("id, referral_code")

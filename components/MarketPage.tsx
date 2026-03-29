@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import NextImage from 'next/image';
 import { Market, User, Position, PriceCandle, PublicTrade, Comment, LiveActivityTick } from '../types';
 import Button from './Button';
 import EligibilityDisclaimerModal from './EligibilityDisclaimerModal';
@@ -178,11 +179,11 @@ const MarketPage: React.FC<MarketPageProps> = ({
   // Trading is delegated to venue-specific flows from the shell page.
   const isOnChainMarket = false;
   const walletConnected = false;
-  const walletBalanceMajor: number | null = null;
-  const vaultBalanceMajor: number | null = null;
-  const onchainYesShares: number | null = null;
-  const onchainNoShares: number | null = null;
-  const onchainLoadError: string | null = null;
+  const walletBalanceMajor = null as number | null;
+  const vaultBalanceMajor = null as number | null;
+  const onchainYesShares = null as number | null;
+  const onchainNoShares = null as number | null;
+  const onchainLoadError = null as string | null;
 
   useEffect(() => {
     if (!betIntent) return;
@@ -415,7 +416,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
       });
     } catch (err) {
       console.error("postMarketComment failed", err);
-      setCommentSendError(getErrorMessage(err, 'Не удалось отправить комментарий', 'Failed to post comment', lang));
+      setCommentSendError(getErrorMessage(err as ErrorLike, 'Не удалось отправить комментарий', 'Failed to post comment', lang));
     }
     setReplyTo(null);
   };
@@ -526,7 +527,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
     } catch (error) {
       setPlaceError(
         getErrorMessage(
-          error,
+          error as ErrorLike,
           'Не удалось выполнить ставку',
           'Failed to place bet',
           lang
@@ -555,7 +556,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
     } catch (error) {
       setSellError(
         getErrorMessage(
-          error,
+          error as ErrorLike,
           'Не удалось продать позицию',
           'Failed to sell position',
           lang
@@ -573,7 +574,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
       setPlaceError(null);
       await onClaimWinnings({ marketId: market.id, assetCode: market.settlementAsset as 'USDC' | 'USDT' });
     } catch (e) {
-      setPlaceError(getErrorMessage(e, 'Не удалось получить выигрыш', 'Failed to claim winnings', lang));
+      setPlaceError(getErrorMessage(e as ErrorLike, 'Не удалось получить выигрыш', 'Failed to claim winnings', lang));
     }
   };
 
@@ -591,7 +592,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
     } catch (error) {
       setResolveError(
         getErrorMessage(
-          error,
+          error as ErrorLike,
           'Не удалось завершить рынок',
           'Failed to resolve market',
           lang
@@ -726,10 +727,13 @@ const MarketPage: React.FC<MarketPageProps> = ({
 
             {/* Circular Market Image - centered at top */}
             <div className="mb-4">
-              <img 
-                src={market.imageUrl} 
-                alt={localizedTitle} 
-                className="w-20 h-20 rounded-full bg-zinc-950 object-cover border border-zinc-900" 
+              <NextImage
+                src={market.imageUrl}
+                alt={localizedTitle}
+                width={80}
+                height={80}
+                unoptimized
+                className="w-20 h-20 rounded-full bg-zinc-950 object-cover border border-zinc-900"
               />
             </div>
 
@@ -833,8 +837,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         >
                           <span className="flex items-center gap-2 min-w-0">
                             {o.iconUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={o.iconUrl} alt={o.title} className="w-5 h-5 rounded-full object-cover border border-zinc-800" />
+                              <NextImage src={o.iconUrl} alt={o.title} width={20} height={20} unoptimized className="w-5 h-5 rounded-full object-cover border border-zinc-800" />
                             ) : (
                               <span className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-700" />
                             )}
@@ -1224,10 +1227,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
                         onClick={() => onOpenUserProfile(creatorId)}
                         className="inline-flex items-center gap-2 text-zinc-200 underline underline-offset-4 hover:text-white"
                       >
-                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
+                        <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
                           {creatorAvatarUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={creatorAvatarUrl} alt={creatorDisplayName} className="h-full w-full object-cover" />
+                            <NextImage src={creatorAvatarUrl} alt={creatorDisplayName} fill unoptimized className="object-cover" />
                           ) : (
                             <UserIcon size={12} className="text-zinc-400" />
                           )}
@@ -1236,10 +1238,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       </button>
                     ) : (
                       <span className="inline-flex items-center gap-2 text-zinc-200">
-                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
+                        <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
                           {creatorAvatarUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={creatorAvatarUrl} alt={creatorDisplayName} className="h-full w-full object-cover" />
+                            <NextImage src={creatorAvatarUrl} alt={creatorDisplayName} fill unoptimized className="object-cover" />
                           ) : (
                             <UserIcon size={12} className="text-zinc-400" />
                           )}
@@ -1597,13 +1598,15 @@ const MarketPage: React.FC<MarketPageProps> = ({
                             <button
                               type="button"
                               onClick={() => onOpenUserProfile?.(node.userId)}
-                              className="w-9 h-9 rounded-full overflow-hidden bg-zinc-900 opacity-80 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                              className="relative w-9 h-9 rounded-full overflow-hidden bg-zinc-900 opacity-80 group-hover:opacity-100 transition-opacity flex-shrink-0"
                               aria-label={lang === 'RU' ? 'Открыть профиль' : 'Open profile'}
                             >
-                              <img
+                              <NextImage
                                 src={node.avatar}
                                 alt={node.user}
-                                className="w-full h-full object-cover"
+                                fill
+                                unoptimized
+                                className="object-cover"
                               />
                             </button>
                             <div className="flex-1">
@@ -1813,10 +1816,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
                       onClick={() => onOpenUserProfile(creatorId)}
                       className="inline-flex items-center gap-2 text-zinc-200 underline underline-offset-4 hover:text-white"
                     >
-                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
+                      <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
                         {creatorAvatarUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={creatorAvatarUrl} alt={creatorDisplayName} className="h-full w-full object-cover" />
+                          <NextImage src={creatorAvatarUrl} alt={creatorDisplayName} fill unoptimized className="object-cover" />
                         ) : (
                           <UserIcon size={12} className="text-zinc-400" />
                         )}
@@ -1825,10 +1827,9 @@ const MarketPage: React.FC<MarketPageProps> = ({
                     </button>
                   ) : (
                     <span className="inline-flex items-center gap-2 text-zinc-200">
-                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
+                      <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden">
                         {creatorAvatarUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={creatorAvatarUrl} alt={creatorDisplayName} className="h-full w-full object-cover" />
+                          <NextImage src={creatorAvatarUrl} alt={creatorDisplayName} fill unoptimized className="object-cover" />
                         ) : (
                           <UserIcon size={12} className="text-zinc-400" />
                         )}

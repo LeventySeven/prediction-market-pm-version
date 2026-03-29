@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import NextImage from 'next/image';
 import { LogOut, Mail, User as UserIcon, Shield, Pencil, Image, CheckCircle2, XCircle, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import Button from './Button';
 import type { Bet, Market, Trade, User, UserCommentSummary } from '../types';
@@ -291,13 +292,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
         }}
       >
         <div className="flex items-start gap-4">
-          <div className="h-14 w-14 rounded-full bg-zinc-950/40 border border-zinc-900 overflow-hidden flex items-center justify-center text-zinc-100 font-bold">
+          <div className="relative h-14 w-14 rounded-full bg-zinc-950/40 border border-zinc-900 overflow-hidden flex items-center justify-center text-zinc-100 font-bold">
             {avatarPreviewUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={avatarPreviewUrl} alt={displayName} className="h-full w-full object-cover" />
+              <NextImage src={avatarPreviewUrl} alt={displayName} fill unoptimized className="object-cover" />
             ) : user.avatar ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={user.avatar} alt={displayName} className="h-full w-full object-cover" />
+              <NextImage src={user.avatar} alt={displayName} fill unoptimized className="object-cover" />
             ) : (
               initialsFrom(displayName)
             )}

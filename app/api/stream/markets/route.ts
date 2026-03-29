@@ -130,7 +130,7 @@ type ClientEntry = {
 };
 
 let sharedSubscription: {
-  on: (type: string, listener: (event: any) => void) => void;
+  on: (type: any, listener: (event: any) => void) => void;
   unsubscribe: (channels?: string[]) => Promise<void>;
   removeAllListeners?: () => void;
 } | null = null;

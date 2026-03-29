@@ -1,4 +1,5 @@
 import React from 'react';
+import Image from 'next/image';
 import { Search, Globe, HelpCircle, Wallet } from 'lucide-react';
 import Button from './Button';
 import { User } from '../types';
@@ -51,9 +52,11 @@ const Header: React.FC<HeaderProps> = ({
           role={onLogoClick ? 'button' : undefined}
           aria-label={onLogoClick ? t.home : undefined}
         >
-          <img
+          <Image
             src="/white.svg"
             alt="Logo"
+            width={64}
+            height={16}
             className="h-4 w-auto block"
             draggable={false}
           />

@@ -1,6 +1,6 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
-import { publicProcedure, router } from "../trpc";
+import { csrfPublicMutation, router } from "../trpc";
 import type { Json } from "../../../types/database";
 import { consumeDurableRateLimit } from "../../security/rateLimit";
 import { getTrustedClientIpFromRequest } from "../../http/ip";
@@ -34,7 +34,7 @@ const resolveMarketRefId = async (
 };
 
 export const eventsRouter = router({
-  track: publicProcedure
+  track: csrfPublicMutation
     .input(trackEventInput)
     .output(trackEventOutput)
     .mutation(async ({ ctx, input }) => {

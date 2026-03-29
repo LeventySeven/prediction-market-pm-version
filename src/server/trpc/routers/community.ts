@@ -1,6 +1,6 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
-import { authenticatedProcedure, publicProcedure, router } from "../trpc";
+import { csrfAuthenticatedMutation, publicProcedure, router } from "../trpc";
 import { API_VERSION_V1 } from "@/src/lib/constants";
 import { encodeCursor, decodeCursor } from "@/src/lib/cursor";
 import {
@@ -49,11 +49,11 @@ const toCommunityOutput = (row: CommunityRow, tags: string[]) => ({
 });
 
 export const communityRouter = router({
-  create: authenticatedProcedure
+  create: csrfAuthenticatedMutation
     .input(createCommunityInput)
     .output(communityOutput)
     .mutation(async ({ ctx, input }) => {
-      const userId = ctx.authUser.id;
+      const userId = ctx.authUser!.id;
 
       // Insert community
       const { data: community, error: communityError } = await (ctx.supabaseService as any)
@@ -113,11 +113,11 @@ export const communityRouter = router({
       return toCommunityOutput(community as CommunityRow, input.tags);
     }),
 
-  update: authenticatedProcedure
+  update: csrfAuthenticatedMutation
     .input(updateCommunityInput)
     .output(communityOutput)
     .mutation(async ({ ctx, input }) => {
-      const userId = ctx.authUser.id;
+      const userId = ctx.authUser!.id;
 
       // Verify ownership
       const { data: existing, error: fetchError } = await (ctx.supabaseService as any)

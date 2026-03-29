@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import NextImage from 'next/image';
 import { FileText, Image, Lock, Mail, User as UserIcon } from 'lucide-react';
 import Button from './Button';
 import type { User } from '@/types';
@@ -284,10 +285,9 @@ const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, user, lan
               {lang === 'RU' ? 'Аватар' : 'Avatar'}
             </div>
             <div className="flex items-center gap-3 mb-3">
-              <div className="h-12 w-12 rounded-full border border-zinc-800 bg-zinc-950/40 overflow-hidden flex items-center justify-center text-zinc-100 font-semibold">
+              <div className="relative h-12 w-12 rounded-full border border-zinc-800 bg-zinc-950/40 overflow-hidden flex items-center justify-center text-zinc-100 font-semibold">
                 {avatarSrc ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={avatarSrc} alt={displayNameTrimmed || 'avatar'} className="h-full w-full object-cover" />
+                  <NextImage src={avatarSrc} alt={displayNameTrimmed || 'avatar'} fill unoptimized className="object-cover" />
                 ) : (
                   initialsFrom(displayNameTrimmed || user.name || user.username)
                 )}

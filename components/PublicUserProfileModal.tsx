@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { X, MessageCircle, Clock } from "lucide-react";
 import type { Market } from "../types";
 
@@ -192,9 +193,9 @@ const PublicUserProfileModal: React.FC<PublicUserProfileModalProps> = ({
           </button>
 
           <div className="flex items-center gap-4">
-            <div className="h-14 w-14 rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden flex items-center justify-center">
+            <div className="relative h-14 w-14 rounded-full border border-zinc-900 bg-zinc-950/40 overflow-hidden flex items-center justify-center">
               {avatarSrc ? (
-                <img src={avatarSrc} alt={displayName} className="h-full w-full object-cover" />
+                <Image src={avatarSrc} alt={displayName} fill unoptimized className="object-cover" />
               ) : (
                 <div className="text-zinc-400 font-bold">{displayName.slice(0, 2).toUpperCase()}</div>
               )}

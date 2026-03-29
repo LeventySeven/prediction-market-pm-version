@@ -1659,6 +1659,7 @@ export const listCanonicalMarkets = async (
       ? z.array(marketOutput).safeParse(snapshotPage.rows)
       : null;
   if (
+    snapshotPage &&
     parsedSnapshotItems?.success &&
     !isSuspiciousZeroVolumePage({
       items: parsedSnapshotItems.data,

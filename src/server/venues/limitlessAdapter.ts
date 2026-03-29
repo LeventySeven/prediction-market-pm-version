@@ -343,7 +343,7 @@ const parseOutcomes = (
           isActive: true,
         };
       })
-      .filter((item): item is VenueMarket["outcomes"][number] => Boolean(item));
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
   }
 
   const pricesRaw = Array.isArray(row.prices) ? row.prices : [];
@@ -796,7 +796,10 @@ const hasOrderField = (order: Record<string, unknown>, field: string): boolean =
 
 const relaySignedOrder = async (input: VenueRelayOrderInput): Promise<VenueRelayOrderOutput> => {
   const limitlessAuth = input.limitlessAuth;
-  const bearerToken = typeof limitlessAuth?.bearerToken === "string" ? limitlessAuth.bearerToken.trim() : "";
+  if (!limitlessAuth) {
+    return { success: false, status: 400, error: "LIMITLESS_AUTH_REQUIRED" };
+  }
+  const bearerToken = typeof limitlessAuth.bearerToken === "string" ? limitlessAuth.bearerToken.trim() : "";
   if (!bearerToken) {
     return { success: false, status: 400, error: "LIMITLESS_AUTH_REQUIRED" };
   }

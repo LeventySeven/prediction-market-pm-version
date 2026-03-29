@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import Image from 'next/image';
 import { Clock } from 'lucide-react';
 import type { Market } from '../types';
 import { formatTimeRemaining } from '../lib/time';
@@ -47,9 +48,12 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
       className="w-full text-left px-4 py-3 border-b border-zinc-900 hover:bg-zinc-950/60 transition-colors"
     >
       <div className="flex gap-3">
-        <img
+        <Image
           src={market.imageUrl}
           alt={localizedTitle}
+          width={40}
+          height={40}
+          unoptimized
           className="w-10 h-10 rounded-full bg-zinc-900 border border-zinc-900 object-cover flex-shrink-0"
         />
 
@@ -91,8 +95,7 @@ const MarketFeedItem: React.FC<MarketFeedItemProps> = ({ market, onClick, lang =
               {sortedOutcomes.slice(0, 3).map((o) => (
                 <span key={o.id} className="inline-flex items-center gap-1 rounded-full border border-zinc-900 px-2 py-0.5">
                   {o.iconUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={o.iconUrl} alt={o.title} className="w-3.5 h-3.5 rounded-full object-cover" />
+                    <Image src={o.iconUrl} alt={o.title} width={14} height={14} unoptimized className="w-3.5 h-3.5 rounded-full object-cover" />
                   ) : (
                     <span className="w-3.5 h-3.5 rounded-full bg-zinc-800" />
                   )}

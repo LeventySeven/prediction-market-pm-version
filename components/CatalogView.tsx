@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, type RefObject } from "react";
+import Image from "next/image";
 import MarketCard from "@/components/MarketCard";
 import { Search, Info, Filter } from "lucide-react";
 import type { Market } from "@/types";
@@ -183,9 +184,11 @@ export default function CatalogView({
                 {provider.id === "all" || !provider.logoSrc ? (
                   label
                 ) : (
-                  <img
+                  <Image
                     src={provider.logoSrc}
                     alt={provider.ariaLabel ?? label}
+                    width={20}
+                    height={20}
                     className="h-5 w-5 rounded-md object-contain"
                   />
                 )}

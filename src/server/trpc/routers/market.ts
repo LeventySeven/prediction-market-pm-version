@@ -3,8 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { createHash, createHmac } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
-import { authenticatedProcedure, publicProcedure, router } from "../trpc";
-import { assertCsrfForMutation } from "../../security/csrf";
+import { authenticatedProcedure, csrfAuthenticatedMutation, publicProcedure, rateLimitMiddleware, router } from "../trpc";
 import {
   API_VERSION_V1,
   DEFAULT_MARKET_ACTIVITY_LIMIT,
@@ -283,14 +282,14 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
-    bestBid: null,
-    bestAsk: null,
-    mid: null,
-    lastTradePrice: null,
-    lastTradeSize: null,
-    rolling24hVolume: null,
-    openInterest: null,
-    liveUpdatedAt: null,
+    bestBid: null as number | null,
+    bestAsk: null as number | null,
+    mid: null as number | null,
+    lastTradePrice: null as number | null,
+    lastTradeSize: null as number | null,
+    rolling24hVolume: null as number | null,
+    openInterest: null as number | null,
+    liveUpdatedAt: null as string | null,
     capabilities: {
       supportsTrading: true,
       supportsCandles: true,
@@ -298,7 +297,7 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
       chainId: Number(process.env.NEXT_PUBLIC_POLYMARKET_CHAIN_ID || 137),
     },
     freshness: {
-      sourceTs: null,
+      sourceTs: null as string | null,
       stale: false,
     },
     orderbookFreshness: null,
@@ -405,17 +404,17 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     chance: roundPercentValue(priceYes),
     creatorName: null,
     creatorAvatarUrl: null,
-    bestBid: null,
-    bestAsk: null,
-    mid: null,
-    lastTradePrice: null,
-    lastTradeSize: null,
-    rolling24hVolume: null,
-    openInterest: null,
-    liveUpdatedAt: null,
+    bestBid: null as number | null,
+    bestAsk: null as number | null,
+    mid: null as number | null,
+    lastTradePrice: null as number | null,
+    lastTradeSize: null as number | null,
+    rolling24hVolume: null as number | null,
+    openInterest: null as number | null,
+    liveUpdatedAt: null as string | null,
     capabilities: market.capabilities,
     freshness: {
-      sourceTs: null,
+      sourceTs: null as string | null,
       stale: false,
     },
     orderbookFreshness: null,
@@ -2457,19 +2456,11 @@ export const marketRouter = router({
       };
     }),
 
-  relaySignedOrder: authenticatedProcedure
+  relaySignedOrder: csrfAuthenticatedMutation
     .input(relaySignedOrderInput)
     .output(relaySignedOrderOutput)
     .mutation(async ({ ctx, input }) => {
-      const { authUser } = ctx;
-      try {
-        assertCsrfForMutation(ctx.req, ctx.cookies ?? {});
-      } catch (error) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: error instanceof Error ? error.message : "CSRF_VALIDATION_FAILED",
-        });
-      }
+      const authUser = ctx.authUser!;
       ctx.responseHeaders["cache-control"] = "no-store, max-age=0";
 
       const provider = (input.provider ?? "polymarket") as VenueProvider;
@@ -2623,20 +2614,13 @@ export const marketRouter = router({
       };
     }),
 
-  generateMarketContext: authenticatedProcedure
+  generateMarketContext: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "context", limit: 5, windowSeconds: 60 }))
     .input(generateMarketContextInput)
     .output(marketContextOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const contextRate = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `context:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 5,
-        windowSeconds: 60,
-      });
-      if (!contextRate.allowed) {
-        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "CONTEXT_RATE_LIMITED" });
-      }
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
       const contextMarketKey =
         ref.provider === "polymarket"
@@ -2703,7 +2687,8 @@ export const marketRouter = router({
   myBookmarks: authenticatedProcedure
     .output(marketBookmarkOutputArray)
     .query(async ({ ctx }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const { data, error } = await supabaseService
         .from("market_bookmarks")
         .select("market_id, created_at")
@@ -2716,18 +2701,13 @@ export const marketRouter = router({
       }));
     }),
 
-  setBookmark: authenticatedProcedure
+  setBookmark: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "bookmark", limit: 30, windowSeconds: 60 }))
     .input(setBookmarkInput)
     .output(setBookmarkOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const rl = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `bookmark:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 30,
-        windowSeconds: 60,
-      });
-      if (!rl.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "RATE_LIMITED" });
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
       const marketRefId = await resolveMarketCatalogRefId(
         ctx.supabaseService,
@@ -2904,7 +2884,8 @@ export const marketRouter = router({
     .input(getMarketCommentsInput)
     .output(marketCommentOutputArray)
     .query(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const { data: comments, error } = await supabaseService
         .from("market_comments")
         .select("id, market_id, user_id, parent_id, body, created_at")
@@ -2958,20 +2939,13 @@ export const marketRouter = router({
       });
     }),
 
-  postMarketComment: authenticatedProcedure
+  postMarketComment: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "comment", limit: 10, windowSeconds: 60 }))
     .input(postMarketCommentInput)
     .output(marketCommentOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const commentRate = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `comment:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 10,
-        windowSeconds: 60,
-      });
-      if (!commentRate.allowed) {
-        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "COMMENT_RATE_LIMITED" });
-      }
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const body = input.body.trim();
       if (!body) throw new TRPCError({ code: "BAD_REQUEST", message: "Comment body is required" });
       const ref = parseVenueMarketRef(input.marketId, input.provider ?? null);
@@ -3017,20 +2991,13 @@ export const marketRouter = router({
       };
     }),
 
-  toggleMarketCommentLike: authenticatedProcedure
+  toggleMarketCommentLike: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "like", limit: 30, windowSeconds: 60 }))
     .input(toggleMarketCommentLikeInput)
     .output(toggleMarketCommentLikeOutput)
     .mutation(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
-      const ip = getTrustedClientIpFromRequest(ctx.req);
-      const likeRate = await consumeDurableRateLimit(ctx.supabaseService, {
-        key: `like:${authUser.id}:${ip ?? "unknown"}`,
-        limit: 30,
-        windowSeconds: 60,
-      });
-      if (!likeRate.allowed) {
-        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "LIKE_RATE_LIMITED" });
-      }
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const existing = await supabaseService
         .from("market_comment_likes")
         .select("comment_id, user_id")
@@ -3070,7 +3037,8 @@ export const marketRouter = router({
     .input(myCommentsInput)
     .output(myCommentOutputArray)
     .query(async ({ ctx, input }) => {
-      const { supabaseService, authUser } = ctx;
+      const { supabaseService } = ctx;
+      const authUser = ctx.authUser!;
       const limit = input?.limit ?? 100;
       const { data, error } = await supabaseService
         .from("market_comments")

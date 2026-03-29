@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import { headers } from "next/headers";
 import { getPolymarketMarketById } from "@/src/server/polymarket/client";
 import { limitlessAdapter } from "@/src/server/venues/limitlessAdapter";
@@ -140,6 +141,7 @@ export default async function ShareMarketPage({ params }: PageProps) {
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
                 <div
                   style={{
+                    position: "relative",
                     width: 56,
                     height: 56,
                     borderRadius: 999,
@@ -149,8 +151,7 @@ export default async function ShareMarketPage({ params }: PageProps) {
                     flex: "0 0 auto",
                   }}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={image} alt={title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <Image src={image} alt={title} fill unoptimized style={{ objectFit: "cover" }} />
                 </div>
 
                 <div style={{ minWidth: 0, flex: "1 1 auto" }}>

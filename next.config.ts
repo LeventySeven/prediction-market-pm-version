@@ -41,9 +41,52 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns,
   },
+  serverExternalPackages: ["pino-pretty", "lokijs", "encoding"],
   webpack: (config) => {
-    config.externals.push('pino-pretty', 'lokijs', 'encoding');
+    // @privy-io/react-auth has an optional dependency on @solana-program/system
+    // which in turn requires @solana/web3.js v2. Since we don't use Solana
+    // features, stub the import to avoid the build failure.
+    config.resolve = config.resolve ?? {};
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "@solana-program/system": false,
+    };
     return config;
+  },
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Permissions-Policy",
+            value:
+              "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+          },
+          {
+            key: "Strict-Transport-Security",
+            value: "max-age=63072000; includeSubDomains; preload",
+          },
+          {
+            key: "Content-Security-Policy",
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org",
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              "font-src 'self' https://fonts.gstatic.com",
+              `img-src 'self' data: blob: https://ui-avatars.com ${supabaseHostname ? `https://${supabaseHostname}` : "https://*.supabase.co"}`,
+              "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.openai.com https://auth.privy.io https://*.upstash.io",
+              "frame-ancestors 'none'",
+              "base-uri 'self'",
+              "form-action 'self'",
+            ].join("; "),
+          },
+        ],
+      },
+    ];
   },
 };
 

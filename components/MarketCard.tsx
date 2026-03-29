@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import Image from 'next/image';
 import { Market } from '../types';
 import { Clock } from 'lucide-react';
 import { formatTimeRemaining, getTimeRemainingInfo } from '../lib/time';
@@ -103,9 +104,12 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
 
       {/* Header: Icon + Title */}
       <div className="flex items-start gap-3 mb-3 mt-0.5">
-        <img 
-          src={market.imageUrl} 
-          alt={localizedTitle} 
+        <Image
+          src={market.imageUrl}
+          alt={localizedTitle}
+          width={40}
+          height={40}
+          unoptimized
           className="w-10 h-10 rounded-full bg-zinc-950 object-cover flex-shrink-0 border border-zinc-900"
         />
         <div className="min-w-0 flex-1">
@@ -114,9 +118,11 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
           </h3>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
             <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-900/50 p-1">
-              <img
+              <Image
                 src={providerLogoSrc}
                 alt={providerAlt}
+                width={16}
+                height={16}
                 className="h-4 w-4 rounded object-contain"
               />
             </span>
@@ -176,8 +182,7 @@ const MarketCardBase: React.FC<MarketCardProps> = ({
               <div key={o.id} className="flex items-center justify-between text-xs text-zinc-300">
                 <span className="flex items-center gap-2 min-w-0">
                   {o.iconUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={o.iconUrl} alt={o.title} className="w-4 h-4 rounded-full object-cover border border-zinc-800" />
+                    <Image src={o.iconUrl} alt={o.title} width={16} height={16} unoptimized className="w-4 h-4 rounded-full object-cover border border-zinc-800" />
                   ) : (
                     <span className="w-4 h-4 rounded-full bg-zinc-800 border border-zinc-700" />
                   )}

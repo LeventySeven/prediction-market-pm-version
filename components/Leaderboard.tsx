@@ -1,4 +1,5 @@
 import React from 'react';
+import Image from 'next/image';
 import type { LeaderboardUser } from '../types';
 import { Trophy } from 'lucide-react';
 
@@ -53,7 +54,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ users, onUserClick, lang, sor
                   {user.rank}
                 </div>
                 
-                <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-full bg-black object-cover" />
+                <Image src={user.avatar} alt={user.name} width={40} height={40} unoptimized className="w-10 h-10 rounded-full bg-black object-cover" />
                 
                 <div className="flex-1">
                     <h3 className="font-bold text-white text-sm transition-colors">{user.name}</h3>

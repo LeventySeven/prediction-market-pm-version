@@ -563,7 +563,7 @@ const fetchSchemaDump = async (
   if (dbUrl && dbUrl.length > 0) {
     args.push("--db-url", dbUrl);
   } else if (hasDerivedCreds) {
-    const encodedPassword = encodeURIComponent(password);
+    const encodedPassword = encodeURIComponent(password!);
     const dbUrlFromSupabaseUrl = `postgresql://${dbUser}:${encodedPassword}@db.${options.projectRefFromEnv}.supabase.co:${dbPort}/${dbName}?sslmode=require`;
     args.push("--db-url", dbUrlFromSupabaseUrl);
   }
