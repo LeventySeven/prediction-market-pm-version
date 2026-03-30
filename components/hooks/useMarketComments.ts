@@ -89,7 +89,6 @@ export function useMarketComments(params: {
           prev.map((c) => (c.id === commentId ? { ...c, likes: previous!.likes, likedByMe: previous!.likedByMe } : c))
         );
       }
-      throw err;
     }
   }, [maybeRequireRelogin]);
 

@@ -48,9 +48,8 @@ export function useLeaderboard(params: { lang: "RU" | "EN" }) {
     } catch (err) {
       console.error("Failed to load leaderboard", err);
       const base = lang === "RU" ? "Не удалось загрузить лидерборд" : "Failed to load leaderboard";
-      setLeaderboardError(`${base}: ${getErrorMessage(err as ErrorLike)}`);
-      // Keep the previous list if we have one; avoid flashing "No data yet" on transient errors.
-      setLeaderboardUsers((prev) => prev);
+      const detail = getErrorMessage(err as ErrorLike);
+      setLeaderboardError(detail ? `${base}: ${detail}` : base);
     } finally {
       setLoadingLeaderboard(false);
     }

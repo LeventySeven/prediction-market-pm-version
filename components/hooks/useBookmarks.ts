@@ -67,7 +67,6 @@ export function useBookmarks(params: {
       } catch (err: unknown) {
         console.error("setBookmark failed", err);
         if (previous) setMyBookmarks(previous);
-        throw err;
       }
     },
     [mergedMarkets, openAuth, user, sessionIdRef],

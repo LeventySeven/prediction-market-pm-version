@@ -1,12 +1,12 @@
 import React from 'react';
 import Image from 'next/image';
-import { Search, Globe, HelpCircle, Wallet } from 'lucide-react';
+import { Globe, HelpCircle, Wallet } from 'lucide-react';
 import Button from './Button';
 import { User } from '../types';
 
 interface HeaderProps {
-  searchQuery: string;
-  onSearchChange: (value: string) => void;
+  searchQuery?: string;
+  onSearchChange?: (value: string) => void;
   user?: User | null;
   onAuthClick?: () => void;
   lang?: 'RU' | 'EN';
@@ -16,8 +16,6 @@ interface HeaderProps {
 }
 
 const Header: React.FC<HeaderProps> = ({
-  searchQuery,
-  onSearchChange,
   user,
   onAuthClick,
   lang = 'RU',
@@ -27,7 +25,6 @@ const Header: React.FC<HeaderProps> = ({
 }) => {
   const t = {
     home: lang === 'RU' ? 'На главную' : 'Go to home',
-    search: lang === 'RU' ? 'Поиск...' : 'Search...',
     help: lang === 'RU' ? 'Помощь' : 'Help',
     registration: lang === 'RU' ? 'Регистрация' : 'Registration',
   };
@@ -65,18 +62,6 @@ const Header: React.FC<HeaderProps> = ({
               YALLA MARKET
             </h1>
           </div>
-        </div>
-
-        {/* Search (Desktop) */}
-        <div className="relative mx-8 hidden max-w-md flex-1 md:flex">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={t.search}
-            className="flex h-10 w-full rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-1 pl-10 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
-          />
-          <Search size={15} className="absolute left-3.5 top-3 text-zinc-600" />
         </div>
 
         {/* Actions */}

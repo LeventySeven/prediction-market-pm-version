@@ -94,9 +94,9 @@ export default function CatalogView({
 
   return (
     <div>
-      {/* Mobile expanded search (desktop search is in Header) */}
+      {/* Expanded search panel */}
       {mobileSearchOpen && (
-        <div className="px-4 pt-2 pb-3 md:hidden">
+        <div className="px-4 pt-2 pb-3">
           <div className="relative">
             <input
               ref={mobileSearchInputRef}
@@ -205,7 +205,7 @@ export default function CatalogView({
                 onSearchChange("");
               }
             }}
-            className={`ml-auto shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full border transition md:hidden ${
+            className={`ml-auto shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full border transition ${
               mobileSearchOpen || searchQuery
                 ? "border-[rgba(190,255,29,1)] bg-[rgba(190,255,29,0.1)] text-[rgba(190,255,29,1)]"
                 : "border-zinc-900 bg-black/70 text-zinc-400 hover:text-white hover:border-zinc-700 hover:bg-zinc-950/60"

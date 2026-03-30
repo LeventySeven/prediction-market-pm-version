@@ -1,6 +1,6 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
-import { csrfAuthenticatedMutation, publicProcedure, router } from "../trpc";
+import { csrfAuthenticatedMutation, rateLimitMiddleware, publicProcedure, router } from "../trpc";
 import { API_VERSION_V1 } from "@/src/lib/constants";
 import { encodeCursor, decodeCursor } from "@/src/lib/cursor";
 import {
@@ -50,6 +50,7 @@ const toCommunityOutput = (row: CommunityRow, tags: string[]) => ({
 
 export const communityRouter = router({
   create: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "community:write", limit: 10, windowSeconds: 60 }))
     .input(createCommunityInput)
     .output(communityOutput)
     .mutation(async ({ ctx, input }) => {
@@ -114,6 +115,7 @@ export const communityRouter = router({
     }),
 
   update: csrfAuthenticatedMutation
+    .use(rateLimitMiddleware({ prefix: "community:write", limit: 10, windowSeconds: 60 }))
     .input(updateCommunityInput)
     .output(communityOutput)
     .mutation(async ({ ctx, input }) => {

@@ -107,6 +107,8 @@ const CATALOG_WARM_CACHE_TTL_MS = 90_000;
 const MARKET_CANDLE_CACHE_TTL_MS = 30_000;
 const MARKET_CANDLE_POLL_INTERVAL_MS = 60_000;
 const ELIGIBILITY_DISCLAIMER_SEEN_KEY = "hasSeenEligibilityDisclaimer";
+const MAX_ENSURED_IDS = 500;
+const MAX_CANDLE_CACHE_ENTRIES = 50;
 const MARKET_HIGHLIGHT_MS = {
   new: 2_000,
   updated: 1_000,
@@ -277,7 +279,7 @@ const asNumber = (value: number | string | null | undefined): number | null => {
   return null;
 };
 
-const MATERIAL_CHANGE_EPS = 0.0001;
+const MATERIAL_CHANGE_EPS = 0.005;
 const hasMaterialNumberChange = (prev: number | null | undefined, next: number | null | undefined) => {
   const a = typeof prev === "number" && Number.isFinite(prev) ? prev : null;
   const b = typeof next === "number" && Number.isFinite(next) ? next : null;
@@ -2356,7 +2358,7 @@ export default function HomePage({
       }
     })();
     return () => { cancelled = true; };
-  }, [activeProviderFilter, mergedMarkets]);
+  }, [activeProviderFilter]);
 
   useEffect(() => {
     catalogAutoAdvancePageRef.current = 0;
@@ -2557,7 +2559,7 @@ export default function HomePage({
       CATALOG_VISIBLE_MARKETS_REALTIME_LIMIT
     );
     if (targetIds.length === 0) return;
-    const marketById = new Map(markets.map((market) => [market.id, market] as const));
+    const marketById = new Map(marketsRef.current.map((market) => [market.id, market] as const));
 
     const startSupabaseVisibleSubscription = () => {
       const supabase = getBrowserSupabaseClient();
@@ -2872,7 +2874,7 @@ export default function HomePage({
       return () => cleanupTransport(closeStream);
     }
     return startSupabaseVisibleSubscription();
-  }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, markets, selectedMarketId, visibleCatalogMarketIds]);
+  }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, selectedMarketId, visibleCatalogMarketIds]);
 
   const legacyBets = useMemo(
     () => deriveLegacyBets(myPositions),
@@ -3030,7 +3032,7 @@ export default function HomePage({
 
   useEffect(() => {
     if (searchQuery.trim().length < 2 || semanticSearchIds.length === 0) return;
-    const existing = new Set(mergedMarkets.map((m) => m.id));
+    const existing = new Set(marketsRef.current.map((m) => m.id));
     const missing = semanticSearchIds
       .filter(
         (id) =>
@@ -3059,16 +3061,17 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [semanticSearchIds, searchQuery, mergedMarkets, lang]);
+  }, [semanticSearchIds, searchQuery, lang]);
 
   useEffect(() => {
     if (!selectedMarketId) return;
-    if (mergedMarkets.some((market) => market.id === selectedMarketId)) {
+    if (marketsRef.current.some((market) => market.id === selectedMarketId)) {
       ensuredMarketIdsRef.current.add(selectedMarketId);
       return;
     }
     if (ensuredMarketIdsRef.current.has(selectedMarketId)) return;
     ensuredMarketIdsRef.current.add(selectedMarketId);
+    if (ensuredMarketIdsRef.current.size > MAX_ENSURED_IDS) ensuredMarketIdsRef.current.clear();
 
     let cancelled = false;
     void (async () => {
@@ -3084,7 +3087,7 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [lang, mergedMarkets, selectedMarketId]);
+  }, [lang, selectedMarketId]);
 
   const filteredMarkets = useMemo(
     () =>
@@ -3330,7 +3333,7 @@ export default function HomePage({
   }, [catalogMarkets, mergedMarkets, marketLivePatchById, topMarketPreviewRows]);
 
   useEffect(() => {
-    const knownIds = new Set(mergedMarkets.map((market) => market.id));
+    const knownIds = new Set(marketsRef.current.map((market) => market.id));
     const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarks.bookmarkedMarketIds)]))
       .filter((marketId) => !knownIds.has(marketId))
       .filter((marketId) => !ensuredMarketIdsRef.current.has(marketId))
@@ -3359,7 +3362,7 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [bookmarks.bookmarkedMarketIds, lang, mergedMarkets, myBetMarketIds]);
+  }, [bookmarks.bookmarkedMarketIds, lang, myBetMarketIds]);
 
   const selectedMarket = useMemo(
     () => mergedMarkets.find((market) => market.id === selectedMarketId),
@@ -3722,6 +3725,10 @@ export default function HomePage({
           candles,
           cachedAt: Date.now(),
         });
+        if (marketCandlesCacheRef.current.size > MAX_CANDLE_CACHE_ENTRIES) {
+          const oldest = marketCandlesCacheRef.current.keys().next().value;
+          if (oldest) marketCandlesCacheRef.current.delete(oldest);
+        }
         setMarketCandles(candles);
         if (candles.length > 0 && chartFirstPaintRecordedForMarketRef.current !== activeMarketId) {
           chartFirstPaintRecordedForMarketRef.current = activeMarketId;
@@ -4352,8 +4359,6 @@ export default function HomePage({
       {selectedMarket ? (
         <>
           <Header
-            searchQuery={searchQuery}
-            onSearchChange={handleCatalogSearchChange}
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
@@ -4445,8 +4450,6 @@ export default function HomePage({
       ) : (
         <>
           <Header
-            searchQuery={searchQuery}
-            onSearchChange={handleCatalogSearchChange}
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
