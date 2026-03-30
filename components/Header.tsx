@@ -13,6 +13,7 @@ interface HeaderProps {
   onToggleLang?: () => void;
   onHelpClick?: () => void;
   onLogoClick?: () => void;
+  onAggregatorClick?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -22,6 +23,7 @@ const Header: React.FC<HeaderProps> = ({
   onToggleLang,
   onHelpClick,
   onLogoClick,
+  onAggregatorClick,
 }) => {
   const t = {
     home: lang === 'RU' ? 'На главную' : 'Go to home',
@@ -32,14 +34,13 @@ const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-40 w-full border-b border-zinc-900/90 bg-black/85 backdrop-blur-xl supports-[backdrop-filter]:bg-black/70">
       <div className="flex h-8 items-center justify-center border-b border-zinc-900/60 bg-zinc-950/80 px-4">
-        <a
-          href="https://www.yallamarket.io/"
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={onAggregatorClick}
           className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 transition-colors hover:text-white"
         >
           pre markets →
-        </a>
+        </button>
       </div>
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         {/* Logo */}

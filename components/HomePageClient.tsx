@@ -5,6 +5,7 @@ import type { Route } from "next";
 import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
+import AggregatorOverlay from "@/components/AggregatorOverlay";
 // MarketCard is used by CatalogView and FeedView components
 import ClientErrorBoundary from "@/components/ClientErrorBoundary";
 import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
@@ -781,6 +782,7 @@ export default function HomePage({
   const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
   const [semanticSearchLoading, setSemanticSearchLoading] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showAggregator, setShowAggregator] = useState(false);
   const [showEligibilityDisclaimer, setShowEligibilityDisclaimer] = useState(false);
   const [eligibilityDisclaimerGate, setEligibilityDisclaimerGate] = useState<"pending" | "required" | "done">(
     "pending"
@@ -4362,6 +4364,7 @@ export default function HomePage({
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
+            onAggregatorClick={() => setShowAggregator(true)}
             onLogoClick={() => {
               setSelectedMarketId(null);
               setCurrentView("CATALOG");
@@ -4453,6 +4456,7 @@ export default function HomePage({
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
+            onAggregatorClick={() => setShowAggregator(true)}
             onLogoClick={() => {
               setMarketBetIntent(null);
               setSelectedMarketId(null);
@@ -4727,6 +4731,11 @@ export default function HomePage({
         }}
       />
       </div>
+      <AggregatorOverlay
+        isOpen={showAggregator}
+        onClose={() => setShowAggregator(false)}
+        lang={lang}
+      />
     </ClientErrorBoundary>
   );
 }
