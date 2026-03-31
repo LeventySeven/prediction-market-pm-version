@@ -25,9 +25,6 @@ interface MockUserRow {
   avatar_palette: string | null;
   profile_setup_completed_at: string | null;
   telegram_photo_url: string | null;
-  referral_code: string | null;
-  referral_commission_rate: number | null;
-  referral_enabled: boolean;
   created_at: string;
   is_admin: boolean;
   privy_user_id: string | null;
@@ -119,9 +116,6 @@ function createMockSupabase(initialRows: MockUserRow[]) {
             avatar_palette: null,
             profile_setup_completed_at: null,
             telegram_photo_url: null,
-            referral_code: null,
-            referral_commission_rate: null,
-            referral_enabled: false,
             created_at: new Date().toISOString(),
             is_admin: values.is_admin ?? false,
             privy_user_id: values.privy_user_id ?? null,
@@ -331,9 +325,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: "2024-01-01",
         telegram_photo_url: null,
-        referral_code: "REF123",
-        referral_commission_rate: 0.05,
-        referral_enabled: true,
         created_at: "2024-01-01T00:00:00Z",
         is_admin: false,
         privy_user_id: null,
@@ -356,7 +347,6 @@ describe("Privy account linking", () => {
     // Profile data preserved
     expect(result!.username).toBe("alice");
     expect(result!.display_name).toBe("Alice");
-    expect(result!.referral_code).toBe("REF123");
     expect(result!.is_admin).toBe(false);
     // No new rows created
     expect(supabase._rows).toHaveLength(1);
@@ -374,9 +364,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: "2024-06-01",
         telegram_photo_url: null,
-        referral_code: null,
-        referral_commission_rate: null,
-        referral_enabled: false,
         created_at: "2024-06-01T00:00:00Z",
         is_admin: true,
         privy_user_id: "did:privy:bob456",
@@ -411,9 +398,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: null,
         telegram_photo_url: null,
-        referral_code: null,
-        referral_commission_rate: null,
-        referral_enabled: false,
         created_at: "2024-09-01T00:00:00Z",
         is_admin: false,
         privy_user_id: "did:privy:old_id",
@@ -448,9 +432,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: null,
         telegram_photo_url: null,
-        referral_code: null,
-        referral_commission_rate: null,
-        referral_enabled: false,
         created_at: "2025-01-01T00:00:00Z",
         is_admin: false,
         privy_user_id: null,
@@ -489,9 +470,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: null,
         telegram_photo_url: null,
-        referral_code: null,
-        referral_commission_rate: null,
-        referral_enabled: false,
         created_at: "2025-02-01T00:00:00Z",
         is_admin: false,
         privy_user_id: "did:privy:placeholder_id",
@@ -547,9 +525,6 @@ describe("Privy account linking", () => {
         avatar_palette: null,
         profile_setup_completed_at: null,
         telegram_photo_url: null,
-        referral_code: null,
-        referral_commission_rate: null,
-        referral_enabled: false,
         created_at: "2025-03-01T00:00:00Z",
         is_admin: false,
         privy_user_id: null,

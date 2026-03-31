@@ -1,6 +1,5 @@
 import "server-only";
 import { TRPCError } from "@trpc/server";
-import { randomBytes } from "node:crypto";
 import { csrfAuthenticatedMutation, publicProcedure, rateLimitMiddleware, router } from "../trpc";
 import { buildInitialsAvatarDataUrl } from "@/lib/avatar";
 import { sanitizeAvatarPalette } from "@/src/lib/avatarPalette";
@@ -17,7 +16,6 @@ import {
   avatarPaletteShape,
   checkUsernameAvailabilityInput,
   completeProfileSetupInput,
-  createReferralLinkOutput,
   leaderboardInput,
   leaderboardOutput,
   publicUserCommentsInput,
@@ -46,8 +44,6 @@ const normalizeEmail = (value: string | undefined) => {
   return normalized.length > 0 ? normalized : null;
 };
 const isPrivyPlaceholderEmail = (value: string) => value.trim().toLowerCase().endsWith(PRIVY_PLACEHOLDER_DOMAIN);
-const buildReferralCode = () => randomBytes(6).toString("hex").toUpperCase();
-
 const normalizeHandleInput = (value: string) => normalizeUsername(value);
 
 const isProfileIdentityComplete = (row: any): boolean => {
@@ -90,12 +86,6 @@ const mapUser = (row: any) => ({
   avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
   needsProfileSetup: !isProfileIdentityComplete(row),
   telegramPhotoUrl: row.telegram_photo_url ? String(row.telegram_photo_url) : null,
-  referralCode: row.referral_code ? String(row.referral_code) : null,
-  referralCommissionRate:
-    row.referral_commission_rate === null || row.referral_commission_rate === undefined
-      ? null
-      : Number(row.referral_commission_rate),
-  referralEnabled: row.referral_enabled === null || row.referral_enabled === undefined ? null : Boolean(row.referral_enabled),
   balance: 0,
   createdAt: new Date(String(row.created_at ?? new Date().toISOString())).toISOString(),
   isAdmin: Boolean(row.is_admin),
@@ -393,54 +383,6 @@ export const userRouter = router({
       return mapUser(updated.data);
     }),
 
-  createReferralLink: csrfAuthenticatedMutation
-    .use(rateLimitMiddleware({ prefix: "user:write", limit: 10, windowSeconds: 60 }))
-    .output(createReferralLinkOutput)
-    .mutation(async ({ ctx }) => {
-      const { supabaseService } = ctx;
-      const authUser = ctx.authUser!;
-      requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
-      const user = await (supabaseService as any)
-        .from("users")
-        .select("id, referral_code, referral_commission_rate, referral_enabled")
-        .eq("id", authUser.id)
-        .maybeSingle();
-      if (user.error || !user.data) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
-      const existing = user.data.referral_code ? String(user.data.referral_code) : null;
-      if (existing) {
-        return {
-          referralCode: existing,
-          referralCommissionRate:
-            user.data.referral_commission_rate === null || user.data.referral_commission_rate === undefined
-              ? null
-              : Number(user.data.referral_commission_rate),
-          referralEnabled:
-            user.data.referral_enabled === null || user.data.referral_enabled === undefined
-              ? null
-              : Boolean(user.data.referral_enabled),
-        };
-      }
-      const code = buildReferralCode();
-      const updated = await (supabaseService as any)
-        .from("users")
-        .update({ referral_code: code, referral_enabled: true })
-        .eq("id", authUser.id)
-        .select("referral_code, referral_commission_rate, referral_enabled")
-        .single();
-      if (updated.error || !updated.data?.referral_code) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to create referral code" });
-      return {
-        referralCode: String(updated.data.referral_code),
-        referralCommissionRate:
-          updated.data.referral_commission_rate === null || updated.data.referral_commission_rate === undefined
-            ? null
-            : Number(updated.data.referral_commission_rate),
-        referralEnabled:
-          updated.data.referral_enabled === null || updated.data.referral_enabled === undefined
-            ? null
-            : Boolean(updated.data.referral_enabled),
-      };
-    }),
-
   leaderboard: publicProcedure
     .input(leaderboardInput)
     .output(leaderboardOutput)
@@ -462,7 +404,6 @@ export const userRouter = router({
         avatar: String(u.avatar_url ?? u.telegram_photo_url ?? buildInitialsAvatarDataUrl(String(u.display_name ?? u.username ?? "U"), { bg: "#222222", fg: "#ffffff" })),
         balance: 0,
         pnl: 0,
-        referrals: 0,
         betCount: 0,
       }));
     }),

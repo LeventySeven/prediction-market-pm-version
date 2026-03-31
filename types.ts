@@ -234,11 +234,7 @@ export interface User {
     secondary: string;
   } | null;
   needsProfileSetup?: boolean;
-  referralCode?: string | null;
-  referralCommissionRate?: number | null;
-  referralEnabled?: boolean | null;
   createdAt?: string;
-  referrals?: number;
   avatar?: string;
 }
 

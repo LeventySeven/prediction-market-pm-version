@@ -1346,9 +1346,6 @@ export default function HomePage({
     telegramPhotoUrl?: string | null;
     balance: number;
     isAdmin?: boolean | null;
-    referralCode?: string | null;
-    referralCommissionRate?: number | null;
-    referralEnabled?: boolean | null;
     privyUserId?: string | null;
     walletAddress?: string | null;
   }) => {
@@ -1366,9 +1363,6 @@ export default function HomePage({
       avatar: me.avatarUrl ?? me.telegramPhotoUrl ?? undefined,
       balance: me.balance,
       isAdmin: Boolean(me.isAdmin),
-      referralCode: me.referralCode ?? null,
-      referralCommissionRate: me.referralCommissionRate ?? null,
-      referralEnabled: me.referralEnabled ?? null,
       privyUserId: me.privyUserId ?? null,
       walletAddress: me.walletAddress ?? null,
     });
@@ -1648,9 +1642,6 @@ export default function HomePage({
           telegramPhotoUrl: updated.telegramPhotoUrl,
           balance: typeof updated.balance === "number" ? updated.balance : user.balance,
           isAdmin: updated.isAdmin,
-          referralCode: updated.referralCode,
-          referralCommissionRate: updated.referralCommissionRate,
-          referralEnabled: updated.referralEnabled,
         });
         setProfileSetupError(null);
       } catch (err) {
@@ -1699,24 +1690,6 @@ export default function HomePage({
     },
     [applyPublicUser, lang, refreshUser, user]
   );
-
-  const handleCreateReferralLink = useCallback(async () => {
-    const { referralCode, referralCommissionRate, referralEnabled } =
-      await trpcClient.user.createReferralLink.mutate();
-
-    setUser((prev) =>
-      prev
-        ? {
-            ...prev,
-            referralCode,
-            referralCommissionRate,
-            referralEnabled,
-          }
-        : prev
-    );
-
-    return { referralCode, referralCommissionRate: referralCommissionRate ?? 0, referralEnabled: referralEnabled ?? false };
-  }, []);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -4217,7 +4190,6 @@ export default function HomePage({
                     leaderboardError={leaderboard.leaderboardError}
                     onLogin={() => openAuth("SIGN_IN")}
                     onUserClick={(u) => void publicProfile.openPublicProfile(u.id)}
-                    onCreateReferralLink={handleCreateReferralLink}
                     leaderboardSort={leaderboard.leaderboardSort}
                     onLeaderboardSortChange={(next) => {
                       leaderboard.setLeaderboardSort(next);

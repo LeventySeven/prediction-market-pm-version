@@ -52,12 +52,6 @@ const toPublicUser = (row: DbUserRow): PublicUser => ({
   avatarPalette: sanitizeAvatarPalette(row.avatar_palette),
   needsProfileSetup: needsProfileSetup(row),
   telegramPhotoUrl: row.telegram_photo_url ?? null,
-  referralCode: row.referral_code,
-  referralCommissionRate:
-    row.referral_commission_rate === null || row.referral_commission_rate === undefined
-      ? null
-      : Number(row.referral_commission_rate),
-  referralEnabled: row.referral_enabled,
   balance: 0,
   createdAt: new Date(row.created_at).toISOString(),
   isAdmin: Boolean(row.is_admin),

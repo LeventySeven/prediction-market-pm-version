@@ -8,9 +8,6 @@ export type PublicUser = {
   avatarPalette: { primary: string; secondary: string } | null;
   needsProfileSetup: boolean;
   telegramPhotoUrl: string | null;
-  referralCode: string | null;
-  referralCommissionRate: number | null;
-  referralEnabled: boolean | null;
   balance: number;
   createdAt: string;
   isAdmin: boolean;

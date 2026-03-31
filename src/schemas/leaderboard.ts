@@ -8,7 +8,6 @@ export const leaderboardUserSchema = z.object({
   avatar: z.string(),
   balance: z.number(),
   pnl: z.number(),
-  referrals: z.number().optional(),
   betCount: z.number().optional(),
 });
 

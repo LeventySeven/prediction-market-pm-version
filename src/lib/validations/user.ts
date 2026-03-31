@@ -35,9 +35,6 @@ export const userShape = z.object({
   avatarPalette: avatarPaletteShape.nullable(),
   needsProfileSetup: z.boolean(),
   telegramPhotoUrl: z.string().nullable(),
-  referralCode: z.string().nullable(),
-  referralCommissionRate: z.number().nullable(),
-  referralEnabled: z.boolean().nullable(),
   balance: z.number(),
   createdAt: z.string(),
   isAdmin: z.boolean(),
@@ -128,12 +125,6 @@ export const completeProfileSetupInput = z.object({
   avatarPalette: avatarPaletteShape.nullable().optional(),
 });
 
-export const createReferralLinkOutput = z.object({
-  referralCode: z.string(),
-  referralCommissionRate: z.number().nullable(),
-  referralEnabled: z.boolean().nullable(),
-});
-
 export const leaderboardInput = z
   .object({
     limit: z.number().int().positive().max(MAX_LEADERBOARD_LIMIT).optional(),
@@ -150,7 +141,6 @@ export const leaderboardOutput = z.array(
     avatar: z.string(),
     balance: z.number(),
     pnl: z.number(),
-    referrals: z.number().optional(),
     betCount: z.number().optional(),
   })
 );
