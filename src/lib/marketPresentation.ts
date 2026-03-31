@@ -148,29 +148,21 @@ export const resolveReliableBinaryPrice = (params: {
   const bestAsk = toPrice01(params.bestAsk ?? null);
   const lastTradePrice = toPrice01(params.lastTradePrice ?? null);
   const fallbackPrice = toPrice01(params.fallbackPrice ?? null) ?? 0.5;
-  const fallbackIsUsable = fallbackPrice > 0 && fallbackPrice < 1;
 
-  // Trust the mid value from the platform/collector when it is a clear
-  // non-boundary price — it already reflects the price shown on the source.
-  if (mid !== null && mid > 0 && mid < 1) return mid;
+  // Trust the mid value from the platform/collector — it reflects the
+  // price shown on the source. Accept boundary values (0, 1) for resolved
+  // or extreme-probability markets.
+  if (mid !== null) return mid;
 
   // Prefer lastTradePrice over a computed book midpoint because platforms
   // typically display the last traded price as the headline probability.
-  if (lastTradePrice !== null && lastTradePrice > 0 && lastTradePrice < 1) return lastTradePrice;
+  if (lastTradePrice !== null) return lastTradePrice;
 
   const bookMid =
-    bestBid !== null && bestAsk !== null && bestBid > 0 && bestAsk > 0
+    bestBid !== null && bestAsk !== null && bestBid >= 0 && bestAsk >= 0
       ? clamp01((bestBid + bestAsk) / 2)
       : null;
   if (bookMid !== null) return bookMid;
 
-  // Prefer a non-boundary fallback (from outcome prices) over a boundary
-  // mid/lastTradePrice — boundary values (0 or 1) are often stale or
-  // collector artifacts, not real market state.
-  if (fallbackIsUsable) return fallbackPrice;
-
-  // Boundary values accepted only when nothing better exists.
-  if (mid !== null) return mid;
-  if (lastTradePrice !== null) return lastTradePrice;
   return fallbackPrice;
 };

@@ -402,27 +402,22 @@ export const userRouter = router({
       requireServiceRoleForUserWrite(Boolean(ctx.hasServiceRole));
       const user = await (supabaseService as any)
         .from("users")
-        .select("id, referral_code")
+        .select("id, referral_code, referral_commission_rate, referral_enabled")
         .eq("id", authUser.id)
         .maybeSingle();
       if (user.error || !user.data) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       const existing = user.data.referral_code ? String(user.data.referral_code) : null;
       if (existing) {
-        const full = await (supabaseService as any)
-          .from("users")
-          .select("referral_commission_rate, referral_enabled")
-          .eq("id", authUser.id)
-          .maybeSingle();
         return {
           referralCode: existing,
           referralCommissionRate:
-            full.data?.referral_commission_rate === null || full.data?.referral_commission_rate === undefined
+            user.data.referral_commission_rate === null || user.data.referral_commission_rate === undefined
               ? null
-              : Number(full.data.referral_commission_rate),
+              : Number(user.data.referral_commission_rate),
           referralEnabled:
-            full.data?.referral_enabled === null || full.data?.referral_enabled === undefined
+            user.data.referral_enabled === null || user.data.referral_enabled === undefined
               ? null
-              : Boolean(full.data.referral_enabled),
+              : Boolean(user.data.referral_enabled),
         };
       }
       const code = buildReferralCode();

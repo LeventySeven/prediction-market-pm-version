@@ -77,7 +77,7 @@ const nextConfig: NextConfig = {
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
-              `img-src 'self' data: blob: https://ui-avatars.com ${supabaseHostname ? `https://${supabaseHostname}` : "https://*.supabase.co"}`,
+              "img-src 'self' data: blob: https:",
               "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.openai.com https://auth.privy.io https://*.upstash.io",
               "frame-src https://www.yallamarket.io https://yallamarket.io",
               "frame-ancestors *",

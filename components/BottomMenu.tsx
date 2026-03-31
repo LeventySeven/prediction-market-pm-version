@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Home, LayoutGrid, User as UserIcon, Users } from 'lucide-react';
+import { LayoutGrid, Rocket, User as UserIcon, Users } from 'lucide-react';
 import { User } from '../types';
 
 export type ViewType = 'FRIENDS' | 'FEED' | 'CATALOG' | 'PROFILE';
@@ -11,9 +11,11 @@ interface BottomMenuProps {
   lang: 'RU' | 'EN';
   user: User | null;
   onLoginRequest: () => void;
+  onAggregatorClick?: () => void;
+  aggregatorActive?: boolean;
 }
 
-const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, user, onLoginRequest }) => {
+const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, user, onLoginRequest, onAggregatorClick, aggregatorActive }) => {
 
   const handleProtectedClick = (view: ViewType) => {
     if (!user && view === 'PROFILE') {
@@ -46,13 +48,13 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
       </button>
 
       <button
-        onClick={() => onChange('FEED')}
+        onClick={() => onAggregatorClick?.()}
         className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
-          currentView === 'FEED' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
+          aggregatorActive ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
-        <Home size={20} />
-        <span className="text-[11px] font-medium">{lang === 'RU' ? 'Лента' : 'Feed'}</span>
+        <Rocket size={20} />
+        <span className="text-[11px] font-medium">Pre Markets</span>
       </button>
 
       <button

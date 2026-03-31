@@ -17,19 +17,18 @@ import Button from "@/components/Button";
 import type {
   Market,
   User,
-  Bet,
-  Position,
-  Trade,
   PriceCandle,
   PublicTrade,
   Comment as MarketComment,
   LiveActivityTick,
 } from "@/types";
 import { trpcClient } from "@/src/utils/trpcClient";
+import type { ErrorLike } from "@/src/lib/errors";
+import { getErrorMessage } from "@/src/lib/errors";
 // lucide-react icons now used in extracted CatalogView/FeedView/modal components
 import BottomMenu, { type ViewType } from "@/components/BottomMenu";
 import CatalogView from "@/components/CatalogView";
-import FeedView from "@/components/FeedView";
+// FeedView removed — FEED tab replaced by Pre Markets in BottomMenu
 import CatalogFiltersModal from "@/components/CatalogFiltersModal";
 import LeaderboardSortModal from "@/components/LeaderboardSortModal";
 import { liveActivityTicksSchema, priceCandlesSchema, publicTradesSchema } from "@/src/schemas/marketInsights";
@@ -92,7 +91,7 @@ const MarketPage = dynamic(() => import("@/components/MarketPage"));
 const ProfilePage = dynamic(() => import("@/components/ProfilePage"));
 const PublicUserProfileModal = dynamic(() => import("@/components/PublicUserProfileModal"));
 const FriendsPage = dynamic(() => import("@/components/FriendsPage"));
-const MarketPulseBoard = dynamic(() => import("@/components/MarketPulseBoard"));
+// MarketPulseBoard removed — only used in FeedView which is no longer rendered
 
 // VCOIN decimals for display
 const VCOIN_DECIMALS = 6;
@@ -923,7 +922,7 @@ export default function HomePage({
   });
   const marketsRef = useRef<Market[]>([]);
   const [marketLivePatchById, setMarketLivePatchById] = useState<Record<string, MarketLivePatch>>({});
-  const [visibleCatalogMarketIds, setVisibleCatalogMarketIds] = useState<string[]>([]);
+  const visibleCatalogMarketIdsRef = useRef<string[]>([]);
   const catalogLoadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const catalogAutoAdvancePageRef = useRef(0);
   const refreshUserInFlightRef = useRef<Promise<Awaited<ReturnType<typeof trpcClient.auth.me.query>> | null> | null>(null);
@@ -1158,11 +1157,9 @@ export default function HomePage({
     });
   }, [transitionCatalogState]);
 
-  const [myPositions, setMyPositions] = useState<Position[]>([]);
-  const [myTrades, setMyTrades] = useState<Trade[]>([]);
   const [myBetsLoading, setMyBetsLoading] = useState(false);
   const [myBetsError, setMyBetsError] = useState<string | null>(null);
-  const myBetsLoadingRef = useRef(false);
+  const profileDataLoadingRef = useRef(false);
   const [myCommentsLoading, setMyCommentsLoading] = useState(false);
   const [myCommentsError, setMyCommentsError] = useState<string | null>(null);
   const [profilePnlMajor, setProfilePnlMajor] = useState<number | null>(null);
@@ -1174,8 +1171,6 @@ export default function HomePage({
         : "Catalog is temporarily unavailable. Please retry."
       : null
   );
-  const [topMarketPreviewRows, setTopMarketPreviewRows] = useState<Market[]>([]);
-  const [topMarketPreviewLoading, setTopMarketPreviewLoading] = useState(false);
   const [betConfirm, setBetConfirm] = useState<{
     open: boolean;
     marketTitle: string;
@@ -1194,8 +1189,6 @@ export default function HomePage({
     initialMarketLiveActivityTicks
   );
   const [walletBalanceMajor, setWalletBalanceMajor] = useState<number | null>(null);
-  type MyMarket = Market & { hasBets: boolean };
-  const [myCreatedMarkets, setMyCreatedMarkets] = useState<MyMarket[]>([]);
   const [marketInsightsLoading, setMarketInsightsLoading] = useState(false);
   const [marketInsightsError, setMarketInsightsError] = useState<string | null>(null);
   const [marketActivityError, setMarketActivityError] = useState<string | null>(null);
@@ -1217,25 +1210,6 @@ export default function HomePage({
       throw new Error(code);
     }
     return v;
-  };
-
-  type ErrorLike =
-    | string
-    | Error
-    | {
-        message?: string;
-        data?: { message?: string };
-      }
-    | null
-    | undefined;
-
-  const getErrorMessage = (error: ErrorLike): string | undefined => {
-    if (!error) return undefined;
-    if (typeof error === "string") return error;
-    if (error instanceof Error) return error.message;
-    if (typeof error.message === "string") return error.message;
-    if (error.data && typeof error.data.message === "string") return error.data.message;
-    return undefined;
   };
 
   const isAuthErrorMessage = (msg?: string) => {
@@ -1752,8 +1726,6 @@ export default function HomePage({
       console.error("logout failed", err);
     } finally {
       setUser(null);
-      setMyPositions([]);
-      setMyTrades([]);
       setCurrentView("CATALOG");
       setMarketBetIntent(null);
       setSelectedMarketId(null);
@@ -1761,67 +1733,15 @@ export default function HomePage({
     }
   }, [navigateToCatalogUrl, privyLogout]);
 
-  const deriveLegacyBets = useCallback(
-    (positions: Position[]): Bet[] =>
-      positions.map((p, idx) => {
-        const market = mergedMarkets.find((m) => m.id === p.marketId);
-        const priceYes = market?.yesPrice ?? 0.5;
-        const priceNo = market?.noPrice ?? 0.5;
-        const selectedOutcomePrice = p.outcomeId
-          ? Number(market?.outcomes?.find((o) => o.id === p.outcomeId)?.price ?? Number.NaN)
-          : Number.NaN;
-        const currentPrice = p.outcome === "YES"
-          ? priceYes
-          : p.outcome === "NO"
-            ? priceNo
-            : (Number.isFinite(selectedOutcomePrice) ? selectedOutcomePrice : (p.avgEntryPrice ?? 0));
-
-        let status: Bet["status"] = "open";
-        if (p.marketState === "resolved") {
-          if (p.outcomeId && p.marketResolvedOutcomeId) {
-            status = p.marketResolvedOutcomeId === p.outcomeId ? "won" : "lost";
-          } else if (p.outcome && p.marketOutcome) {
-            status = p.marketOutcome === p.outcome ? "won" : "lost";
-          }
-        }
-
-        const avgPrice = p.avgEntryPrice ?? currentPrice;
-        const amount = p.shares * avgPrice;
-        const payout = status === "won" ? p.shares : status === "lost" ? 0 : null;
-
-        return {
-          id: `${p.marketId}-${p.outcome}-${idx}`,
-          marketId: p.marketId,
-          marketTitle: lang === "RU" ? p.marketTitleRu : p.marketTitleEn,
-          marketTitleRu: p.marketTitleRu,
-          marketTitleEn: p.marketTitleEn,
-          side: p.outcome ?? "YES",
-          outcomeId: p.outcomeId ?? null,
-          outcomeTitle: p.outcomeTitle ?? null,
-          currentPrice,
-          amount,
-          status,
-          payout,
-          createdAt: new Date().toISOString(),
-          marketOutcome: p.marketOutcome,
-          expiresAt: p.expiresAt,
-          priceYes,
-          priceNo,
-          priceAtBet: avgPrice,
-          shares: p.shares,
-        };
-      }),
-    [mergedMarkets, lang]
-  );
-
   /**
-   * Load user positions and trades
+   * Load profile data (bookmarks + PnL).
+   * Positions/trades are executed on the venue (Polymarket), not stored locally.
    */
-  const loadMyBets = useCallback(async () => {
+  const loadProfileData = useCallback(async () => {
     if (!user) return;
-    // Prevent concurrent loads - if already loading, skip
-    if (myBetsLoadingRef.current) return;
-    myBetsLoadingRef.current = true;
+    // Prevent concurrent loads
+    if (profileDataLoadingRef.current) return;
+    profileDataLoadingRef.current = true;
     setMyBetsLoading(true);
     setMyBetsError(null);
     try {
@@ -1831,11 +1751,7 @@ export default function HomePage({
 
       const bookmarksParsed = marketBookmarksSchema.parse(bookmarksRaw);
 
-      // Wrapper mode: portfolio/trades are executed on Polymarket, not stored locally.
-      setMyPositions([]);
-      setMyTrades([]);
       bookmarks.setMyBookmarks(bookmarksParsed.map((b) => ({ marketId: b.marketId, createdAt: b.createdAt })));
-      setMyCreatedMarkets([]);
       setWalletBalanceMajor(null);
       try {
         const stats = await trpcClient.user.publicUserStats.query({ userId: user.id });
@@ -1847,23 +1763,23 @@ export default function HomePage({
       }
     } catch (err) {
       const errorMsg = getErrorMessage(err as ErrorLike);
-      console.error("Failed to load positions/trades", { error: errorMsg, err, userId: user?.id });
+      console.error("Failed to load profile data", { error: errorMsg, err, userId: user?.id });
       // If it's an auth error, show re-login warning
       if (errorMsg?.toUpperCase().includes("UNAUTHORIZED") || errorMsg?.toUpperCase().includes("NOT AUTHENTICATED")) {
         const refreshed = await attemptSilentRefresh();
         if (refreshed) {
-          myBetsLoadingRef.current = false;
+          profileDataLoadingRef.current = false;
           setMyBetsLoading(false);
-          await loadMyBets();
+          await loadProfileData();
           return;
         }
         setMyBetsError(lang === "RU" ? "Требуется повторная авторизация." : "Re-authentication required.");
       } else {
-        setMyBetsError(lang === "RU" ? "Не удалось загрузить ставки." : "Failed to load bets.");
+        setMyBetsError(lang === "RU" ? "Не удалось загрузить данные." : "Failed to load data.");
       }
     }
     finally {
-      myBetsLoadingRef.current = false;
+      profileDataLoadingRef.current = false;
       setMyBetsLoading(false);
     }
   }, [user, lang, attemptSilentRefresh]);
@@ -2280,52 +2196,6 @@ export default function HomePage({
     lang,
     markCatalogKeyLoaded,
   ]);
-  const showMarketPulseBoard = currentView === "FEED";
-
-  useEffect(() => {
-    if (!showMarketPulseBoard) return;
-
-    let cancelled = false;
-    const fetchParams: CatalogFetchParams = {
-      page: 1,
-      providerFilter: activeProviderFilter,
-      sortBy: "volume",
-      catalogBucket,
-    };
-    const cacheKey = buildCatalogFetchKey(fetchParams);
-    const cached = catalogPageCacheRef.current.get(cacheKey);
-    if (cached) {
-      setTopMarketPreviewRows(cached.rows.map((row) => mapMarketApiToMarket(row, lang)));
-      setTopMarketPreviewLoading(false);
-    } else {
-      setTopMarketPreviewLoading(true);
-      void fetchCatalogPage(fetchParams)
-        .then((result) => {
-          if (cancelled) return;
-          setTopMarketPreviewRows(result.rows.map((row) => mapMarketApiToMarket(row, lang)));
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setTopMarketPreviewRows([]);
-        })
-        .finally(() => {
-          if (cancelled) return;
-          setTopMarketPreviewLoading(false);
-        });
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeProviderFilter,
-    buildCatalogFetchKey,
-    catalogBucket,
-    fetchCatalogPage,
-    lang,
-    showMarketPulseBoard,
-  ]);
-
   // Fetch our taxonomy tag facets for catalog chips.
   // Every market gets a tag (AI classifier or keyword matcher), so this always returns data.
   useEffect(() => {
@@ -2407,10 +2277,7 @@ export default function HomePage({
   useEffect(() => {
     if (!user) {
       lastProfileBootstrapUserIdRef.current = null;
-      setMyPositions([]);
-      setMyTrades([]);
       bookmarks.setMyBookmarks([]);
-      setMyCreatedMarkets([]);
       setWalletBalanceMajor(null);
       setProfilePnlMajor(null);
       return;
@@ -2421,7 +2288,7 @@ export default function HomePage({
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let idleId: number | null = null;
     const run = () => {
-      void loadMyBets();
+      void loadProfileData();
     };
 
     if (typeof window !== "undefined" && "requestIdleCallback" in window) {
@@ -2435,7 +2302,7 @@ export default function HomePage({
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [user?.id, loadMyBets]);
+  }, [user?.id, loadProfileData]);
 
   useEffect(() => {
     if (skipInitialCatalogFetchRef.current) {
@@ -2492,7 +2359,7 @@ export default function HomePage({
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) {
-      setVisibleCatalogMarketIds([]);
+      visibleCatalogMarketIdsRef.current = [];
       return;
     }
 
@@ -2507,10 +2374,7 @@ export default function HomePage({
     const syncVisibleIds = () => {
       rafId = null;
       const next = (visible.size > 0 ? Array.from(visible) : readFallbackIds()).slice(0, 200);
-      setVisibleCatalogMarketIds((prev) => {
-        if (prev.length === next.length && prev.every((value, idx) => value === next[idx])) return prev;
-        return next;
-      });
+      visibleCatalogMarketIdsRef.current = next;
     };
 
     const observer = new IntersectionObserver(
@@ -2556,7 +2420,7 @@ export default function HomePage({
 
   useEffect(() => {
     if (currentView !== "CATALOG" || selectedMarketId || !documentVisible) return;
-    const targetIds = Array.from(new Set(visibleCatalogMarketIds.filter(Boolean))).slice(
+    const targetIds = Array.from(new Set(visibleCatalogMarketIdsRef.current.filter(Boolean))).slice(
       0,
       CATALOG_VISIBLE_MARKETS_REALTIME_LIMIT
     );
@@ -2876,88 +2740,9 @@ export default function HomePage({
       return () => cleanupTransport(closeStream);
     }
     return startSupabaseVisibleSubscription();
-  }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, selectedMarketId, visibleCatalogMarketIds]);
+  }, [activeCatalogFetchKey, currentView, documentVisible, loadMarkets, selectedMarketId]);
 
-  const legacyBets = useMemo(
-    () => deriveLegacyBets(myPositions),
-    [deriveLegacyBets, myPositions]
-  );
-
-  const soldTrades = useMemo(() => {
-    if (myTrades.length === 0) return [];
-
-    type Lot = { shares: number; price: number };
-    const lotsByKey = new Map<string, Lot[]>();
-
-    const sorted = [...myTrades].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-
-    const sells: typeof myTrades = [];
-    const PRICE_EPS = 1e-9;
-
-    sorted.forEach((trade) => {
-      const key = `${trade.marketId}:${trade.outcomeId ?? trade.outcome ?? "UNKNOWN"}`;
-      if (!lotsByKey.has(key)) {
-        lotsByKey.set(key, []);
-      }
-      const lots = lotsByKey.get(key)!;
-      const shares = Math.abs(trade.sharesDelta);
-
-      if (shares < PRICE_EPS) {
-        if (trade.action === "sell") {
-          sells.push({ ...trade, avgEntryPrice: null, avgExitPrice: null, realizedPnl: null });
-        }
-        return;
-      }
-
-      const gross = Math.abs(trade.collateralGross);
-      const unitPrice = shares > 0 ? gross / shares : null;
-
-      if (trade.action === "buy") {
-        if (unitPrice !== null && Number.isFinite(unitPrice)) {
-          lots.push({ shares, price: unitPrice });
-        }
-        return;
-      }
-
-      let remaining = shares;
-      let matchedShares = 0;
-      let matchedCost = 0;
-
-      while (remaining > PRICE_EPS && lots.length > 0) {
-        const lot = lots[0];
-        const take = Math.min(lot.shares, remaining);
-        matchedCost += take * lot.price;
-        matchedShares += take;
-        lot.shares -= take;
-        remaining -= take;
-        if (lot.shares <= PRICE_EPS) {
-          lots.shift();
-        }
-      }
-
-      const avgEntryPrice = matchedShares > 0 ? matchedCost / matchedShares : null;
-      const avgExitPrice = unitPrice;
-      const realizedPnl =
-        avgEntryPrice !== null && avgExitPrice !== null
-          ? (avgExitPrice - avgEntryPrice) * matchedShares
-          : null;
-
-      sells.push({
-        ...trade,
-        avgEntryPrice,
-        avgExitPrice,
-        realizedPnl,
-      });
-    });
-
-    return sells
-      .filter((trade) => trade.action === "sell")
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [myTrades]);
-
-  // We load profile bets on navigation and after mutations; no periodic polling needed.
+  // We load profile data on navigation and after mutations; no periodic polling needed.
 
   useEffect(() => {
     const q = searchQuery.trim();
@@ -3286,57 +3071,9 @@ export default function HomePage({
     }
   }, [activeCatalogContextKey, catalogMarkets, hasLoadedActiveCatalogKey, setMarketHighlight]);
 
-  // Feed: markets where the user currently has bets (positions).
-  const myBetMarketIds = useMemo(() => {
-    // NOTE: positions are per-outcome; dedupe by marketId.
-    return new Set(
-      myPositions
-        .filter((p) => Number(p.shares ?? 0) > 0)
-        .map((p) => String(p.marketId))
-    );
-  }, [myPositions]);
-
-  const feedMarkets = useMemo(() => {
-    if (!user) return [];
-    const q = deferredSearchQuery.trim().toLowerCase();
-    const base = mergedMarkets.filter((m) => myBetMarketIds.has(m.id));
-    const filtered = !q
-      ? base
-      : base.filter((market) => {
-          const targetTitle = (lang === "RU" ? market.titleRu : market.titleEn) ?? market.title;
-          return targetTitle.toLowerCase().includes(q);
-        });
-
-    // Open markets first, then soonest closing/ending.
-    const sortTs = (iso?: string | null) => {
-      if (!iso) return Number.POSITIVE_INFINITY;
-      const t = Date.parse(iso);
-      return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
-    };
-
-    return [...filtered].sort((a, b) => {
-      const aClosed = a.state === "resolved";
-      const bClosed = b.state === "resolved";
-      if (aClosed !== bClosed) return aClosed ? 1 : -1;
-      const at = sortTs(a.closesAt ?? a.expiresAt);
-      const bt = sortTs(b.closesAt ?? b.expiresAt);
-      return at - bt;
-    });
-  }, [user, mergedMarkets, myBetMarketIds, deferredSearchQuery, lang]);
-
-  const marketPulseRows = useMemo(() => {
-    const sourceRows = topMarketPreviewRows.length > 0 ? topMarketPreviewRows : catalogMarkets;
-    const mergedById = new Map(mergedMarkets.map((market) => [market.id, market] as const));
-    return sourceRows.map((market) => {
-      const merged = mergedById.get(market.id);
-      if (merged) return merged;
-      return applyLivePatchToMarket(market, marketLivePatchById[market.id]);
-    });
-  }, [catalogMarkets, mergedMarkets, marketLivePatchById, topMarketPreviewRows]);
-
   useEffect(() => {
     const knownIds = new Set(marketsRef.current.map((market) => market.id));
-    const missing = Array.from(new Set([...Array.from(myBetMarketIds), ...Array.from(bookmarks.bookmarkedMarketIds)]))
+    const missing = Array.from(bookmarks.bookmarkedMarketIds)
       .filter((marketId) => !knownIds.has(marketId))
       .filter((marketId) => !ensuredMarketIdsRef.current.has(marketId))
       .slice(0, 40);
@@ -3364,7 +3101,7 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [bookmarks.bookmarkedMarketIds, lang, myBetMarketIds]);
+  }, [bookmarks.bookmarkedMarketIds, lang]);
 
   const selectedMarket = useMemo(
     () => mergedMarkets.find((market) => market.id === selectedMarketId),
@@ -3376,6 +3113,9 @@ export default function HomePage({
     if (selectedMarketId?.startsWith("polymarket:")) return "polymarket";
     return undefined;
   }, [selectedMarket?.provider, selectedMarketId]);
+
+  const selectedMarketSnapshotIdRef = useRef(selectedMarket?.snapshotId);
+  selectedMarketSnapshotIdRef.current = selectedMarket?.snapshotId;
 
   useEffect(() => {
     if (!selectedMarketId) return;
@@ -3474,7 +3214,7 @@ export default function HomePage({
     if (ENABLE_MARKETS_WS || ENABLE_UPSTASH_STREAM) {
       let fallbackActive = false;
       let stopSupabaseFallback: (() => void) | null = null;
-      let streamSnapshotId = asNumber(selectedMarket?.snapshotId) ?? null;
+      let streamSnapshotId = asNumber(selectedMarketSnapshotIdRef.current) ?? null;
       let lastStreamSeq: number | null = null;
 
       const activateSelectedMarketFallback = () => {
@@ -3605,7 +3345,7 @@ export default function HomePage({
       pendingPatches.clear();
       stopSupabaseFallback();
     };
-  }, [selectedMarket?.id, selectedMarket?.marketRefId, selectedMarket?.providerMarketId, selectedMarket?.snapshotId, selectedMarketId, selectedProvider]);
+  }, [selectedMarket?.id, selectedMarket?.marketRefId, selectedMarket?.providerMarketId, selectedMarketId, selectedProvider]);
 
   const goToView = useCallback(
     (view: ViewType) => {
@@ -4262,12 +4002,8 @@ export default function HomePage({
     [user, reloginRequired, refreshUser, attemptSilentRefresh, navigateToMarketUrl]
   );
 
-  const creatorHasBets = useMemo(() => {
-    if (!selectedMarketId || !user) return false;
-    if (!selectedMarket?.createdBy || selectedMarket.createdBy !== user.id) return false;
-    const entry = myCreatedMarkets.find((m) => m.id === selectedMarketId);
-    return entry ? entry.hasBets : false;
-  }, [selectedMarketId, selectedMarket?.createdBy, user, myCreatedMarkets]);
+  // creatorHasBets: myCreatedMarkets was always empty in wrapper mode, so this is always false.
+  const creatorHasBets = false;
 
   const openExternalWindow = useCallback((target: string) => {
     if (typeof window === "undefined") return;
@@ -4409,7 +4145,7 @@ export default function HomePage({
                 onOpenUserProfile={(userId) => void publicProfile.openPublicProfile(userId)}
               onPostComment={comments.handlePostMarketComment}
               onToggleCommentLike={comments.handleToggleMarketCommentLike}
-              userPositions={myPositions.filter((p) => p.marketId === selectedMarket.id)}
+              userPositions={[]}
               priceCandles={marketCandles}
               chartRange={marketChartRange}
               onChartRangeChange={setMarketChartRange}
@@ -4437,7 +4173,8 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-
+            onAggregatorClick={() => setShowAggregator(true)}
+            aggregatorActive={showAggregator}
             onChange={(view) => {
               // Bottom nav always navigates back to the main shell
               setMarketBetIntent(null);
@@ -4542,26 +4279,8 @@ export default function HomePage({
                   />
                 </div>
 
-                {/* FEED */}
-                <div className={currentView === "FEED" ? "w-full" : "hidden"}>
-                  <FeedView
-                    lang={lang}
-                    user={user}
-                    marketPulseRows={marketPulseRows}
-                    topMarketPreviewLoading={topMarketPreviewLoading}
-                    bookmarkedMarkets={bookmarks.bookmarkedMarkets}
-                    bookmarkedMarketIds={bookmarks.bookmarkedMarketIds}
-                    feedMarkets={feedMarkets}
-                    loadingMarkets={loadingMarkets}
-                    marketsLoadingMessage={marketsLoadingMessage}
-                    marketsError={marketsError}
-                    onMarketClick={(market) => {
-                      setMarketBetIntent(null);
-                      void openMarketWithAuthCheck(market);
-                    }}
-                    onQuickBet={(market, side) => handleOpenMarketBet(market, side)}
-                  />
-                </div>
+                {/* FEED view removed -- FEED tab replaced by Pre Markets in BottomMenu.
+                   The /feed URL route still maps to FEED ViewType but renders nothing here. */}
 
                 {/* PROFILE */}
                 <div className={currentView === "PROFILE" ? "w-full" : "hidden"}>
@@ -4575,17 +4294,17 @@ export default function HomePage({
                     onUpdateAvatarUrl={handleUpdateAvatarUrl}
                     balanceMajor={walletBalanceMajor ?? user?.balance ?? 0}
                     pnlMajor={profilePnlMajor ?? 0}
-                    bets={legacyBets}
+                    bets={[]}
                     betsLoading={myBetsLoading}
                     betsError={myBetsError}
-                    soldTrades={soldTrades}
+                    soldTrades={[]}
                     comments={myComments}
                     commentsLoading={myCommentsLoading}
                     commentsError={myCommentsError}
                     bookmarks={bookmarks.bookmarkedMarkets}
-                    myMarkets={myCreatedMarkets}
+                    myMarkets={[]}
                     onSellPosition={handleSellPosition}
-                    onLoadBets={() => void loadMyBets()}
+                    onLoadBets={() => void loadProfileData()}
                     onLoadComments={() => void loadMyComments()}
                     onMarketClick={(marketId) => {
                       setMarketBetIntent(null); // Clear bet intent when clicking from profile
@@ -4609,7 +4328,8 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-
+            onAggregatorClick={() => setShowAggregator(true)}
+            aggregatorActive={showAggregator}
             onChange={(view) => {
               setMarketBetIntent(null);
               goToView(view);

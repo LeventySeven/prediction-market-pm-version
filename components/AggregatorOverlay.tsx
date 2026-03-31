@@ -1,6 +1,7 @@
 'use client';
 
-import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 
 const AGGREGATOR_URL = process.env.NEXT_PUBLIC_AGGREGATOR_URL || "https://www.yallamarket.io/";
 
@@ -11,6 +12,8 @@ interface AggregatorOverlayProps {
 }
 
 export default function AggregatorOverlay({ isOpen, onClose, lang }: AggregatorOverlayProps) {
+  const [iframeLoaded, setIframeLoaded] = useState(false);
+
   if (!isOpen) return null;
 
   return (
@@ -28,13 +31,21 @@ export default function AggregatorOverlay({ isOpen, onClose, lang }: AggregatorO
           Pre Markets
         </span>
       </div>
-      <iframe
-        src={AGGREGATOR_URL}
-        className="flex-1 w-full border-0"
-        allow="clipboard-write"
-        sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-top-navigation-by-user-activation"
-        title="Pre Markets Aggregator"
-      />
+      <div className="relative flex-1">
+        {!iframeLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black">
+            <Loader2 size={32} className="animate-spin text-zinc-500" />
+          </div>
+        )}
+        <iframe
+          src={AGGREGATOR_URL}
+          className="h-full w-full border-0"
+          allow="clipboard-write"
+          sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-top-navigation-by-user-activation"
+          title="Pre Markets Aggregator"
+          onLoad={() => setIframeLoaded(true)}
+        />
+      </div>
     </div>
   );
 }

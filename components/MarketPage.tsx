@@ -177,13 +177,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
   const [copied, setCopied] = useState(false);
 
   // Trading is delegated to venue-specific flows from the shell page.
-  const isOnChainMarket = false;
-  const walletConnected = false;
-  const walletBalanceMajor = null as number | null;
-  const vaultBalanceMajor = null as number | null;
-  const onchainYesShares = null as number | null;
-  const onchainNoShares = null as number | null;
-  const onchainLoadError = null as string | null;
 
   useEffect(() => {
     if (!betIntent) return;
@@ -567,17 +560,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
     }
   };
 
-  const handleClaimClick = async () => {
-    if (!isOnChainMarket || !onClaimWinnings) return;
-    if (!user) return;
-    try {
-      setPlaceError(null);
-      await onClaimWinnings({ marketId: market.id, assetCode: market.settlementAsset as 'USDC' | 'USDT' });
-    } catch (e) {
-      setPlaceError(getErrorMessage(e as ErrorLike, 'Не удалось получить выигрыш', 'Failed to claim winnings', lang));
-    }
-  };
-
   const handleResolveOutcomeClick = async (side: 'YES' | 'NO') => {
     if (!creatorControlsEnabled || !onResolveOutcome) return;
     if (!eventEnded) {
@@ -879,75 +861,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
                 )}
 
                 <div className="space-y-6">
-                  {isOnChainMarket && (
-                    <div className="rounded-2xl border border-zinc-900 bg-zinc-950/40 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                            {lang === 'RU' ? 'On-chain режим' : 'On-chain mode'}
-                          </div>
-                          <div className="mt-1 text-sm font-semibold text-zinc-100">
-                            {market.settlementAsset} {lang === 'RU' ? 'в хранилище' : 'vault settlement'}
-                          </div>
-                          <div className="mt-1 text-xs text-zinc-500">
-                            {lang === 'RU'
-                              ? 'Для ставок нужно пополнить баланс в Vault (Deposit).'
-                              : 'You must deposit into the Vault before betting.'}
-                          </div>
-                        </div>
-                        <div className="text-right text-xs text-zinc-500 font-mono">{walletConnected ? 'Solana' : ''}</div>
-                      </div>
-
-                      {onchainLoadError && (
-                        <div className="mt-3 text-xs text-red-400">{onchainLoadError}</div>
-                      )}
-
-                      <div className="mt-3 grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-zinc-900 bg-black/40 p-3">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                            {lang === 'RU' ? 'Кошелек' : 'Wallet'}
-                          </div>
-                          <div className="mt-1 text-sm font-mono text-zinc-100">
-                            {walletBalanceMajor === null ? '—' : `${walletBalanceMajor.toFixed(2)}`}
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-900 bg-black/40 p-3">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                            Vault
-                          </div>
-                          <div className="mt-1 text-sm font-mono text-zinc-100">
-                            {vaultBalanceMajor === null ? '—' : `${vaultBalanceMajor.toFixed(2)}`}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-zinc-900 bg-black/40 p-3">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-500">YES</div>
-                          <div className="mt-1 text-sm font-mono text-zinc-100">
-                            {onchainYesShares === null ? '—' : `${onchainYesShares.toFixed(2)} sh`}
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-900 bg-black/40 p-3">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-500">NO</div>
-                          <div className="mt-1 text-sm font-mono text-zinc-100">
-                            {onchainNoShares === null ? '—' : `${onchainNoShares.toFixed(2)} sh`}
-                          </div>
-                        </div>
-                      </div>
-
-                      {isResolved && winningSide && onClaimWinnings && (
-                        <Button
-                          fullWidth
-                          className="mt-4"
-                          onClick={handleClaimClick}
-                          disabled={!walletConnected}
-                        >
-                          {lang === 'RU' ? 'Получить выигрыш (Claim)' : 'Claim winnings'}
-                        </Button>
-                      )}
-                    </div>
-                  )}
 
                   <div className="relative">
                     <label className="text-xs font-medium text-zinc-400 mb-2 block">
@@ -1039,7 +952,7 @@ const MarketPage: React.FC<MarketPageProps> = ({
                   )}
                 </div>
 
-                {user && onSellPosition && !isOnChainMarket && sellablePositions.length > 0 && (
+                {user && onSellPosition && sellablePositions.length > 0 && (
                   <div className="mt-6 space-y-3">
                     <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">
                       {lang === 'RU' ? 'Активные ставки' : 'Your Active Bets'}
@@ -1098,55 +1011,6 @@ const MarketPage: React.FC<MarketPageProps> = ({
                           </Button>
                         </div>
                       ))}
-                    </div>
-                  </div>
-                )}
-
-                {user && onSellPosition && isOnChainMarket && (
-                  <div className="mt-6 space-y-3">
-                    <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-                      {lang === 'RU' ? 'On-chain позиция' : 'On-chain position'}
-                    </p>
-                    <div className="space-y-3">
-                      {([
-                        { outcome: 'YES' as const, shares: onchainYesShares ?? 0 },
-                        { outcome: 'NO' as const, shares: onchainNoShares ?? 0 },
-                      ]).map((p) => (
-                        <div key={p.outcome} className="bg-zinc-950/40 border border-zinc-900 rounded-2xl p-3">
-                          <div className="flex items-center justify-between text-sm">
-                            <div className="flex items-center gap-2 text-white">
-                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-sm border ${
-                                p.outcome === 'YES'
-                                  ? 'bg-[rgba(190,255,29,1)] border-[rgba(190,255,29,1)] text-black'
-                                  : 'bg-[rgba(245,68,166,1)] border-[rgba(245,68,166,1)] text-white'
-                              }`}>
-                                {p.outcome}
-                              </span>
-                              <span className="font-medium">{lang === 'RU' ? 'Акций' : 'Shares'}</span>
-                            </div>
-                            <span className="font-mono text-white">{p.shares.toFixed(2)} sh</span>
-                          </div>
-                          <Button
-                            fullWidth
-                            className="mt-3 !bg-zinc-800 !text-white hover:!bg-zinc-700"
-                            onClick={() =>
-                              onSellPosition({
-                                marketId: market.id,
-                                side: p.outcome,
-                                shares: p.shares,
-                              })
-                            }
-                            disabled={!walletConnected || p.shares <= 0}
-                          >
-                            {lang === 'RU' ? 'Продать' : 'Sell'} {p.outcome}
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="text-[11px] text-zinc-500">
-                      {lang === 'RU'
-                        ? 'On-chain сделки появятся в истории после индексации (на тестнете).'
-                        : 'On-chain trades will appear in history after indexing (on testnet).'}
                     </div>
                   </div>
                 )}

@@ -178,13 +178,6 @@ const categoryMetaFromRaw = (
   };
 };
 
-const inferFastMarketFlags = (params: { title: string; closesAt: string }): { isFastMarket: boolean; catalogBucket: "main" | "fast" } => {
-  return {
-    isFastMarket: true,
-    catalogBucket: "main",
-  };
-};
-
 const addCategoryValue = (
   categories: Map<string, string>,
   value: unknown
@@ -238,11 +231,6 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     fallbackPrice: yes ? yes.price : 0.5,
   });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
-  const { isFastMarket, catalogBucket } = inferFastMarketFlags({
-    title: market.title,
-    closesAt: market.closesAt,
-  });
-
   return {
     id: market.id,
     provider: "polymarket" as const,
@@ -253,8 +241,8 @@ const mapPolymarketMarket = (market: Awaited<ReturnType<typeof getPolymarketMark
     liveSeq: null,
     compareGroupId: null,
     compareGroup: null,
-    isFastMarket,
-    catalogBucket,
+    isFastMarket: true,
+    catalogBucket: "main" as const,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -346,11 +334,6 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     fallbackPrice: yes ? yes.price : 0.5,
   });
   const priceNo = no ? no.price : clamp01(1 - priceYes);
-  const { isFastMarket, catalogBucket } = inferFastMarketFlags({
-    title: market.title,
-    closesAt: market.closesAt,
-  });
-
   return {
     id: outputId,
     provider: market.provider,
@@ -361,8 +344,8 @@ const mapVenueMarketToMarketOutput = (market: VenueMarket) => {
     liveSeq: null,
     compareGroupId: null,
     compareGroup: null,
-    isFastMarket,
-    catalogBucket,
+    isFastMarket: true,
+    catalogBucket: "main" as const,
     titleRu: market.title,
     titleEn: market.title,
     description: market.description,
@@ -1504,6 +1487,7 @@ const listLocalLiveActivityTicks = async (
   return out;
 };
 
+const EMBEDDING_CACHE_MAX_SIZE = 200;
 const embeddingCache = new Map<string, { expiresAt: number; vector: number[] }>();
 let openAIClient: OpenAI | null = null;
 
@@ -1597,6 +1581,7 @@ const getQueryEmbedding = async (query: string): Promise<number[] | null> => {
     const response = await client.embeddings.create({ model, input: normalized });
     const vector = normalizeVector(response.data[0]?.embedding ?? []);
     if (vector.length === 0) return null;
+    if (embeddingCache.size >= EMBEDDING_CACHE_MAX_SIZE) embeddingCache.clear();
     embeddingCache.set(cacheKey, {
       vector,
       expiresAt: now + 10 * 60_000,
@@ -1636,23 +1621,6 @@ const toErrorMessage = (error: Error | string | JsonValue) => {
   } catch {
     return "UNKNOWN_ERROR";
   }
-};
-
-const relayRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-const applyRelayRateLimit = (userId: string) => {
-  const windowMs = 60_000;
-  const maxPerWindow = 25;
-  const now = Date.now();
-  const entry = relayRateLimitMap.get(userId);
-  if (!entry || entry.resetAt <= now) {
-    relayRateLimitMap.set(userId, { count: 1, resetAt: now + windowMs });
-    return;
-  }
-  if (entry.count >= maxPerWindow) {
-    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "ORDER_RELAY_RATE_LIMITED" });
-  }
-  entry.count += 1;
 };
 
 const toBase64 = (input: string) => {

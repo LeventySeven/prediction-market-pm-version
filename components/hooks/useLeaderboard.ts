@@ -4,27 +4,10 @@ import { useState, useCallback } from "react";
 import { trpcClient } from "@/src/utils/trpcClient";
 import { leaderboardUsersSchema } from "@/src/schemas/leaderboard";
 import type { LeaderboardUser } from "@/types";
+import type { ErrorLike } from "@/src/lib/errors";
+import { getErrorMessage } from "@/src/lib/errors";
 
 export type LeaderboardSort = "PNL" | "BETS";
-
-type ErrorLike =
-  | string
-  | Error
-  | {
-      message?: string;
-      data?: { message?: string };
-    }
-  | null
-  | undefined;
-
-function getErrorMessage(error: ErrorLike): string | undefined {
-  if (!error) return undefined;
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (typeof error.message === "string") return error.message;
-  if (error.data && typeof error.data.message === "string") return error.data.message;
-  return undefined;
-}
 
 export function useLeaderboard(params: { lang: "RU" | "EN" }) {
   const { lang } = params;

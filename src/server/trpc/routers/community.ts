@@ -236,9 +236,11 @@ export const communityRouter = router({
       }
 
       const rows = Array.isArray(communities) ? (communities as CommunityRow[]) : [];
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
       // Batch-fetch tags for all communities
-      const communityIds = rows.map((r) => r.id);
+      const communityIds = pageRows.map((r) => r.id);
       const tagsByCommId = new Map<string, string[]>();
       if (communityIds.length > 0) {
         const { data: tagData } = await (ctx.supabaseService as any)
@@ -252,14 +254,12 @@ export const communityRouter = router({
         }
       }
 
-      const items = rows.map((row) => toCommunityOutput(row, tagsByCommId.get(row.id) ?? []));
-      const nextOffset = offset + items.length;
-      const nextCursor = items.length === limit + 1 ? encodeCursor(nextOffset) : null;
+      const items = pageRows.map((row) => toCommunityOutput(row, tagsByCommId.get(row.id) ?? []));
+      const nextCursor = hasMore ? encodeCursor(offset + limit) : null;
 
-      // Trim to exact limit (we fetched limit+1 to detect next page)
       return {
         apiVersion: API_VERSION_V1,
-        items: items.slice(0, limit),
+        items,
         nextCursor,
       };
     }),

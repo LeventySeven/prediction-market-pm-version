@@ -5,8 +5,6 @@ import Button from './Button';
 import { User } from '../types';
 
 interface HeaderProps {
-  searchQuery?: string;
-  onSearchChange?: (value: string) => void;
   user?: User | null;
   onAuthClick?: () => void;
   lang?: 'RU' | 'EN';

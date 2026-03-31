@@ -2,16 +2,10 @@
 
 import { useCallback, useState } from "react";
 import { trpcClient } from "@/src/utils/trpcClient";
+import type { ErrorLike } from "@/src/lib/errors";
+import { getErrorMessage } from "@/src/lib/errors";
 
 type MarketContextPayload = { context: string; sources: string[]; updatedAt: string };
-
-const getErrorMessage = (err: unknown): string => {
-  if (!err) return "Unknown error";
-  if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message;
-  if (typeof err === "object" && "message" in err) return String((err as { message?: unknown }).message);
-  return "Unknown error";
-};
 
 export function useMarketContext() {
   const [marketContextById, setMarketContextById] = useState<Record<string, MarketContextPayload>>({});
@@ -34,7 +28,7 @@ export function useMarketContext() {
       }));
     } catch (err) {
       console.error("generateMarketContext failed", err);
-      setMarketContextErrorById((prev) => ({ ...prev, [marketId]: getErrorMessage(err) }));
+      setMarketContextErrorById((prev) => ({ ...prev, [marketId]: getErrorMessage(err as ErrorLike) ?? "Unknown error" }));
     } finally {
       setMarketContextLoadingId((prev) => (prev === marketId ? null : prev));
     }
