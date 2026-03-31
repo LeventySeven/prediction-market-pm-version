@@ -59,7 +59,7 @@ const nextConfig: NextConfig = {
         source: "/(.*)",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Frame-Options", value: "ALLOWALL" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           {
             key: "Permissions-Policy",
@@ -80,7 +80,7 @@ const nextConfig: NextConfig = {
               `img-src 'self' data: blob: https://ui-avatars.com ${supabaseHostname ? `https://${supabaseHostname}` : "https://*.supabase.co"}`,
               "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.openai.com https://auth.privy.io https://*.upstash.io",
               "frame-src https://www.yallamarket.io https://yallamarket.io",
-              "frame-ancestors 'none'",
+              "frame-ancestors *",
               "base-uri 'self'",
               "form-action 'self'",
             ].join("; "),
