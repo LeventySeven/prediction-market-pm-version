@@ -173,6 +173,17 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
 
     const chart = createChart(container, {
       autoSize: true,
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: false,
+        vertTouchDrag: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: false,
+      },
       layout: {
         background: { type: ColorType.Solid, color: '#000000' },
         textColor: '#9ca3af',
@@ -378,8 +389,8 @@ const TradingViewCandles: React.FC<TradingViewCandlesProps> = (props) => {
   }, [normalizedLines, props.mode]);
 
   return (
-    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-2xl border border-zinc-800/60 bg-black">
-      <div ref={containerRef} className="h-full w-full" />
+    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-2xl border border-zinc-800/60 bg-black" style={{ touchAction: "pan-y" }}>
+      <div ref={containerRef} className="h-full w-full" style={{ touchAction: "pan-y" }} />
     </div>
   );
 };

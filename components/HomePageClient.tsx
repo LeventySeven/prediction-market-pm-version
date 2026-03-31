@@ -4073,7 +4073,6 @@ export default function HomePage({
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
-            onAggregatorClick={() => setShowAggregator(true)}
             onLogoClick={() => {
               setSelectedMarketId(null);
               setCurrentView("CATALOG");
@@ -4146,10 +4145,9 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-            onAggregatorClick={() => setShowAggregator(true)}
             aggregatorActive={showAggregator}
             onChange={(view) => {
-              // Bottom nav always navigates back to the main shell
+              setShowAggregator(false);
               setMarketBetIntent(null);
               if (selectedMarketId !== null) {
                 setSelectedMarketId(null);
@@ -4166,7 +4164,6 @@ export default function HomePage({
             user={user}
             onAuthClick={() => openAuth("SIGN_UP")}
             onHelpClick={() => setShowOnboarding(true)}
-            onAggregatorClick={() => setShowAggregator(true)}
             onLogoClick={() => {
               setMarketBetIntent(null);
               setSelectedMarketId(null);
@@ -4300,9 +4297,9 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
-            onAggregatorClick={() => setShowAggregator(true)}
             aggregatorActive={showAggregator}
             onChange={(view) => {
+              setShowAggregator(false);
               setMarketBetIntent(null);
               goToView(view);
             }}
@@ -4423,11 +4420,7 @@ export default function HomePage({
         }}
       />
       </div>
-      <AggregatorOverlay
-        isOpen={showAggregator}
-        onClose={() => setShowAggregator(false)}
-        lang={lang}
-      />
+      <AggregatorOverlay isOpen={showAggregator} />
     </ClientErrorBoundary>
   );
 }
