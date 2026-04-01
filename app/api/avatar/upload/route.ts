@@ -41,15 +41,14 @@ export async function POST(req: Request) {
     return fail(400, "FILE_TOO_LARGE");
   }
 
-  const ext =
-    (file.name.split(".").pop() || "").toLowerCase().slice(0, 8) ||
-    (file.type === "image/png"
-      ? "png"
-      : file.type === "image/webp"
-      ? "webp"
-      : file.type === "image/gif"
-      ? "gif"
-      : "jpg");
+  // Derive extension strictly from validated MIME type — never trust file.name
+  const extMap: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+  };
+  const ext = extMap[file.type] ?? "jpg";
 
   const userId = payload.sub;
   const objectName = `${userId}/${Date.now()}_${randomBytes(6).toString("hex")}.${ext}`;

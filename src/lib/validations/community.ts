@@ -37,7 +37,7 @@ export const communityFeedOutput = z.object({
 
 export const createCommunityInput = z.object({
   name: z.string().min(2).max(64),
-  slug: z.string().min(2).max(64).regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, "Invalid slug format"),
+  slug: z.string().min(2).max(64).transform((s) => s.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")).pipe(z.string().regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, "Invalid slug format")),
   description: z.string().max(500).nullable().optional(),
   avatarUrl: z.string().url().nullable().optional(),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Must be hex color").optional(),

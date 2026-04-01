@@ -19,6 +19,12 @@ const DEFAULT_COMMUNITY_FEED_LIMIT = 20;
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
+// Community tables are not (yet) in the auto-generated Database type.
+// Cast the service client once here instead of scattering `as any` on every call.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type UntypedSupabase = any;
+const svc = (ctx: { supabaseService: unknown }): UntypedSupabase => ctx.supabaseService;
+
 type CommunityRow = {
   id: string;
   slug: string;
@@ -57,7 +63,7 @@ export const communityRouter = router({
       const userId = ctx.authUser!.id;
 
       // Insert community
-      const { data: community, error: communityError } = await (ctx.supabaseService as any)
+      const { data: community, error: communityError } = await svc(ctx)
         .from("communities")
         .insert({
           name: input.name,
@@ -86,13 +92,13 @@ export const communityRouter = router({
         tag,
       }));
 
-      const { error: tagError } = await (ctx.supabaseService as any)
+      const { error: tagError } = await svc(ctx)
         .from("community_tag_filters")
         .insert(tagRows);
 
       if (tagError) {
         // Best-effort cleanup: delete the community if tag insert fails
-        await (ctx.supabaseService as any)
+        await svc(ctx)
           .from("communities")
           .delete()
           .eq("id", community.id);
@@ -103,13 +109,23 @@ export const communityRouter = router({
       }
 
       // Insert owner membership (into community_memberships, not community_members)
-      await (ctx.supabaseService as any)
+      const { error: membershipError } = await svc(ctx)
         .from("community_memberships")
         .insert({
           community_id: community.id,
           user_id: userId,
           role: "owner",
         });
+
+      if (membershipError) {
+        // Clean up: remove tags and community if membership insert fails
+        await svc(ctx).from("community_tag_filters").delete().eq("community_id", community.id);
+        await svc(ctx).from("communities").delete().eq("id", community.id);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: membershipError.message ?? "Failed to create membership",
+        });
+      }
 
       return toCommunityOutput(community as CommunityRow, input.tags);
     }),
@@ -122,7 +138,7 @@ export const communityRouter = router({
       const userId = ctx.authUser!.id;
 
       // Verify ownership
-      const { data: existing, error: fetchError } = await (ctx.supabaseService as any)
+      const { data: existing, error: fetchError } = await svc(ctx)
         .from("communities")
         .select("*")
         .eq("id", input.communityId)
@@ -146,7 +162,7 @@ export const communityRouter = router({
       // Update community row if there are fields to update
       let updatedRow = existing;
       if (Object.keys(updatePayload).length > 0) {
-        const { data: updated, error: updateError } = await (ctx.supabaseService as any)
+        const { data: updated, error: updateError } = await svc(ctx)
           .from("communities")
           .update(updatePayload)
           .eq("id", input.communityId)
@@ -166,7 +182,7 @@ export const communityRouter = router({
       let tags: string[];
       if (input.tags !== undefined) {
         // Delete existing tags and re-insert
-        await (ctx.supabaseService as any)
+        await svc(ctx)
           .from("community_tag_filters")
           .delete()
           .eq("community_id", input.communityId);
@@ -175,14 +191,14 @@ export const communityRouter = router({
           community_id: input.communityId,
           tag,
         }));
-        await (ctx.supabaseService as any)
+        await svc(ctx)
           .from("community_tag_filters")
           .insert(tagRows);
 
         tags = input.tags;
       } else {
         // Fetch existing tags
-        const { data: tagData } = await (ctx.supabaseService as any)
+        const { data: tagData } = await svc(ctx)
           .from("community_tag_filters")
           .select("tag")
           .eq("community_id", input.communityId);
@@ -196,7 +212,7 @@ export const communityRouter = router({
     .input(getCommunityInput)
     .output(communityOutput)
     .query(async ({ ctx, input }) => {
-      const { data: community, error } = await (ctx.supabaseService as any)
+      const { data: community, error } = await svc(ctx)
         .from("communities")
         .select("*")
         .eq("slug", input.slug)
@@ -208,7 +224,7 @@ export const communityRouter = router({
       }
 
       // Fetch tags
-      const { data: tagData } = await (ctx.supabaseService as any)
+      const { data: tagData } = await svc(ctx)
         .from("community_tag_filters")
         .select("tag")
         .eq("community_id", community.id);
@@ -224,7 +240,7 @@ export const communityRouter = router({
       const limit = Math.max(1, Math.min(50, Number(input?.limit ?? DEFAULT_COMMUNITY_LIMIT)));
       const offset = decodeCursor(input?.cursor);
 
-      const { data: communities, error } = await (ctx.supabaseService as any)
+      const { data: communities, error } = await svc(ctx)
         .from("communities")
         .select("*")
         .eq("visibility", "public")
@@ -243,7 +259,7 @@ export const communityRouter = router({
       const communityIds = pageRows.map((r) => r.id);
       const tagsByCommId = new Map<string, string[]>();
       if (communityIds.length > 0) {
-        const { data: tagData } = await (ctx.supabaseService as any)
+        const { data: tagData } = await svc(ctx)
           .from("community_tag_filters")
           .select("community_id, tag")
           .in("community_id", communityIds);
@@ -272,7 +288,7 @@ export const communityRouter = router({
       const offset = decodeCursor(input.cursor);
 
       // 1. Load the community's tag filters
-      const { data: tagData, error: tagError } = await (ctx.supabaseService as any)
+      const { data: tagData, error: tagError } = await svc(ctx)
         .from("community_tag_filters")
         .select("tag")
         .eq("community_id", input.communityId);
@@ -287,7 +303,7 @@ export const communityRouter = router({
       }
 
       // 2. Query market_ai_tags for markets matching those tags
-      const { data: aiTagRows, error: aiTagError } = await (ctx.supabaseService as any)
+      const { data: aiTagRows, error: aiTagError } = await svc(ctx)
         .from("market_ai_tags")
         .select("market_id, tag")
         .in("tag", tags);
@@ -326,7 +342,7 @@ export const communityRouter = router({
 
       for (let i = 0; i < matchingMarketIds.length; i += CATALOG_CHUNK_SIZE) {
         const chunk = matchingMarketIds.slice(i, i + CATALOG_CHUNK_SIZE);
-        const { data: rows } = await (ctx.supabaseService as any)
+        const { data: rows } = await svc(ctx)
           .from("market_catalog")
           .select("id, total_volume_usd, source_updated_at")
           .in("id", chunk)

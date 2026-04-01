@@ -35,12 +35,16 @@ import {
 
 const PRIVY_PLACEHOLDER_DOMAIN = "@privy.local";
 
+const USER_COLUMNS =
+  "id, email, username, display_name, avatar_url, profile_description, avatar_palette, profile_setup_completed_at, telegram_photo_url, created_at, is_admin, auth_provider";
+
 const normalizeDescription = (value: string | null | undefined) => {
   const normalized = String(value ?? "").trim();
   return normalized.length > 0 ? normalized : null;
 };
-const normalizeEmail = (value: string | undefined) => {
-  const normalized = String(value ?? "").trim().toLowerCase();
+const normalizeEmail = (value: string | undefined): string | null => {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
 };
 const isPrivyPlaceholderEmail = (value: string) => value.trim().toLowerCase().endsWith(PRIVY_PLACEHOLDER_DOMAIN);
@@ -213,7 +217,7 @@ export const userRouter = router({
         .from("users")
         .update({ display_name: displayName })
         .eq("id", authUser.id)
-        .select("*")
+        .select(USER_COLUMNS)
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update display name" });
       return mapUser(updated.data);
@@ -248,7 +252,7 @@ export const userRouter = router({
           profile_setup_completed_at: new Date().toISOString(),
         })
         .eq("id", authUser.id)
-        .select("*")
+        .select(USER_COLUMNS)
         .single();
 
       if (updated.error || !updated.data) {
@@ -290,7 +294,7 @@ export const userRouter = router({
         .from("users")
         .update(updatePayload)
         .eq("id", authUser.id)
-        .select("*")
+        .select(USER_COLUMNS)
         .single();
       if (updated.error || !updated.data) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: updated.error?.message ?? "Failed to update avatar" });
       return mapUser(updated.data);
@@ -359,7 +363,7 @@ export const userRouter = router({
         .from("users")
         .update(updatePayload)
         .eq("id", authUser.id)
-        .select("*")
+        .select(USER_COLUMNS)
         .single();
 
       if (updated.error || !updated.data) {

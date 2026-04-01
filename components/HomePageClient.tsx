@@ -4145,6 +4145,7 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
+            onAggregatorClick={() => setShowAggregator(true)}
             aggregatorActive={showAggregator}
             onChange={(view) => {
               setShowAggregator(false);
@@ -4297,6 +4298,7 @@ export default function HomePage({
             lang={lang}
             user={user}
             onLoginRequest={() => openAuth("SIGN_IN")}
+            onAggregatorClick={() => setShowAggregator(true)}
             aggregatorActive={showAggregator}
             onChange={(view) => {
               setShowAggregator(false);

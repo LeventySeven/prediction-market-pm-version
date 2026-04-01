@@ -7,11 +7,11 @@ const TOKEN_TTL_SECONDS = 60 * 60 * 2; // 2 hours
 const TOKEN_REFRESH_WINDOW_SECONDS = 60 * 30; // refresh when <30 min remaining
 const IS_PROD = process.env.NODE_ENV === "production";
 const COOKIE_SAME_SITE = IS_PROD ? "None" : "Lax";
-const COOKIE_SECURE_PART = IS_PROD ? " Secure;" : "";
+const COOKIE_SECURE_PART = IS_PROD ? "Secure;" : "";
 
 function getKey() {
-  if (!JWT_SECRET || JWT_SECRET.length < 32) {
-    throw new Error("AUTH_JWT_SECRET is not set or too short (min 32 chars)");
+  if (!JWT_SECRET || JWT_SECRET.length < 48) {
+    throw new Error("AUTH_JWT_SECRET is not set or too short (min 48 chars)");
   }
   return new TextEncoder().encode(JWT_SECRET);
 }
@@ -45,11 +45,11 @@ export async function verifyAuthToken(token: string) {
 
 export function authCookie(token: string) {
   const maxAge = TOKEN_TTL_SECONDS;
-  return `auth_token=${token}; HttpOnly; Path=/; SameSite=${COOKIE_SAME_SITE}; Max-Age=${maxAge};${COOKIE_SECURE_PART}`;
+  return `auth_token=${token}; HttpOnly; Path=/; SameSite=${COOKIE_SAME_SITE}; Max-Age=${maxAge}; ${COOKIE_SECURE_PART}`.trimEnd();
 }
 
 export function clearAuthCookie() {
-  return `auth_token=; HttpOnly; Path=/; SameSite=${COOKIE_SAME_SITE}; Max-Age=0;${COOKIE_SECURE_PART}`;
+  return `auth_token=; HttpOnly; Path=/; SameSite=${COOKIE_SAME_SITE}; Max-Age=0; ${COOKIE_SECURE_PART}`.trimEnd();
 }
 
 /**

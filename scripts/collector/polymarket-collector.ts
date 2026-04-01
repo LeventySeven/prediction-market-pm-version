@@ -262,34 +262,36 @@ const selectChangedMarkets = (markets: PolymarketMarket[]): PolymarketMarket[] =
   return changed;
 };
 
+/** Extract all token IDs from a market's clobTokenIds and outcomes. */
+const extractTokenIds = (market: PolymarketMarket): string[] => {
+  const ids: string[] = [];
+  for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
+    if (typeof tokenId === "string" && tokenId.trim().length > 0) ids.push(tokenId.trim());
+  }
+  for (const outcome of market.outcomes) {
+    if (typeof outcome.tokenId === "string" && outcome.tokenId.trim().length > 0) ids.push(outcome.tokenId.trim());
+  }
+  return ids;
+};
+
+/** Collect token IDs from a set of markets into a new Set (capped). */
 const collectTrackedAssetIds = (markets: PolymarketMarket[]): Set<string> => {
   const out = new Set<string>();
   for (const market of markets.slice(0, MAX_TRACKED_MARKETS)) {
-    for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
-      if (typeof tokenId !== "string" || tokenId.trim().length === 0) continue;
-      out.add(tokenId.trim());
-      if (out.size >= MAX_TRACKED_ASSET_IDS) return out;
-    }
-    for (const outcome of market.outcomes) {
-      if (typeof outcome.tokenId !== "string" || outcome.tokenId.trim().length === 0) continue;
-      out.add(outcome.tokenId.trim());
+    for (const id of extractTokenIds(market)) {
+      out.add(id);
       if (out.size >= MAX_TRACKED_ASSET_IDS) return out;
     }
   }
   return out;
 };
 
+/** Merge token IDs from markets into the global tracked set (capped). */
 const mergeTrackedAssetIds = (markets: PolymarketMarket[]) => {
   if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
   for (const market of markets.slice(0, Math.max(10, Math.min(100, MAX_TRACKED_MARKETS)))) {
-    for (const tokenId of Array.isArray(market.clobTokenIds) ? market.clobTokenIds : []) {
-      if (typeof tokenId !== "string" || tokenId.trim().length === 0) continue;
-      trackedAssetIds.add(tokenId.trim());
-      if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
-    }
-    for (const outcome of market.outcomes) {
-      if (typeof outcome.tokenId !== "string" || outcome.tokenId.trim().length === 0) continue;
-      trackedAssetIds.add(outcome.tokenId.trim());
+    for (const id of extractTokenIds(market)) {
+      trackedAssetIds.add(id);
       if (trackedAssetIds.size >= MAX_TRACKED_ASSET_IDS) return;
     }
   }

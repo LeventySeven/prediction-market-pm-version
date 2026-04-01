@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { Globe, HelpCircle, Wallet } from 'lucide-react';
 import Button from './Button';
@@ -21,6 +21,11 @@ const Header: React.FC<HeaderProps> = ({
   onHelpClick,
   onLogoClick,
 }) => {
+  const [isEmbedded, setIsEmbedded] = useState(false);
+  useEffect(() => {
+    try { setIsEmbedded(window.self !== window.top); } catch { setIsEmbedded(true); }
+  }, []);
+  if (isEmbedded) return null;
   const t = {
     home: lang === 'RU' ? 'На главную' : 'Go to home',
     help: lang === 'RU' ? 'Помощь' : 'Help',

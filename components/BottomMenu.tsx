@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutGrid, Rocket, User as UserIcon, Users } from 'lucide-react';
 import { User } from '../types';
 
@@ -16,6 +16,10 @@ interface BottomMenuProps {
 }
 
 const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, user, onLoginRequest, onAggregatorClick, aggregatorActive }) => {
+  const [isEmbedded, setIsEmbedded] = useState(false);
+  useEffect(() => {
+    try { setIsEmbedded(window.self !== window.top); } catch { setIsEmbedded(true); }
+  }, []);
 
   const handleProtectedClick = (view: ViewType) => {
     if (!user && view === 'PROFILE') {
@@ -24,6 +28,8 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
         onChange(view);
     }
   };
+
+  if (isEmbedded) return null;
 
   return (
     <div className="fixed bottom-0 left-0 right-0 h-16 bg-black/90 backdrop-blur border-t border-zinc-900 flex items-center justify-around z-50 pb-safe">

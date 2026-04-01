@@ -114,7 +114,8 @@ contract PredictionMarketVault {
 
     event MarketResolved(
         bytes32 indexed marketId,
-        uint8 outcome // 1=YES, 2=NO, 3=cancelled
+        uint8 outcome, // 1=YES, 2=NO, 3=cancelled
+        address indexed resolvedBy
     );
 
     event TokenAdded(address indexed token);
@@ -285,6 +286,7 @@ contract PredictionMarketVault {
         validToken(token) 
     {
         require(block.timestamp <= deadline, "Transaction expired");
+        require(deadline <= block.timestamp + 30 days, "Deadline too far in future");
         require(outcome == 1 || outcome == 2, "Invalid outcome");
         require(collateral > 0, "Zero collateral");
         require(shares > 0, "Zero shares");
@@ -348,6 +350,7 @@ contract PredictionMarketVault {
         validToken(token) 
     {
         require(block.timestamp <= deadline, "Transaction expired");
+        require(deadline <= block.timestamp + 30 days, "Deadline too far in future");
         require(outcome == 1 || outcome == 2, "Invalid outcome");
         require(shares > 0, "Zero shares");
         require(marketOutcomes[marketId] == 0, "Market already resolved");
@@ -499,7 +502,7 @@ contract PredictionMarketVault {
         require(marketOutcomes[marketId] == 0, "Already resolved");
 
         marketOutcomes[marketId] = outcome;
-        emit MarketResolved(marketId, outcome);
+        emit MarketResolved(marketId, outcome, msg.sender);
     }
 
     /**

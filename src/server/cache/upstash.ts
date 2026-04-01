@@ -145,18 +145,10 @@ export const buildMarketListCacheKey = (params: {
   snapshotId?: number | null;
   catalogBucket?: "all" | "main" | "fast";
   providers: Array<"polymarket" | "limitless">;
-}): string =>
-  [
-    "markets:list",
-    CACHE_NAMESPACE,
-    `open:${params.onlyOpen ? 1 : 0}`,
-    `page:${params.page}`,
-    `size:${params.pageSize}`,
-    `sort:${params.sortBy}`,
-    `snapshot:${typeof params.snapshotId === "number" && Number.isFinite(params.snapshotId) ? params.snapshotId : "none"}`,
-    `bucket:${params.catalogBucket ?? "main"}`,
-    `providers:${encodeProviderList(params.providers)}`,
-  ].join(":");
+}): string => {
+  const snapshot = typeof params.snapshotId === "number" && Number.isFinite(params.snapshotId) ? params.snapshotId : "none";
+  return `markets:list:${CACHE_NAMESPACE}:open:${params.onlyOpen ? 1 : 0}:page:${params.page}:size:${params.pageSize}:sort:${params.sortBy}:snapshot:${snapshot}:bucket:${params.catalogBucket ?? "main"}:providers:${encodeProviderList(params.providers)}`;
+};
 
 export const buildLatestMarketListCacheKey = (params: {
   onlyOpen: boolean;
@@ -166,35 +158,20 @@ export const buildLatestMarketListCacheKey = (params: {
   catalogBucket?: "all" | "main" | "fast";
   providers: Array<"polymarket" | "limitless">;
 }): string =>
-  [
-    "markets:list:latest",
-    CACHE_NAMESPACE,
-    `open:${params.onlyOpen ? 1 : 0}`,
-    `page:${params.page}`,
-    `size:${params.pageSize}`,
-    `sort:${params.sortBy}`,
-    `bucket:${params.catalogBucket ?? "main"}`,
-    `providers:${encodeProviderList(params.providers)}`,
-  ].join(":");
+  `markets:list:latest:${CACHE_NAMESPACE}:open:${params.onlyOpen ? 1 : 0}:page:${params.page}:size:${params.pageSize}:sort:${params.sortBy}:bucket:${params.catalogBucket ?? "main"}:providers:${encodeProviderList(params.providers)}`;
 
 export const buildMarketDetailCacheKey = (params: {
   provider: "polymarket" | "limitless";
   providerMarketId: string;
 }): string =>
-  ["market:detail", CACHE_NAMESPACE, params.provider, params.providerMarketId.trim()].join(":");
+  `market:detail:${CACHE_NAMESPACE}:${params.provider}:${params.providerMarketId.trim()}`;
 
 export const buildMarketTradesCacheKey = (params: {
   provider: "polymarket" | "limitless";
   providerMarketId: string;
   limit: number;
 }): string =>
-  [
-    "market:trades",
-    CACHE_NAMESPACE,
-    params.provider,
-    params.providerMarketId.trim(),
-    `limit:${Math.max(1, params.limit)}`,
-  ].join(":");
+  `market:trades:${CACHE_NAMESPACE}:${params.provider}:${params.providerMarketId.trim()}:limit:${Math.max(1, params.limit)}`;
 
 export const buildMarketCandlesCacheKey = (params: {
   provider: "polymarket" | "limitless";
@@ -203,34 +180,13 @@ export const buildMarketCandlesCacheKey = (params: {
   limit: number;
   range?: string | null;
 }): string =>
-  [
-    "market:candles",
-    CACHE_NAMESPACE,
-    params.provider,
-    params.providerMarketId.trim(),
-    "shape:real-only-v2",
-    `interval:${params.interval}`,
-    `limit:${Math.max(1, params.limit)}`,
-    `range:${(params.range ?? "none").toString()}`,
-  ].join(":");
+  `market:candles:${CACHE_NAMESPACE}:${params.provider}:${params.providerMarketId.trim()}:shape:real-only-v2:interval:${params.interval}:limit:${Math.max(1, params.limit)}:range:${params.range ?? "none"}`;
 
 const buildLiveStateKey = (marketId: string): string =>
-  ["realtime:market:live", CACHE_NAMESPACE, marketId.trim()].join(":");
+  `realtime:market:live:${CACHE_NAMESPACE}:${marketId.trim()}`;
 
 const buildLiveChannelKey = (marketId: string): string =>
-  ["realtime:market:live", CACHE_NAMESPACE, "channel", marketId.trim()].join(":");
-
-const buildLiveScopeChannelKey = (scope: string): string =>
-  ["realtime:market:live", CACHE_NAMESPACE, "scope", encodeScopeKey(scope)].join(":");
-
-export const buildUpstashLiveChannelKey = (marketId: string): string => buildLiveChannelKey(marketId);
-export const buildUpstashLiveScopeChannelKey = (scope: string): string => buildLiveScopeChannelKey(scope);
-
-export const buildUpstashLiveChannelPattern = (): string =>
-  ["realtime:market:live", CACHE_NAMESPACE, "channel", "*"].join(":");
-
-const buildActivityListKey = (marketId: string): string =>
-  ["realtime:market:activity", CACHE_NAMESPACE, marketId.trim()].join(":");
+  `realtime:market:live:${CACHE_NAMESPACE}:channel:${marketId.trim()}`;
 
 const encodeScopeKey = (scope: string): string =>
   scope
@@ -239,30 +195,29 @@ const encodeScopeKey = (scope: string): string =>
     .replace(/[^a-z0-9:_,-]+/g, "_")
     .replace(/^_+|_+$/g, "") || "global";
 
+const buildLiveScopeChannelKey = (scope: string): string =>
+  `realtime:market:live:${CACHE_NAMESPACE}:scope:${encodeScopeKey(scope)}`;
+
+export const buildUpstashLiveChannelKey = (marketId: string): string => buildLiveChannelKey(marketId);
+export const buildUpstashLiveScopeChannelKey = (scope: string): string => buildLiveScopeChannelKey(scope);
+
+export const buildUpstashLiveChannelPattern = (): string =>
+  `realtime:market:live:${CACHE_NAMESPACE}:channel:*`;
+
+const buildActivityListKey = (marketId: string): string =>
+  `realtime:market:activity:${CACHE_NAMESPACE}:${marketId.trim()}`;
+
 const buildSnapshotCursorKey = (scope: string): string =>
-  ["snapshot", CACHE_NAMESPACE, "cursor", encodeScopeKey(scope)].join(":");
+  `snapshot:${CACHE_NAMESPACE}:cursor:${encodeScopeKey(scope)}`;
 
 const buildSnapshotMetaKey = (scope: string, snapshotId: number): string =>
-  ["snapshot", CACHE_NAMESPACE, String(Math.max(0, snapshotId)), encodeScopeKey(scope), "meta"].join(":");
+  `snapshot:${CACHE_NAMESPACE}:${Math.max(0, snapshotId)}:${encodeScopeKey(scope)}:meta`;
 
 const buildSnapshotShardKey = (scope: string, snapshotId: number, shardIndex: number): string =>
-  [
-    "snapshot",
-    CACHE_NAMESPACE,
-    String(Math.max(0, snapshotId)),
-    encodeScopeKey(scope),
-    "shard",
-    String(Math.max(0, shardIndex)),
-  ].join(":");
+  `snapshot:${CACHE_NAMESPACE}:${Math.max(0, snapshotId)}:${encodeScopeKey(scope)}:shard:${Math.max(0, shardIndex)}`;
 
 const buildOrderbookKey = (marketId: string, depth: number): string =>
-  [
-    "orderbook",
-    CACHE_NAMESPACE,
-    marketId.trim(),
-    "depth",
-    String(Math.max(1, Math.min(depth, upstashOrderbookMaxDepth))),
-  ].join(":");
+  `orderbook:${CACHE_NAMESPACE}:${marketId.trim()}:depth:${Math.max(1, Math.min(depth, upstashOrderbookMaxDepth))}`;
 
 export type UpstashMarketLivePatch = {
   marketId: string;
