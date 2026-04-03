@@ -6,7 +6,7 @@ import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, use
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
 import AggregatorOverlay from "@/components/AggregatorOverlay";
-import ActivityFeed from "@/components/ActivityFeed";
+// MarketCard is used by CatalogView and FeedView components
 import ClientErrorBoundary from "@/components/ClientErrorBoundary";
 import EligibilityDisclaimerModal from "@/components/EligibilityDisclaimerModal";
 import LimitlessCredentialsModal from "@/components/LimitlessCredentialsModal";
@@ -4249,22 +4249,8 @@ export default function HomePage({
                   />
                 </div>
 
-                {/* FEED */}
-                <div className={currentView === "FEED" ? "w-full" : "hidden"}>
-                  <ActivityFeed
-                    lang={lang}
-                    onMarketClick={(marketId) => {
-                      setMarketBetIntent(null);
-                      const market = mergedMarkets.find((m) => m.id === marketId);
-                      if (market) {
-                        void openMarketWithAuthCheck(market);
-                      } else {
-                        setSelectedMarketId(marketId);
-                        navigateToMarketUrl(marketId);
-                      }
-                    }}
-                  />
-                </div>
+                {/* FEED view removed -- FEED tab replaced by Pre Markets in BottomMenu.
+                   The /feed URL route still maps to FEED ViewType but renders nothing here. */}
 
                 {/* PROFILE */}
                 <div className={currentView === "PROFILE" ? "w-full" : "hidden"}>

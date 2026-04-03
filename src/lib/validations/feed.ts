@@ -20,30 +20,3 @@ export const getFeedInput = z
     limit: z.number().int().positive().max(MAX_FEED_LIMIT).optional(),
   })
   .optional();
-
-// ---------------------------------------------------------------------------
-// Activity feed
-// ---------------------------------------------------------------------------
-
-export const getActivityInput = z
-  .object({
-    limit: z.number().int().min(1).max(100).optional(),
-  })
-  .optional();
-
-export const activityItemOutput = z.object({
-  id: z.string(),
-  type: z.enum(["comment", "trade", "bookmark"]),
-  actorName: z.string(),
-  actorUsername: z.string().nullable(),
-  actorAvatarUrl: z.string().nullable(),
-  marketId: z.string(),
-  marketTitle: z.string().nullable(),
-  body: z.string().nullable(),
-  createdAt: z.string(),
-});
-
-export const activityOutput = z.object({
-  apiVersion: apiVersionV1Schema,
-  items: z.array(activityItemOutput),
-});

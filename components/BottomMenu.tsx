@@ -1,6 +1,5 @@
 
 import React, { useEffect, useState } from 'react';
-import Image from 'next/image';
 import { LayoutGrid, Rocket, User as UserIcon, Users } from 'lucide-react';
 import { User } from '../types';
 
@@ -36,7 +35,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
     <div className="fixed bottom-0 left-0 right-0 h-16 bg-black/90 backdrop-blur border-t border-zinc-900 flex items-center justify-around z-50 pb-safe">
       <button
         onClick={() => onChange('FRIENDS')}
-        className={`flex flex-col items-center justify-center gap-1.5 w-16 ${
+        className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
           currentView === 'FRIENDS' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
@@ -46,7 +45,7 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
 
       <button
         onClick={() => onChange('CATALOG')}
-        className={`flex flex-col items-center justify-center gap-1.5 w-16 ${
+        className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
           currentView === 'CATALOG' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
@@ -55,28 +54,18 @@ const BottomMenu: React.FC<BottomMenuProps> = ({ currentView, onChange, lang, us
       </button>
 
       <button
-        onClick={() => onChange('FEED')}
-        className={`flex flex-col items-center justify-center gap-1.5 w-16 ${
-          currentView === 'FEED' && !aggregatorActive ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
-        }`}
-      >
-        <Image src="/pink.svg" alt="" width={20} height={10} className="h-5 w-5 object-contain" />
-        <span className="text-[11px] font-medium">{lang === 'RU' ? 'Лента' : 'Feed'}</span>
-      </button>
-
-      <button
         onClick={() => onAggregatorClick?.()}
-        className={`flex flex-col items-center justify-center gap-1.5 w-16 ${
+        className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
           aggregatorActive ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
         <Rocket size={20} />
-        <span className="text-[11px] font-medium">Pre</span>
+        <span className="text-[11px] font-medium">Pre Markets</span>
       </button>
 
       <button
         onClick={() => handleProtectedClick('PROFILE')}
-        className={`flex flex-col items-center justify-center gap-1.5 w-16 ${
+        className={`flex flex-col items-center justify-center gap-1.5 w-20 ${
           currentView === 'PROFILE' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
         }`}
       >
